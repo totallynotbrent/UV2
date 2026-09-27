@@ -17,6 +17,7 @@ MemoryCaptures/
 *.booproj
 *.sln
 *.csproj
+!Tools/UmaLauncher/UmaLauncher.csproj
 
 # os
 .DS_Store
