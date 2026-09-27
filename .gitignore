@@ -1,0 +1,32 @@
+# build artifacts
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]serSettings/
+MemoryCaptures/
+*.unitypackage
+
+# ide
+.vs/
+.idea/
+.vscode/
+*.user
+*.booproj
+*.sln
+*.csproj
+
+# os
+.DS_Store
+Thumbs.db
+
+# agent scratch
+.hermes/
+.agents/
+.research/
+research/
+*.plan.md
+WORKLOG.md
+AGENT_HANDOFF.md
