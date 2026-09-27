@@ -10,7 +10,6 @@ namespace UV2Build
         [MenuItem("UV2/Bake Scenes")]
         public static void bake()
         {
-            make_scene("Assets/Scenes/Picker.unity", "UV2.App.scene_bootstrap", "build_picker_scene");
             make_scene("Assets/Scenes/Concert.unity", "UV2.App.scene_bootstrap", "build_concert_scene");
             Debug.Log("[scene_baker] scenes baked");
         }

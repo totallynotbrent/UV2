@@ -12,26 +12,23 @@ PluginImporter:
   validateReferences: 1
   platformData:
   - first:
-      : Any
+      Android: Android
     second:
       enabled: 0
       settings:
-        Exclude Editor: 0
-        Exclude Linux64: 0
-        Exclude OSXUniversal: 0
-        Exclude Win: 0
-        Exclude Win64: 0
-        Exclude iOS: 0
+        Is16KbAligned: false
   - first:
       Any: 
     second:
-      enabled: 0
+      enabled: 1
       settings: {}
   - first:
       Editor: Editor
     second:
       enabled: 0
-      settings: {}
+      settings:
+        CPU: x86_64
+        DefaultValueInitialized: true
   - first:
       Standalone: Linux64
     second:
@@ -39,17 +36,11 @@ PluginImporter:
       settings:
         CPU: x86_64
   - first:
-      Standalone: LinuxUniversal
+      Standalone: OSXUniversal
     second:
       enabled: 1
       settings:
         CPU: x86_64
-  - first:
-      Standalone: OSXUniversal
-    second:
-      enabled: 0
-      settings:
-        CPU: None
   - first:
       Standalone: Win
     second:
@@ -59,14 +50,9 @@ PluginImporter:
   - first:
       Standalone: Win64
     second:
-      enabled: 0
+      enabled: 1
       settings:
-        CPU: None
-  - first:
-      iPhone: iOS
-    second:
-      enabled: 0
-      settings: {}
-  userData:
+        CPU: x86_64
+  userData: 
   assetBundleName: 
-  assetBundleVariant:
+  assetBundleVariant: 

@@ -1,56 +1,136 @@
+using TMPro;
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UV2.App;
+using UV2.Concert;
+using UV2.Data;
 
 namespace UV2.App
 {
-    // scene bootstrappers: create the ui at runtime instead of authoring scenes by hand.
+    // scene bootstrappers: the concert window is the whole app, built at runtime.
     public static class scene_bootstrap
     {
-        public static void build_picker_scene()
+        public static void build_concert_scene()
         {
-            var cam_go = new GameObject("main_camera", typeof(Camera));
-            var cam = cam_go.GetComponent<Camera>();
-            cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = new Color(0.05f, 0.05f, 0.07f, 1f);
-            cam.orthographic = true;
-            cam.fieldOfView = 60f;
-            cam.nearClipPlane = -10f;
-            cam.farClipPlane = 100f;
+            try
+            {
+                var cam_go = new GameObject("main_camera", typeof(Camera));
+                var cam = cam_go.GetComponent<Camera>();
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = new Color(0.05f, 0.05f, 0.07f, 1f);
+                cam.orthographic = true;
+                cam.nearClipPlane = -10f;
+                cam.farClipPlane = 100f;
 
-            Debug.Log($"[boot] picker scene starting, master db at {config.master_db_path}, datapack at {config.datapack_path}");
-            var db = UV2.Data.master_db.reader.open(config.master_db_path);
-            if (db == null)
-            {
-                Debug.LogError($"[boot] master.mdb not found at {config.master_db_path}");
-                var canvas = UV2.UI.ui_theme.build_canvas("error_canvas");
-                UV2.UI.ui_theme.make_text(canvas.transform, "error", "master.mdb not found at:\n" + config.master_db_path + "\n\ncreate Config.json next to the exe with {\"main_path\": \"<your game Persistent folder>\"} and restart.", 18, UV2.UI.ui_theme.text_main).GetComponent<RectTransform>().anchoredPosition = new Vector2(40, -40);
-                return;
+                var host = new GameObject("concert_host");
+                host.AddComponent<UV2.UI.concert_window>().open();
             }
-            using (db)
+            catch (Exception e)
             {
-                var songs = UV2.Concert.song_catalog.load(config.datapack_path, db);
-                var charas = UV2.Concert.chara_catalog.load(db);
-                Debug.Log($"[boot] catalogs loaded: {songs.Count} songs, {charas.Count} characters, {songs.Count(s => s.stage_ok)} stages resolved, {songs.Count(s => s.has_live)} with live flag");
-                var stage_fail = songs.Where(s => !s.stage_ok).Select(s => s.music_id).ToList();
-                if (stage_fail.Count > 0) Debug.LogError($"[boot] songs with unresolved stage: {string.Join(", ", stage_fail)}");
-                var host = new GameObject("picker_host");
-                var picker = host.AddComponent<UV2.UI.picker_form>();
-                picker.open(songs, charas);
+                Debug.LogError($"[boot] concert scene failed: {e}");
+                build_error_screen(e);
             }
         }
 
-        public static void build_concert_scene()
+        // writes song jackets and character icons beside the exe as pngs, for the desktop launcher.
+        public static void dump_icons()
         {
-            var cam_go = new GameObject("main_camera", typeof(Camera));
-            var cam = cam_go.GetComponent<Camera>();
-            cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = new Color(0.05f, 0.05f, 0.07f, 1f);
-            cam.orthographic = true;
-            cam.nearClipPlane = -10f;
-            cam.farClipPlane = 100f;
+            try
+            {
+                string base_dir = AppDomain.CurrentDomain.BaseDirectory;
+                string jacket_dir = System.IO.Path.Combine(base_dir, "jackets");
+                string icon_dir = System.IO.Path.Combine(base_dir, "charicons");
+                System.IO.Directory.CreateDirectory(jacket_dir);
+                System.IO.Directory.CreateDirectory(icon_dir);
 
-            var host = new GameObject("concert_host");
-            host.AddComponent<UV2.UI.concert_window>().open();
+                using var db = UV2.Data.master_db.reader.open(config.master_db_path);
+                using var meta = UV2.Data.meta_reader.reader.open(config.meta_db_path);
+                if (db == null || meta == null)
+                {
+                    Debug.LogError($"[icons] data not found: master={db == null}, meta={meta == null}");
+                    return;
+                }
+
+                int jackets = 0;
+                var songs = UV2.Concert.song_catalog.load(db, meta, config.data_root);
+                foreach (var s in songs)
+                {
+                    if (s.jacket == null) continue;
+                    string path = System.IO.Path.Combine(jacket_dir, s.music_id + ".png");
+                    System.IO.File.WriteAllBytes(path, encode_png(s.jacket));
+                    jackets++;
+                }
+
+                // base portrait per character: bundle chara/chr{id}/chr_icon_{id}, texture chr_icon_{id}.
+                var chara_ids = new List<int>();
+                foreach (var r in db.query("SELECT id FROM chara_data"))
+                    chara_ids.Add((int)r.get_int(0));
+
+                var icon_names = new HashSet<string>();
+                foreach (int id in chara_ids)
+                    icon_names.Add($"chara/chr{id}/chr_icon_{id}");
+                var icon_rows = meta.lookup(icon_names);
+
+                int icons = 0;
+                foreach (int id in chara_ids)
+                {
+                    var row = icon_rows.GetValueOrDefault($"chara/chr{id}/chr_icon_{id}");
+                    if (row == null) continue;
+                    var tex = UV2.Data.game_assets.load_texture(row, config.data_root, $"chr_icon_{id}");
+                    if (tex == null) continue;
+                    string path = System.IO.Path.Combine(icon_dir, id + ".png");
+                    System.IO.File.WriteAllBytes(path, encode_png(tex));
+                    icons++;
+                }
+
+                Debug.Log($"[icons] wrote {jackets} jackets and {icons} character icons to {base_dir}");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[icons] dump failed: {e}");
+            }
+        }
+
+        // encodes a gpu-resident texture to png by blitting through a render texture.
+        private static byte[] encode_png(Texture2D tex)
+        {
+            var rt = RenderTexture.GetTemporary(tex.width, tex.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
+            var prev = RenderTexture.active;
+            Graphics.Blit(tex, rt);
+            RenderTexture.active = rt;
+            var readable = new Texture2D(tex.width, tex.height, TextureFormat.RGBA32, false);
+            readable.ReadPixels(new Rect(0, 0, tex.width, tex.height), 0, 0);
+            readable.Apply();
+            RenderTexture.active = prev;
+            RenderTexture.ReleaseTemporary(rt);
+            byte[] png = readable.EncodeToPNG();
+            UnityEngine.Object.Destroy(readable);
+            return png;
+        }
+
+        // any unexpected boot failure shows itself instead of a blank window.
+        private static void build_error_screen(Exception e)
+        {
+            build_centered_screen($"failed to start:\n{e.GetType().Name}: {e.Message}");
+        }
+
+        private static void build_centered_screen(string message)
+        {
+            var canvas = UV2.UI.ui_theme.build_canvas("error_canvas");
+            var root = canvas.transform;
+            UV2.UI.ui_theme.panel(root, "backdrop", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.05f, 0.05f, 0.07f, 1f), raycast: true);
+
+            var txt = UV2.UI.ui_theme.make_text(root, "error", message, 22, UV2.UI.ui_theme.text_main);
+            var rect = txt.GetComponent<RectTransform>();
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.sizeDelta = new Vector2(760, 0);
+            rect.anchoredPosition = Vector2.zero;
+            txt.enableWordWrapping = true;
+            txt.alignment = TextAlignmentOptions.Center;
+            txt.verticalAlignment = VerticalAlignmentOptions.Middle;
         }
     }
 }

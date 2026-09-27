@@ -17,7 +17,7 @@ namespace UV2Build
         public static void bake_and_build_linux()
         {
             scene_baker.bake();
-            var scenes = new[] { "Assets/Scenes/Picker.unity", "Assets/Scenes/Concert.unity" };
+            var scenes = new[] { "Assets/Scenes/Concert.unity" };
             var opts = new BuildPlayerOptions
             {
                 scenes = scenes,

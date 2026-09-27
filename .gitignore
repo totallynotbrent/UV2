@@ -17,13 +17,15 @@ MemoryCaptures/
 *.booproj
 *.sln
 *.csproj
+!Tools/UmaLauncher/UmaLauncher.csproj
 
 # os
 .DS_Store
 Thumbs.db
 
-# game-derived data pack (never in the public repo)
-Assets/StreamingAssets/data/
+# game-derived data pack (never in the public repo; song_seconds.json IS tracked)
+Assets/StreamingAssets/data/*
+!Assets/StreamingAssets/data/song_seconds.json
 datapack/
 
 # working docs stay local for now
@@ -32,8 +34,12 @@ research/
 uv2/
 
 # agent scratch
-.hermes/
-.agents/
-*.plan.md
+.plan.md
 WORKLOG.md
 AGENT_HANDOFF.md
+Config.json
+
+# launcher build outputs
+Tools/UmaLauncher/bin/
+Tools/UmaLauncher/obj/
+launcher_out/

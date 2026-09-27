@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace UV2.App
 {
-    // late scene boot: dispatches to the named bootstrap after the scene loads in play/build.
+    // late scene boot: dispatches to the concert bootstrap after the scene loads.
     public class scene_boot : MonoBehaviour
     {
         public string type_name;
@@ -12,8 +12,18 @@ namespace UV2.App
 
         private IEnumerator Start()
         {
-            if (method_name == "build_picker_scene") scene_bootstrap.build_picker_scene();
-            else if (method_name == "build_concert_scene") scene_bootstrap.build_concert_scene();
+            var pre_args = System.Environment.GetCommandLineArgs();
+            bool dump_icons = false;
+            foreach (var a in pre_args) if (a == "-dumpicons") dump_icons = true;
+
+            if (dump_icons)
+            {
+                scene_bootstrap.dump_icons();
+                Application.Quit();
+                yield break;
+            }
+
+            if (method_name == "build_concert_scene") scene_bootstrap.build_concert_scene();
             else Debug.LogError($"[scene_boot] unknown bootstrap: {method_name}");
 
             // headless e2e evidence: dump the rendered frame after the ui settles.
