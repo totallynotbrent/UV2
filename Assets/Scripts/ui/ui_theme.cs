@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.TextCore.LowLevel;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using TMPro;
 
@@ -36,8 +37,15 @@ namespace UV2.UI
             return _cjk_font;
         }
 
+        // ugui input needs an event system in the scene; without it no click or scroll ever lands.
         public static Canvas build_canvas(string name)
         {
+            if (Object.FindObjectOfType<EventSystem>() == null)
+            {
+                var es_go = new GameObject("event_system", typeof(EventSystem), typeof(StandaloneInputModule));
+                Object.DontDestroyOnLoad(es_go);
+            }
+
             var go = new GameObject(name, typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
             var canvas = go.GetComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;

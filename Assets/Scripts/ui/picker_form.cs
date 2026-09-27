@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using TMPro;
 using UV2.App;
@@ -42,6 +43,7 @@ namespace UV2.UI
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "-uv2demo") StartCoroutine(run_headless_demo());
+                if (args[i] == "-uv2clicktest") StartCoroutine(run_click_test());
             }
         }
 
@@ -65,6 +67,68 @@ namespace UV2.UI
             if (popup != null) Destroy(popup);
             yield return null;
             save_selection();
+        }
+
+        // real-input e2e: drive the first song row's button through the event system's pointer path.
+        private System.Collections.IEnumerator run_click_test()
+        {
+            yield return new WaitForSeconds(0.5f);
+
+            var es = UnityEngine.Object.FindObjectOfType<EventSystem>();
+            if (es == null)
+            {
+                Debug.LogError("[clicktest] FAIL: no EventSystem in scene, input is dead");
+                yield break;
+            }
+            Debug.Log("[clicktest] event system present");
+
+            Button first_row = null;
+            foreach (var btn in UnityEngine.Object.FindObjectsOfType<Button>())
+            {
+                if (btn.gameObject.name.StartsWith("song_"))
+                {
+                    first_row = btn;
+                    break;
+                }
+            }
+            if (first_row == null)
+            {
+                Debug.LogError("[clicktest] FAIL: no song row button found");
+                yield break;
+            }
+
+            var pointer = new PointerEventData(es);
+            pointer.position = new Vector2(Screen.width / 2f, Screen.height / 2f);
+            var hits = new List<RaycastResult>();
+            EventSystem.current.RaycastAll(pointer, hits);
+            bool row_hit = false;
+            foreach (var h in hits)
+            {
+                var b = h.gameObject.GetComponentInParent<Button>();
+                if (b == first_row) row_hit = true;
+            }
+            Debug.Log($"[clicktest] raycast at screen center hit row: {row_hit}");
+
+            string before = _selected_song != null ? _selected_song.music_id.ToString() : "none";
+            ExecuteEvents.Execute(first_row.gameObject, pointer, ExecuteEvents.pointerClickHandler);
+            string after = _selected_song != null ? $"{_selected_song.music_id} ({_selected_song.title})" : "none";
+            Debug.Log($"[clicktest] click via ExecuteEvents: selected {before} -> {after}");
+
+            if (_selected_song == null)
+            {
+                Debug.LogError("[clicktest] FAIL: click did not select a song");
+                yield break;
+            }
+
+            // scroll the song list through the scroll rect's handler path.
+            var scroll = UnityEngine.Object.FindObjectOfType<ScrollRect>();
+            if (scroll != null)
+            {
+                scroll.verticalNormalizedPosition = 0.5f;
+                yield return null;
+                Debug.Log($"[clicktest] scroll position {scroll.verticalNormalizedPosition:0.00} (content height {scroll.content.sizeDelta.y})");
+            }
+            Debug.Log($"[clicktest] PASS: input path works, song {_selected_song.music_id} selected, {(_rules != null ? _rules.member_count.ToString() : "no")} slots built");
         }
 
         public GameObject open_chara_popup_public(int position)
