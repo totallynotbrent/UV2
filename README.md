@@ -6,27 +6,27 @@ from the game's own data and lets you pick the characters that perform them,
 recording the selection for later phases.
 
 No code or assets from the original viewer are reused. Everything reads from
-your own game installation and the extracted data pack that ships next to the
-exe.
+your own game installation at runtime; nothing game-derived ships with the exe.
 
 ## Requirements
 
 - Windows x64
-- Umamusume: Pretty Derby installed (the game's `umamusume_Data/Persistent`
-  folder)
-- the phase 1 data pack (jackets, livesettings, game font) unzipped next to
-  the exe
+- Umamusume: Pretty Derby installed (a full, updated install; the app reads
+  `umamusume_Data/Persistent` for its database, manifest and asset bundles)
 
 ## Setup
 
-The app looks for the game data in this order:
+Run the exe once. A `Config.json` is generated next to it:
 
-1. `Config.json` next to the exe with your game's Persistent folder:
-   `{"main_path": "C:\\path\\to\\umamusume_Data\\Persistent"}`
-2. fallback: `umamusume_Data/Persistent` next to the exe
+```json
+{"main_path": "C:\\path\\to\\umamusume_Data\\Persistent"}
+```
 
-master.mdb is read directly from your install (plain SQLite, nothing is
-modified). The bundled data pack stays in `UV2_Data/StreamingAssets/data`.
+Point `main_path` at your game's Persistent folder if the default is wrong,
+then restart. That is the whole setup: master.mdb (plain SQLite) supplies the
+song and character catalogs, the encrypted meta db supplies bundle locations
+and per-file keys, and jacket art plus livesettings stream straight out of the
+game's own dat files.
 
 ## Project structure
 
@@ -34,13 +34,12 @@ modified). The bundled data pack stays in `UV2_Data/StreamingAssets/data`.
 Assets/
   Scripts/
     app/            entry, scene boot, config, selection json io
-    data/           master.mdb sqlite reader, livesettings csv parser
+    data/           sqlite readers (master + encrypted meta), bundle decrypt stream
     concert/        song catalog, character catalog, member rules
     ui/             picker window, concert window, ui factory
   Editor/           scene baker and batch build entry
-  Plugins/x86_64/   sqlite native for windows/linux
-ProjectSettings/     unity 2022.3.62f2, IL2CPP standalone
-docs/               live concert plan (phase 1 scope)
+  Plugins/          sqlite natives for windows/linux
+ProjectSettings/     unity 2022.3.62, IL2CPP standalone
 ```
 
 ## Architecture
@@ -48,7 +47,8 @@ docs/               live concert plan (phase 1 scope)
 ```mermaid
 flowchart LR
     master[master.mdb<br/>live_data, chara_data, dress_data,<br/>permission and formation tables]
-    pack[data pack<br/>jackets, livesettings, font]
+    meta[meta db<br/>bundle name -> file hash + key]
+    dat[dat/xx/hash<br/>encrypted asset bundles]
     catalog[Catalogs<br/>61 songs, 172 characters]
     rules[Member rules<br/>slots, permissions, defaults]
     picker[Picker window<br/>song list + slot grid]
@@ -56,7 +56,8 @@ flowchart LR
     json[selection.json]
 
     master --> catalog
-    pack --> catalog
+    meta --> catalog
+    dat --> catalog
     catalog --> picker
     rules --> picker
     picker --> json
@@ -76,6 +77,5 @@ CI builds the Windows exe on every push to `experimental` and on version tags.
 
 ## License
 
-All rights reserved. The bundled game-derived data pack (jacket art,
-livesettings, game font) is extracted from Umamusume: Pretty Derby and is not
-redistributed in this repository.
+All rights reserved. This repository contains no game data; the application
+reads the user's own game installation at runtime.

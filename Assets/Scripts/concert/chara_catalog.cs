@@ -36,6 +36,10 @@ namespace UV2.Concert
             foreach (var r in db.query("SELECT `index`, text FROM text_data WHERE category=14"))
                 dress_names[(int)r.get_int(0)] = r.get_text(1);
 
+            var restricted = new HashSet<int>();
+            foreach (var r in db.query("SELECT music_id, dress_id FROM live_dress_restrict_data"))
+                restricted.Add((int)r.get_int(1));
+
             var live_dresses = new Dictionary<int, List<int>>();
             foreach (var r in db.query("SELECT id, chara_id FROM dress_data WHERE use_live=1 OR use_live_theater=1"))
             {
@@ -63,6 +67,12 @@ namespace UV2.Concert
                     c.live_dress_ids.AddRange(own);
                 if (live_dresses.TryGetValue(0, out var shared))
                     c.live_dress_ids.AddRange(shared);
+                // dress restrictions from live_dress_restrict_data remove blocked outfits everywhere.
+                for (int i = c.live_dress_ids.Count - 1; i >= 0; i--)
+                {
+                    if (restricted.Contains(c.live_dress_ids[i]))
+                        c.live_dress_ids.RemoveAt(i);
+                }
 
                 foreach (int did in c.live_dress_ids)
                 {

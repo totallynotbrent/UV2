@@ -3,11 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEngine;
+using UV2.App;
 using UV2.Data;
 
 namespace UV2.Concert
 {
-    // one playable concert row built from live_data + text_data + livesettings + song_gaps.
+    // one playable concert row built from live_data + text_data + the game's own bundles.
     public class song_entry
     {
         public int music_id;
@@ -24,26 +25,24 @@ namespace UV2.Concert
         public int seconds;
         public bool stage_ok;
         public bool livesettings_ok;
+        public Texture2D jacket;
     }
 
     public static class song_catalog
     {
-        // census ids from song_gaps.json: the 61 concerts the game data supports.
-        public static List<int> census_ids(string datapack)
+        // the phase-1 asset names this catalog needs from the meta db.
+        public static HashSet<string> asset_names(IEnumerable<int> music_ids)
         {
-            string path = Path.Combine(datapack, "song_seconds.json");
-            if (!File.Exists(path))
-            {
-                Debug.LogError($"[song_catalog] missing {path}");
-                return new List<int>();
-            }
-            var wrapper = JsonUtility.FromJson<seconds_wrapper>(File.ReadAllText(path));
-            return wrapper.items.Select(it => it.id).ToList();
+            var names = new HashSet<string> { "livesettings" };
+            foreach (int mid in music_ids)
+                names.Add($"live/jacket/jacket_icon_l_{mid}");
+            return names;
         }
 
-        public static List<song_entry> load(string datapack, master_db.reader db)
+        // loads the song list: master.mdb rows joined with livesettings bundles and jacket art.
+        public static List<song_entry> load(master_db.reader db, meta_reader.reader meta, string data_root)
         {
-            var seconds = load_seconds(datapack);
+            var seconds = load_seconds(db);
             var titles = new Dictionary<int, string>();
             foreach (var r in db.query("SELECT `index`, text FROM text_data WHERE category=16"))
                 titles[(int)r.get_int(0)] = r.get_text(1);
@@ -68,24 +67,50 @@ namespace UV2.Concert
                 s.title = titles.GetValueOrDefault(mid, $"music {mid}");
                 if (!titles.ContainsKey(mid))
                     Debug.LogError($"[song_catalog] no cat16 title for music {mid}");
-
-                var ls = Data.livesettings.load(mid, datapack);
-                s.livesettings_ok = ls.Count > 0;
-                s.stage_id = Data.livesettings.stage_id(ls);
-                s.stage_ok = s.stage_id > 0;
-                if (!s.stage_ok)
-                    Debug.LogError($"[song_catalog] no stage row for music {mid}");
                 out_list.Add(s);
             }
 
             out_list.Sort((a, b) => a.sort != b.sort ? a.sort.CompareTo(b.sort) : a.music_id.CompareTo(b.music_id));
+
+            // livesettings + jackets come from the user's own install via the meta db.
+            var meta_rows = meta.lookup(asset_names(out_list.Select(s => s.music_id)));
+            var ls_row = meta_rows.GetValueOrDefault("livesettings");
+            AssetBundle ls_bundle = null;
+            if (ls_row != null)
+                ls_bundle = game_assets.open(ls_row, data_root);
+            if (ls_bundle == null && ls_row != null)
+                Debug.LogError("[song_catalog] livesettings bundle failed to open");
+
+            foreach (var s in out_list)
+            {
+                if (ls_bundle != null && ls_bundle.Contains(s.music_id.ToString()))
+                {
+                    var text = ls_bundle.LoadAsset<TextAsset>(s.music_id.ToString());
+                    var ls = Data.livesettings.parse_csv(text != null ? text.text : null);
+                    s.livesettings_ok = ls.Count > 0;
+                    s.stage_id = Data.livesettings.stage_id(ls);
+                }
+                s.stage_ok = s.stage_id > 0;
+                if (!s.stage_ok)
+                    Debug.LogError($"[song_catalog] no stage row for music {s.music_id}");
+
+                var jacket_row = meta_rows.GetValueOrDefault($"live/jacket/jacket_icon_l_{s.music_id}");
+                if (jacket_row != null)
+                    s.jacket = game_assets.load_texture(jacket_row, data_root, $"jacket_icon_l_{s.music_id}");
+                if (s.jacket == null)
+                    Debug.LogWarning($"[song_catalog] no jacket art for music {s.music_id}");
+            }
+
+            if (ls_bundle != null) ls_bundle.Unload(true);
+
             return out_list;
         }
 
-        private static Dictionary<int, int> load_seconds(string datapack)
+        // song lengths come from the cutt census json shipped in streaming assets.
+        private static Dictionary<int, int> load_seconds(master_db.reader db)
         {
             var secs = new Dictionary<int, int>();
-            string path = Path.Combine(datapack, "song_seconds.json");
+            string path = Path.Combine(config.datapack_path, "song_seconds.json");
             if (!File.Exists(path)) return secs;
             var wrapper = JsonUtility.FromJson<seconds_wrapper>(File.ReadAllText(path));
             foreach (var it in wrapper.items) secs[it.id] = it.seconds;

@@ -24,28 +24,24 @@ namespace UV2.Data
         public const int TYPE_CUTT = 0;
         public const int TYPE_STAGE = 1;
 
-        public static List<livesettings_row> load(int music_id, string datapack)
+        // parses the csv text of one song's livesettings asset.
+        public static List<livesettings_row> parse_csv(string csv)
         {
-            string path = Path.Combine(datapack, "livesettings", $"{music_id}.txt");
             var rows = new List<livesettings_row>();
-            if (!File.Exists(path))
-            {
-                Debug.LogError($"[livesettings] missing {path}");
-                return rows;
-            }
+            if (string.IsNullOrEmpty(csv)) return rows;
 
-            string[] lines = File.ReadAllLines(path);
+            string[] lines = csv.Replace("\r\n", "\n").Split('\n');
             for (int i = 0; i < lines.Length; i++)
             {
-                string line = lines[i].TrimEnd('\r');
+                string line = lines[i];
                 if (i == 0 || line.Length == 0) continue;
                 string[] cells = line.Split(',');
-                if (cells.Length < 2) continue;
+                if (cells.Length < 3) continue;
 
                 var r = new livesettings_row();
                 r.id = int.Parse(cells[0]);
                 r.type = int.Parse(cells[1]);
-                if (cells.Length > 2) r.param1 = cells[2];
+                r.param1 = cells[2];
                 if (cells.Length > 3) r.param2 = cells[3];
                 if (cells.Length > 4) r.param3 = cells[4];
                 if (cells.Length > 5) r.param4 = cells[5];

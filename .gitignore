@@ -22,8 +22,9 @@ MemoryCaptures/
 .DS_Store
 Thumbs.db
 
-# game-derived data pack (never in the public repo)
-Assets/StreamingAssets/data/
+# game-derived data pack (never in the public repo; song_seconds.json IS tracked)
+Assets/StreamingAssets/data/*
+!Assets/StreamingAssets/data/song_seconds.json
 datapack/
 
 # working docs stay local for now
@@ -37,3 +38,4 @@ uv2/
 *.plan.md
 WORKLOG.md
 AGENT_HANDOFF.md
+Config.json

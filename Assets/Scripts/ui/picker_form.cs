@@ -121,9 +121,8 @@ namespace UV2.UI
                 if (_selected_song != null && _selected_song.music_id == s.music_id)
                     row.GetComponent<Image>().color = ui_theme.row_selected;
 
-                string jacket_path = Path.Combine(config.datapack_path, "jacket", $"{s.music_id}.png");
-                var sprite = ui_theme.load_sprite(jacket_path);
-                if (sprite != null)
+                var jacket_img = row.gameObject.transform.Find("jacket");
+                if (jacket_img == null && s.jacket != null)
                 {
                     var jacket_rect = new GameObject("jacket", typeof(RectTransform), typeof(Image)).GetComponent<RectTransform>();
                     jacket_rect.SetParent(row, false);
@@ -132,7 +131,7 @@ namespace UV2.UI
                     jacket_rect.anchoredPosition = new Vector2(36, 0);
                     jacket_rect.sizeDelta = new Vector2(52, 52);
                     var jimg = jacket_rect.GetComponent<Image>();
-                    jimg.sprite = sprite;
+                    jimg.sprite = Sprite.Create(s.jacket, new Rect(0, 0, s.jacket.width, s.jacket.height), new Vector2(0.5f, 0.5f), 100f);
                     jimg.preserveAspect = true;
                     jimg.raycastTarget = false;
                 }
@@ -189,13 +188,19 @@ namespace UV2.UI
 
             for (int position = 0; position < count; position++)
             {
+                // mirror ordering like the explorer: position 0 is center, even steps right, odd steps left.
+                int slot_index = position_to_index(position, pivot);
                 var slot = ui_theme.panel(grid, $"slot_{position}", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, ui_theme.panel_bg);
+                slot.SetSiblingIndex(slot_index);
                 slot.GetComponent<Image>().raycastTarget = true;
                 slot.gameObject.AddComponent<Button>().onClick.AddListener(() => open_chara_popup(position));
 
                 int chara = slot_chara(position + 1);
                 int dress = slot_dress(position + 1);
-                string label = chara > 0 && _chara_by_id.TryGetValue(chara, out var ch) ? ch.name : "pick a member";
+                string label;
+                if (chara == 0) label = "mob (audience filler)";
+                else if (chara > 0 && _chara_by_id.TryGetValue(chara, out var ch)) label = ch.name;
+                else label = "pick a member";
                 string dress_label = dress > 0 ? $"dress {dress}" : "";
                 var name_txt = ui_theme.make_text_stretch(slot, "name", label, 15, ui_theme.text_main, TextAnchor.MiddleCenter);
                 name_txt.GetComponent<RectTransform>().offsetMin = new Vector2(0, 30);
@@ -222,6 +227,14 @@ namespace UV2.UI
         {
             if (_picked_dress.TryGetValue(position, out int picked)) return picked;
             return _rules.default_dress.GetValueOrDefault(position, -1);
+        }
+
+        // the explorer's center-out ordering: position 0 is center, even steps go right, odd go left.
+        private static int position_to_index(int position, int pivot)
+        {
+            if (position == 0) return pivot;
+            if (position % 2 == 0) return pivot + position / 2;
+            return pivot - (position + 1) / 2;
         }
 
         private void save_selection()
@@ -281,19 +294,36 @@ namespace UV2.UI
                     pool = pool.Where(c => c.name.Contains(filter) || c.chara_id.ToString().Contains(filter)).ToList();
 
                 float row_h = 56f;
-                content.sizeDelta = new Vector2(0, pool.Count * row_h);
+                int total = pool.Count + 1;
+                content.sizeDelta = new Vector2(0, total * row_h);
+
+                // mob filler (chara id 0) is a valid pick per the game's own unit setup.
+                var mob_row = ui_theme.panel(content, "chara_0", new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, -row_h), new Vector2(0, 0), ui_theme.panel_bg_alt);
+                mob_row.GetComponent<Image>().raycastTarget = true;
+                int captured_position = position;
+                mob_row.gameObject.AddComponent<Button>().onClick.AddListener(() =>
+                {
+                    _picked_chara[captured_position + 1] = 0;
+                    _picked_dress[captured_position + 1] = _selected_song.default_mob_dress;
+                    Debug.Log($"[picker] slot {captured_position + 1} <- mob filler (dress {_selected_song.default_mob_dress})");
+                    Destroy(popup);
+                    build_slot_grid();
+                });
+                ui_theme.make_text(mob_row, "name", "mob (audience filler)", 18, ui_theme.text_main).GetComponent<RectTransform>().anchoredPosition = new Vector2(16, -14);
+                ui_theme.make_text(mob_row, "meta", "id 0   leaves the slot as stage filler", 13, ui_theme.text_dim).GetComponent<RectTransform>().anchoredPosition = new Vector2(16, -36);
+
                 for (int i = 0; i < pool.Count; i++)
                 {
                     var ch = pool[i];
-                    var row = ui_theme.panel(content, $"chara_{ch.chara_id}", new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, -(i + 1) * row_h), new Vector2(0, -i * row_h), i % 2 == 0 ? ui_theme.panel_bg : ui_theme.panel_bg_alt);
+                    var row = ui_theme.panel(content, $"chara_{ch.chara_id}", new Vector2(0, 1), new Vector2(1, 1), new Vector2(0, -(i + 2) * row_h), new Vector2(0, -(i + 1) * row_h), i % 2 == 0 ? ui_theme.panel_bg : ui_theme.panel_bg_alt);
                     row.GetComponent<Image>().raycastTarget = true;
-                    int captured_position = position;
+                    int row_position = position;
                     row.gameObject.AddComponent<Button>().onClick.AddListener(() =>
                     {
-                        _picked_chara[captured_position + 1] = ch.chara_id;
+                        _picked_chara[row_position + 1] = ch.chara_id;
                         int dress = ch.live_dress_ids.Count > 0 ? ch.live_dress_ids[0] : -1;
-                        _picked_dress[captured_position + 1] = dress;
-                        Debug.Log($"[picker] slot {captured_position + 1} <- chara {ch.chara_id} ({ch.name}) dress {dress}");
+                        _picked_dress[row_position + 1] = dress;
+                        Debug.Log($"[picker] slot {row_position + 1} <- chara {ch.chara_id} ({ch.name}) dress {dress}");
                         Destroy(popup);
                         build_slot_grid();
                     });
