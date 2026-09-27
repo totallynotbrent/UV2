@@ -122,14 +122,44 @@ and the three member tables:
 
 ## phase 1 app design
 
-deliberately boring:
+two windows, like the umamusume explorer's flow: a picker window first, then
+the concert window.
+
+### window 1 — picker (modeled on the explorer's song -> unit setup flow)
+
+the interaction pattern, not the code, comes from the explorer's
+UnitSetupForm/CharacterSelectForm pair (his own repo, read for orientation):
+
+1. song list: the 61 concerts, searchable, showing jacket art
+   (`live/jacket/jacket_icon_l_{music_id}`), title, member count, length
+2. choose a song -> character grid: `live_member_number` slots laid out like
+   stage positions (the explorer mirrors slot i and pivot at characterCount/2)
+3. each slot: click to open a character picker filtered by
+   live_permission_data for the song (id 0 = mob/audience filler, the explorer
+   treats 0 as a valid pick), default filled from live_recommend_formation or
+   live_fix_member_data
+4. dress per slot: default from live_data (default_main_dress /
+   backdancer_dress), overridable per slot from the character's use_live
+   outfit list
+
+selection state saves to json next to the app (song id + per-slot
+chara/dress) so the concert window and later phases read a stable handoff.
+
+### window 2 — concert window (phase 2 surface, stub in phase 1)
+
+the live concert window the picker launches. phase 1 ships it as an empty
+shell bound to the selection json so the handoff is exercised end to end:
+window 2 opens, reads the selection, and displays what it loaded (song title,
+member list, stage id) instead of rendering. timeline, stage, and audio land
+in later phases per the decode backlog.
+
+### module layout
 
 ```
 assets/Scripts/
-  app/            entry, one scene, ui wiring
+  app/            entry, window wiring, selection json io
   data/
-    master_db.cs      sqlite reader over master.mdb (mono.data.sqlite or
-                      the game's own sqlite pattern; see open questions)
+    master_db.cs      sqlite reader over master.mdb
     manifest.cs       decrypted-manifest name lookup (name -> bundle file)
     livesettings.cs   csv row model for out/livesettings/<sid>.txt
   concert/
@@ -137,12 +167,14 @@ assets/Scripts/
     chara_catalog.cs  172-row character list + outfit filter (use_live)
     song_chara_rules.cs  member count, permission filter, defaults
   ui/
-    song_list_ui.cs   scroll list of the 61
-    chara_pick_ui.cs  per-slot pickers for the chosen song
+    picker_form.cs     window 1: song list + slot grid + pick popups
+    chara_pick_ui.cs   the per-slot character picker popup
+    concert_window.cs  window 2 shell: reads selection, renders a summary
 ```
 
-two screens, five data files, no timeline code. the ui is a list and a grid;
-every list cell renders from catalog objects, nothing hardcoded.
+two windows, five data files, no timeline code. every list cell renders from
+catalog objects, nothing hardcoded.
+
 
 ## open questions for the il2 agent
 
