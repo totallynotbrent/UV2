@@ -9,7 +9,13 @@ namespace UV2.Data
     // reads the game's sqlcipher meta db for the asset rows phase 1 needs.
     public static class meta_reader
     {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        private const string DLL = "sqlite3mc_x64";
+#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+        private const string DLL = "sqlite3mc_mac";
+#else
         private const string DLL = "sqlite3mc";
+#endif
 
         private const int SQLITE_OK = 0;
         private const int SQLITE_ROW = 100;
