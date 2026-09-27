@@ -22,9 +22,14 @@ MemoryCaptures/
 .DS_Store
 Thumbs.db
 
+# game-derived data pack (never in the public repo)
+Assets/StreamingAssets/data/
+datapack/
+
 # working docs stay local for now
 docs/
 research/
+uv2/
 
 # agent scratch
 .hermes/
