@@ -33,9 +33,7 @@ research/
 uv2/
 
 # agent scratch
-.hermes/
-.agents/
-*.plan.md
+.plan.md
 WORKLOG.md
 AGENT_HANDOFF.md
 Config.json
