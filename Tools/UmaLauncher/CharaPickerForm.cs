@@ -13,6 +13,7 @@ namespace UmaLauncher
         private readonly Dictionary<int, string> dressNames;
         private readonly List<DressData> liveDresses;
         private readonly List<int> allowed;
+        private readonly Dictionary<int, Image?> portraits = [];
 
         public int SelectedChara { get; private set; }
         public int SelectedDress { get; private set; } = -1;
@@ -45,6 +46,9 @@ namespace UmaLauncher
 
             charaList.Dock = DockStyle.Fill;
             charaList.IntegralHeight = false;
+            charaList.DrawMode = DrawMode.OwnerDrawFixed;
+            charaList.ItemHeight = 52;
+            charaList.DrawItem += (s, e) => DrawCharaRow(e);
             charaList.SelectedIndexChanged += (s, e) => RefreshDresses();
             root.Controls.Add(charaList, 0, 1);
 
@@ -74,6 +78,40 @@ namespace UmaLauncher
                     }
                 }
             }
+        }
+
+        // character portrait from the charicons folder exported by the player.
+        private Image? PortraitFor(int charaId)
+        {
+            if (portraits.TryGetValue(charaId, out Image? cached)) return cached;
+            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "charicons", charaId + ".png");
+            Image? img = null;
+            if (File.Exists(path))
+            {
+                try { img = Image.FromFile(path); }
+                catch { img = null; }
+            }
+            portraits[charaId] = img!;
+            return img;
+        }
+
+        // owner-drawn member row: portrait on the left, name over id.
+        private void DrawCharaRow(DrawItemEventArgs e)
+        {
+            e.DrawBackground();
+            if (e.Index < 0) return;
+            if (charaList.Items[e.Index] is not CharaEntry entry) return;
+
+            Image? portrait = PortraitFor(entry.Id);
+            if (portrait is not null)
+                e.Graphics.DrawImage(portrait, e.Bounds.Left + 6, e.Bounds.Top + 2, 48, 48);
+
+            bool selected = e.State.HasFlag(DrawItemState.Selected);
+            using var nameBrush = new SolidBrush(selected ? SystemColors.HighlightText : SystemColors.ControlText);
+            using var dimBrush = new SolidBrush(SystemColors.GrayText);
+            e.Graphics.DrawString(entry.Name, Font, nameBrush, e.Bounds.Left + 62, e.Bounds.Top + 14);
+            e.Graphics.DrawString(entry.Id.ToString(), Font, dimBrush, e.Bounds.Left + 62, e.Bounds.Top + 32);
+            if (selected) e.DrawFocusRectangle();
         }
 
         private void RefreshList(string filter)

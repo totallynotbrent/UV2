@@ -1,3 +1,4 @@
+using System.Drawing;
 using System.Diagnostics;
 using System.Text;
 
@@ -20,6 +21,47 @@ namespace UmaLauncher
 
         private LiveData? selectedSong;
         private readonly List<SlotPick> slots = [];
+        private readonly Dictionary<int, Image> jacketCache = [];
+
+        // jacket thumbnails exported by the player's -dumpjackets mode.
+        private Image? JacketFor(int musicId)
+        {
+            if (jacketCache.TryGetValue(musicId, out Image? cached)) return cached;
+            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "jackets", musicId + ".png");
+            Image? img = null;
+            if (File.Exists(path))
+            {
+                try { img = Image.FromFile(path); }
+                catch { img = null; }
+            }
+            jacketCache[musicId] = img!;
+            return img;
+        }
+
+        // the player exports jacket art and character portraits on first run so the ui can show them.
+        private void EnsureIcons()
+        {
+            string base_dir = AppDomain.CurrentDomain.BaseDirectory;
+            string jacket_dir = Path.Combine(base_dir, "jackets");
+            string icon_dir = Path.Combine(base_dir, "charicons");
+            bool jackets_ok = Directory.Exists(jacket_dir) && Directory.EnumerateFiles(jacket_dir, "*.png").Any();
+            bool icons_ok = Directory.Exists(icon_dir) && Directory.EnumerateFiles(icon_dir, "*.png").Any();
+            if (jackets_ok && icons_ok) return;
+            string exe = Path.Combine(base_dir, "UV2.exe");
+            if (!File.Exists(exe)) return;
+            try
+            {
+                using var proc = Process.Start(new ProcessStartInfo
+                {
+                    FileName = exe,
+                    Arguments = "-dumpicons -batchmode",
+                    WorkingDirectory = base_dir,
+                    UseShellExecute = false
+                });
+                proc?.WaitForExit(180000);
+            }
+            catch { }
+        }
 
         public MainForm()
         {
@@ -31,8 +73,14 @@ namespace UmaLauncher
             try
             {
                 Db.Open(Config.MainPath);
-                foreach (var s in Db.Songs()) songs[s.MusicId] = s;
+                foreach (var s in Db.Songs())
+                {
+                    s.DisplayTitle = "";
+                    songs[s.MusicId] = s;
+                }
                 titles = Db.Titles();
+                foreach (var s in songs.Values)
+                    s.DisplayTitle = titles.GetValueOrDefault(s.MusicId, "");
                 charaNames = Db.CharaNames();
                 dressNames = Db.DressNames();
                 liveDresses = Db.LiveDresses();
@@ -44,6 +92,7 @@ namespace UmaLauncher
             }
 
             BuildLayout();
+            EnsureIcons();
             RefreshSongs("");
         }
 
@@ -61,6 +110,9 @@ namespace UmaLauncher
             left.Controls.Add(searchBox, 0, 0);
             songList.Dock = DockStyle.Fill;
             songList.IntegralHeight = false;
+            songList.DrawMode = DrawMode.OwnerDrawFixed;
+            songList.ItemHeight = 56;
+            songList.DrawItem += (s, e) => DrawSongRow(e);
             songList.SelectedIndexChanged += (s, e) => SelectSong(songList.SelectedItem as LiveData);
             left.Controls.Add(songList, 0, 1);
             root.Controls.Add(left, 0, 0);
@@ -103,9 +155,25 @@ namespace UmaLauncher
             }
         }
 
-        protected override void OnFontChanged(EventArgs e)
+        // owner-drawn song row: jacket thumbnail, then title over id.
+        private void DrawSongRow(DrawItemEventArgs e)
         {
-            base.OnFontChanged(e);
+            e.DrawBackground();
+            if (e.Index < 0 || e.State.HasFlag(DrawItemState.Selected)) e.DrawFocusRectangle();
+            if (e.Index < 0) return;
+            var song = songList.Items[e.Index] as LiveData;
+            if (song is null) return;
+
+            Image? jacket = JacketFor(song.MusicId);
+            if (jacket is not null)
+                e.Graphics.DrawImage(jacket, e.Bounds.Left + 6, e.Bounds.Top + 4, 48, 48);
+
+            bool selected = e.State.HasFlag(DrawItemState.Selected);
+            using var titleBrush = new SolidBrush(selected ? SystemColors.HighlightText : SystemColors.ControlText);
+            using var dimBrush = new SolidBrush(SystemColors.GrayText);
+            string title = string.IsNullOrEmpty(song.DisplayTitle) ? "music " + song.MusicId : song.DisplayTitle;
+            e.Graphics.DrawString(title, Font, titleBrush, e.Bounds.Left + 64, e.Bounds.Top + 16);
+            e.Graphics.DrawString("id " + song.MusicId + "   " + song.LiveMemberNumber + " members", Font, dimBrush, e.Bounds.Left + 64, e.Bounds.Top + 36);
         }
 
         // the list shows "1006 Make debut!" via the item's ToString.
@@ -195,10 +263,11 @@ namespace UmaLauncher
             json.AppendLine($"    \"member_count\": {slots.Count},");
             json.AppendLine("    \"stage_id\": -1,");
             json.AppendLine("    \"slots\": [");
-            for (int i = 0; i < slots.Count; i++)
+            var ordered_slots = slots.OrderBy(s => s.Position).ToList();
+            for (int i = 0; i < ordered_slots.Count; i++)
             {
-                string comma = i < slots.Count - 1 ? "," : "";
-                json.AppendLine($"        {{\"position\": {slots[i].Position + 1}, \"chara_id\": {slots[i].CharaId}, \"dress_id\": {slots[i].DressId}}}{comma}");
+                string comma = i < ordered_slots.Count - 1 ? "," : "";
+                json.AppendLine($"        {{\"position\": {ordered_slots[i].Position + 1}, \"chara_id\": {ordered_slots[i].CharaId}, \"dress_id\": {ordered_slots[i].DressId}}}{comma}");
             }
             json.AppendLine("    ]");
             json.AppendLine("}");

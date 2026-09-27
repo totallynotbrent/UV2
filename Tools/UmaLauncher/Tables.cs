@@ -12,6 +12,11 @@ namespace UmaLauncher
         [Column("default_main_dress"), NotNull] public int DefaultMainDress { get; set; }
         [Column("backdancer_dress"), NotNull] public int BackdancerDress { get; set; }
         [Column("has_live"), NotNull] public int HasLive { get; set; }
+
+        public string DisplayTitle { get; set; } = "";
+
+        public override string ToString() =>
+            string.IsNullOrEmpty(DisplayTitle) ? $"music {MusicId}" : $"{DisplayTitle}  ({MusicId})";
     }
 
     [Table("text_data")]

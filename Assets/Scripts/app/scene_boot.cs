@@ -12,6 +12,17 @@ namespace UV2.App
 
         private IEnumerator Start()
         {
+            var pre_args = System.Environment.GetCommandLineArgs();
+            bool dump_icons = false;
+            foreach (var a in pre_args) if (a == "-dumpicons") dump_icons = true;
+
+            if (dump_icons)
+            {
+                scene_bootstrap.dump_icons();
+                Application.Quit();
+                yield break;
+            }
+
             if (method_name == "build_concert_scene") scene_bootstrap.build_concert_scene();
             else Debug.LogError($"[scene_boot] unknown bootstrap: {method_name}");
 
