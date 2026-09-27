@@ -22,11 +22,13 @@ MemoryCaptures/
 .DS_Store
 Thumbs.db
 
+# working docs stay local for now
+docs/
+research/
+
 # agent scratch
 .hermes/
 .agents/
-.research/
-research/
 *.plan.md
 WORKLOG.md
 AGENT_HANDOFF.md
