@@ -6,7 +6,7 @@ using UV2.Data;
 
 namespace UV2.UI
 {
-    // window 2 shell: reads the selection json and shows what it loaded.
+    // window 2 shell: reads the selection json the explorer wrote and shows what it loaded.
     public class concert_window : MonoBehaviour
     {
         public void open()
@@ -18,8 +18,7 @@ namespace UV2.UI
             var sel = selection_store.load();
             if (sel == null)
             {
-                ui_theme.make_text(root, "empty", "no selection saved.\nopen the picker first and press the launch button.", 18, ui_theme.text_main).GetComponent<RectTransform>().anchoredPosition = new Vector2(40, -40);
-                add_back_button(root);
+                ui_theme.make_text(root, "empty", "no selection file found.\nlaunch a concert from the explorer's unit setup window.", 18, ui_theme.text_main).GetComponent<RectTransform>().anchoredPosition = new Vector2(40, -40);
                 return;
             }
 
@@ -44,17 +43,7 @@ namespace UV2.UI
                 y -= 26;
             }
 
-            ui_theme.make_text(root, "note", "phase 1: selection summary only. stage, audio and timeline land in later phases.", 14, ui_theme.text_dim).GetComponent<RectTransform>().anchoredPosition = new Vector2(40, y - 20);
-            add_back_button(root);
-        }
-
-        private static void add_back_button(Transform root)
-        {
-            var back = ui_theme.make_button(root, "back", "back to picker", new Vector2(180, 40), () =>
-                UnityEngine.SceneManagement.SceneManager.LoadScene("Picker"));
-            var rect = back.GetComponent<RectTransform>();
-            rect.anchorMin = rect.anchorMax = new Vector2(0, 0);
-            rect.anchoredPosition = new Vector2(110, 40);
+            ui_theme.make_text(root, "note", "stage, audio and timeline land in the next phases.", 14, ui_theme.text_dim).GetComponent<RectTransform>().anchoredPosition = new Vector2(40, y - 20);
         }
     }
 }

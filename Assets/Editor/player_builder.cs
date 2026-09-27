@@ -8,7 +8,7 @@ namespace UV2Build
     {
         public static void BuildWindows()
         {
-            var scenes = new[] { "Assets/Scenes/Picker.unity", "Assets/Scenes/Concert.unity" };
+            var scenes = new[] { "Assets/Scenes/Concert.unity" };
             var opts = new BuildPlayerOptions
             {
                 scenes = scenes,
