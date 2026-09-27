@@ -1,0 +1,117 @@
+name: Build and release Windows IL2CPP
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "experimental"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional release tag, for example v0.1.0 (leave empty for build only)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: unity-windows-il2cpp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows x64 IL2CPP
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Verify Unity license secrets
+        shell: pwsh
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        run: |
+          $missing = @()
+          if ([string]::IsNullOrWhiteSpace($env:UNITY_EMAIL)) { $missing += "UNITY_EMAIL" }
+          if ([string]::IsNullOrWhiteSpace($env:UNITY_PASSWORD)) { $missing += "UNITY_PASSWORD" }
+          if ($missing.Count -gt 0) {
+            Write-Error "Missing repository secrets: $($missing -join ', '). Personal license needs UNITY_EMAIL + UNITY_PASSWORD."
+            exit 1
+          }
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache Unity Library
+        uses: actions/cache@v4
+        with:
+          path: Library
+          key: Library-${{ runner.os }}-Unity-2022.3.62f2-StandaloneWindows64
+          restore-keys: |
+            Library-${{ runner.os }}-Unity-2022.3.62f2-StandaloneWindows64
+
+      - name: Cache IL2CPP incremental build (Bee)
+        uses: actions/cache@v4
+        with:
+          path: Library/bee_cache
+          key: il2cpp-bee-${{ runner.os }}-Unity-2022.3.62f2-StandaloneWindows64
+          restore-keys: |
+            il2cpp-bee-${{ runner.os }}-Unity-2022.3.62f2-StandaloneWindows64
+
+      - name: Build Windows player with IL2CPP
+        uses: game-ci/unity-builder@v4.8.2
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: .
+          unityVersion: 2022.3.62f2
+          targetPlatform: StandaloneWindows64
+          buildName: UV2
+          buildsPath: build
+          allowDirtyBuild: true
+          versioning: Semantic
+
+      - name: Package Windows build
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "build/StandaloneWindows64" -Exclude "UV2_BackUpThisFolder_ButDontShipItWithYourGame","GameAssembly.pdb" | Compress-Archive -DestinationPath "UV2-Windows-x64.zip" -Force
+
+      - name: Write release digest
+        shell: pwsh
+        run: |
+          $hash = Get-FileHash "UV2-Windows-x64.zip" -Algorithm SHA256
+          ("{0}  UV2-Windows-x64.zip" -f $hash.Hash.ToLower()) | Set-Content -Path "UV2-Windows-x64.zip.sha256" -Encoding ascii
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: UV2-Windows-x64
+          path: |
+            UV2-Windows-x64.zip
+            UV2-Windows-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/experimental'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/heads/experimental ]]; then
+            NAME="experimental"
+            gh release delete "$NAME" --yes --cleanup-tag 2>/dev/null || true
+            NOTE=$(git log --format='%s' -1 -- . ':!.github')
+            gh release create "$NAME" "UV2-Windows-x64.zip" "UV2-Windows-x64.zip.sha256" --target "$GITHUB_SHA" --prerelease --title "$NAME" --notes "$NOTE"
+          else
+            gh release create "$RELEASE_TAG" "UV2-Windows-x64.zip" "UV2-Windows-x64.zip.sha256" --title "$RELEASE_TAG" --notes ""
+          fi
