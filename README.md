@@ -1,8 +1,8 @@
 # UV2
 
 A live concert viewer for Umamusume: Pretty Derby, built from scratch. The
-UmaExplorer desktop app is the front end: you pick a song and its cast there,
-then the launch button starts this viewer with your selection.
+UmaLauncher desktop helper is the front end: you pick a song and its cast
+there, then the launch button starts this viewer with your selection.
 
 This repository only contains the concert player. It reads the song, stage,
 and character data from your own game installation at runtime. Nothing from
@@ -12,16 +12,17 @@ the game ships with the exe.
 
 - Windows x64
 - Umamusume: Pretty Derby installed (a full, updated install)
-- UmaExplorer with the concert launch button, sitting next to UV2.exe or in a
-  UV2 folder beside it
+- UmaLauncher runs from the same folder as UV2.exe
 
 ## How it works
 
-The explorer writes `selection.json` (song id, stage id, and the cast with
-outfits) next to UV2.exe and starts it. The viewer reads that file, resolves
-the song and characters from the game database and asset bundles, and opens
-the concert window. The stage, audio, and timeline arrive in later phases;
-for now the window confirms what it loaded.
+UmaLauncher reads the song, character, and outfit tables from the game
+database, you pick the cast, and the launch button writes `selection.json`
+(song id and the cast with outfits) next to UV2.exe and starts it. The
+viewer reads that file, resolves the stage from the song's settings at
+runtime, and opens the concert window. The stage geometry, audio, and
+timeline arrive in later phases; for now the window confirms what it
+loaded.
 
 `Config.json` is generated on first run and points at the game's
 `umamusume_Data/Persistent` folder if the default is wrong.
@@ -37,6 +38,8 @@ Assets/
     ui/             concert window, ui factory
   Editor/           scene baker and batch build entry
   Plugins/          sqlite natives for windows/linux
+Tools/
+  UmaLauncher/      winforms front end: song list, cast picker, updater
 ProjectSettings/     unity 2022.3.62, IL2CPP standalone
 ```
 
@@ -44,14 +47,14 @@ ProjectSettings/     unity 2022.3.62, IL2CPP standalone
 
 ```mermaid
 flowchart LR
-    explorer[UmaExplorer<br/>song + cast selection]
+    launcher[UmaLauncher<br/>song + cast selection]
     json[selection.json]
     master[master.mdb<br/>song and character tables]
     meta[meta db<br/>bundle name, file hash, key]
     dat[dat/xx/hash<br/>encrypted asset bundles]
     concert[Concert window]
 
-    explorer --> json --> concert
+    launcher --> json --> concert
     master --> concert
     meta --> concert
     dat --> concert

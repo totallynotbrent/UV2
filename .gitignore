@@ -37,3 +37,8 @@ uv2/
 WORKLOG.md
 AGENT_HANDOFF.md
 Config.json
+
+# launcher build outputs
+Tools/UmaLauncher/bin/
+Tools/UmaLauncher/obj/
+launcher_out/

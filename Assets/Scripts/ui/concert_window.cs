@@ -23,6 +23,21 @@ namespace UV2.UI
             }
 
             ui_theme.make_text(root, "title", sel.title, 30, ui_theme.text_main).GetComponent<RectTransform>().anchoredPosition = new Vector2(40, -40);
+
+            // the launcher only knows the song and cast; the stage resolves from the install here.
+            if (sel.stage_id < 0)
+            {
+                using var sdb = master_db.reader.open(config.master_db_path);
+                using var smeta = meta_reader.reader.open(config.meta_db_path);
+                var entry = song_catalog.load(sdb, smeta, config.data_root)
+                    .FirstOrDefault(s => s.music_id == sel.music_id);
+                if (entry != null && entry.stage_id > 0)
+                {
+                    sel.stage_id = entry.stage_id;
+                    selection_store.save(sel);
+                }
+            }
+
             ui_theme.make_text(root, "meta", $"music {sel.music_id}   stage {sel.stage_id}   {sel.member_count} members", 17, ui_theme.text_dim).GetComponent<RectTransform>().anchoredPosition = new Vector2(40, -76);
 
             var db = master_db.reader.open(config.master_db_path);
@@ -34,16 +49,28 @@ namespace UV2.UI
                 db.Dispose();
             }
 
+            // two columns so any cast size fits the window; 9 rows per column.
+            int per_column = 9;
+            int column = 0;
             float y = -120;
             foreach (var slot in sel.slots)
             {
                 string name = names.TryGetValue(slot.chara_id, out var n) ? n : slot.chara_id > 0 ? $"chara {slot.chara_id}" : "empty";
                 string line = $"pos {slot.position}: {name}" + (slot.dress_id > 0 ? $"   (dress {slot.dress_id})" : "");
-                ui_theme.make_text(root, $"slot_{slot.position}", line, 17, ui_theme.text_main).GetComponent<RectTransform>().anchoredPosition = new Vector2(48, y);
+                float x = 48 + column * 300;
+                ui_theme.make_text(root, $"slot_{slot.position}", line, 17, ui_theme.text_main).GetComponent<RectTransform>().anchoredPosition = new Vector2(x, y);
                 y -= 26;
+                if (slot.position % per_column == 0)
+                {
+                    column++;
+                    y = -120;
+                }
             }
 
-            ui_theme.make_text(root, "note", "stage, audio and timeline land in the next phases.", 14, ui_theme.text_dim).GetComponent<RectTransform>().anchoredPosition = new Vector2(40, y - 20);
+            var note = ui_theme.make_text(root, "note", "stage, audio and timeline land in the next phases.", 14, ui_theme.text_dim);
+            var note_rect = note.GetComponent<RectTransform>();
+            note_rect.anchorMin = note_rect.anchorMax = note_rect.pivot = new Vector2(0, 0);
+            note_rect.anchoredPosition = new Vector2(40, 28);
         }
     }
 }

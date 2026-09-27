@@ -78,9 +78,16 @@ jobs:
           allowDirtyBuild: true
           versioning: Semantic
 
+      - name: Build UmaLauncher
+        shell: pwsh
+        run: |
+          dotnet publish Tools/UmaLauncher/UmaLauncher.csproj -c Release -r win-x64 --self-contained false -o launcher_out
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
       - name: Package Windows build
         shell: pwsh
         run: |
+          Copy-Item -Path "launcher_out/*" -Destination "build/StandaloneWindows64/" -Recurse -Force
           Get-ChildItem -Path "build/StandaloneWindows64" -Exclude "UV2_BackUpThisFolder_ButDontShipItWithYourGame","GameAssembly.pdb" | Compress-Archive -DestinationPath "UV2-Windows-x64.zip" -Force
 
       - name: Write release digest
