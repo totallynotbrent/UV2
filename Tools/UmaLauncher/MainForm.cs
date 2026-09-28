@@ -16,12 +16,29 @@ namespace UmaLauncher
         private readonly ListBox songList = new();
         private readonly TextBox searchBox = new();
         private readonly FlowLayoutPanel slotPanel = new();
-        private readonly Button launchButton = new() { Text = "Launch concert", Enabled = false, Height = 40, Dock = DockStyle.Fill };
+        private readonly Button launchButton = new() { Text = LanguageManager.T("launch"), Enabled = false, Height = 40, Dock = DockStyle.Fill };
+        private Button? updateButtonField;
         private readonly Label songInfo = new();
 
         private LiveData? selectedSong;
         private readonly List<SlotPick> slots = [];
         private readonly Dictionary<int, Image> jacketCache = [];
+        private readonly Dictionary<int, Image?> portraitCache = [];
+
+        // character portrait from the charicons folder exported by the player.
+        internal Image? PortraitFor(int charaId)
+        {
+            if (portraitCache.TryGetValue(charaId, out Image? cached)) return cached;
+            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "charicons", charaId + ".png");
+            Image? img = null;
+            if (File.Exists(path))
+            {
+                try { img = Image.FromFile(path); }
+                catch { img = null; }
+            }
+            portraitCache[charaId] = img!;
+            return img;
+        }
 
         // jacket thumbnails exported by the player's -dumpjackets mode.
         private Image? JacketFor(int musicId)
@@ -75,12 +92,13 @@ namespace UmaLauncher
                 Db.Open(Config.MainPath);
                 foreach (var s in Db.Songs())
                 {
+                    if (s.HasLive != 1) continue;
                     s.DisplayTitle = "";
                     songs[s.MusicId] = s;
                 }
                 titles = Db.Titles();
                 foreach (var s in songs.Values)
-                    s.DisplayTitle = titles.GetValueOrDefault(s.MusicId, "");
+                    s.DisplayTitle = LanguageManager.Name(titles.GetValueOrDefault(s.MusicId, ""));
                 charaNames = Db.CharaNames();
                 dressNames = Db.DressNames();
                 liveDresses = Db.LiveDresses();
@@ -91,6 +109,7 @@ namespace UmaLauncher
                     "\n\n" + ex.Message, "Game data", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
 
+            LanguageManager.Set(Language.Japanese);
             BuildLayout();
             EnsureIcons();
             RefreshSongs("");
@@ -98,14 +117,27 @@ namespace UmaLauncher
 
         private void BuildLayout()
         {
-            TableLayoutPanel root = new() { Dock = DockStyle.Fill, ColumnCount = 2 };
+            TableLayoutPanel root = new() { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 2 };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42F));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58F));
+
+            ComboBox languageBox = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+            languageBox.Items.AddRange(["日本語", "English", "中文"]);
+            languageBox.SelectedIndex = (int)LanguageManager.Current;
+            languageBox.SelectedIndexChanged += (s, e) =>
+            {
+                LanguageManager.Set((Language)languageBox.SelectedIndex);
+                ApplyLanguage();
+            };
+            root.Controls.Add(languageBox, 1, 0);
 
             TableLayoutPanel left = new() { Dock = DockStyle.Fill, RowCount = 2 };
             left.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
             left.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             searchBox.Dock = DockStyle.Fill;
+            searchBox.Text = LanguageManager.T("search");
             searchBox.TextChanged += (s, e) => RefreshSongs(searchBox.Text);
             left.Controls.Add(searchBox, 0, 0);
             songList.Dock = DockStyle.Fill;
@@ -115,7 +147,7 @@ namespace UmaLauncher
             songList.DrawItem += (s, e) => DrawSongRow(e);
             songList.SelectedIndexChanged += (s, e) => SelectSong(songList.SelectedItem as LiveData);
             left.Controls.Add(songList, 0, 1);
-            root.Controls.Add(left, 0, 0);
+            root.Controls.Add(left, 0, 1);
 
             TableLayoutPanel right = new() { Dock = DockStyle.Fill, RowCount = 3 };
             right.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
@@ -132,20 +164,34 @@ namespace UmaLauncher
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F));
             launchButton.Dock = DockStyle.Fill;
             launchButton.Click += (s, e) => Launch();
-            Button updateButton = new() { Text = "Check for update", Dock = DockStyle.Fill };
-            updateButton.Click += (s, e) => Updater.Check(this);
+            updateButtonField = new Button() { Text = LanguageManager.T("check_update"), Dock = DockStyle.Fill };
+            updateButtonField.Click += (s, e) => Updater.Check(this);
             bottom.Controls.Add(launchButton, 0, 0);
-            bottom.Controls.Add(updateButton, 1, 0);
+            bottom.Controls.Add(updateButtonField, 1, 0);
             right.Controls.Add(bottom, 0, 2);
-            root.Controls.Add(right, 1, 0);
+            root.Controls.Add(right, 1, 1);
 
             Controls.Add(root);
+        }
+
+        // re-applies every localized string after a language switch.
+        private void ApplyLanguage()
+        {
+            foreach (var s in songs.Values)
+                s.DisplayTitle = LanguageManager.Name(titles.GetValueOrDefault(s.MusicId, ""));
+            searchBox.Text = LanguageManager.T("search");
+            launchButton.Text = LanguageManager.T("launch");
+            if (updateButtonField is not null) updateButtonField.Text = LanguageManager.T("check_update");
+            foreach (Control c in slotPanel.Controls)
+                if (c is Button b && b.Tag is SlotPick p) b.Text = SlotLabel(p);
+            RefreshSongs(searchBox.Text == LanguageManager.T("search") ? "" : searchBox.Text);
+            if (selectedSong is not null) SelectSong(selectedSong);
         }
 
         private void RefreshSongs(string filter)
         {
             songList.Items.Clear();
-            foreach (var s in songs.Values.OrderBy(x => x.Sort))
+            foreach (var s in songs.Values.OrderBy(x => x.MusicId))
             {
                 string title = titles.GetValueOrDefault(s.MusicId, "music " + s.MusicId);
                 if (filter.Length > 0 &&
@@ -213,21 +259,25 @@ namespace UmaLauncher
 
                 Button slotButton = new()
                 {
-                    Size = new Size(96, 96),
+                    Size = new Size(96, 110),
                     Text = SlotLabel(pick),
+                    TextAlign = ContentAlignment.BottomCenter,
+                    Image = PortraitFor(pick.CharaId),
+                    ImageAlign = ContentAlignment.TopCenter,
                     Tag = pick
                 };
                 slotButton.Click += (s, e) => OpenCharaPicker(pick);
                 slotPanel.Controls.Add(slotButton);
             }
 
-            songInfo.Text = $"{titles.GetValueOrDefault(song.MusicId, "music " + song.MusicId)}  |  {count} members  |  id {song.MusicId}";
+            songInfo.Text = $"{LanguageManager.Name(titles.GetValueOrDefault(song.MusicId, "music " + song.MusicId))}  |  {count} {LanguageManager.T("members")}  |  id {song.MusicId}";
         }
 
         private string SlotLabel(SlotPick pick)
         {
-            string who = pick.CharaId == 0 ? "empty" : charaNames.GetValueOrDefault(pick.CharaId, "chara " + pick.CharaId);
-            string dress = pick.DressId > 0 ? "\n" + dressNames.GetValueOrDefault(pick.DressId, "dress " + pick.DressId) : "";
+            string who = pick.CharaId == 0 ? LanguageManager.T("empty")
+                : LanguageManager.Name(charaNames.GetValueOrDefault(pick.CharaId, "chara " + pick.CharaId));
+            string dress = pick.DressId > 0 ? "\n" + LanguageManager.Name(dressNames.GetValueOrDefault(pick.DressId, "dress " + pick.DressId)) : "";
             return $"pos {pick.Position + 1}\n{who}{dress}";
         }
 
@@ -241,14 +291,18 @@ namespace UmaLauncher
         private void OpenCharaPicker(SlotPick pick)
         {
             if (selectedSong is null) return;
-            using CharaPickerForm picker = new(selectedSong.MusicId, charaNames, dressNames, liveDresses, pick.CharaId, Db.AllowedCharas(selectedSong.MusicId));
+            using CharaPickerForm picker = new(selectedSong.MusicId, charaNames, dressNames, liveDresses, pick.CharaId, Db.AllowedCharas(selectedSong.MusicId), PortraitFor);
             if (picker.ShowDialog(this) != DialogResult.OK) return;
             pick.CharaId = picker.SelectedChara;
             pick.DressId = picker.SelectedDress;
 
             foreach (Control c in slotPanel.Controls)
             {
-                if (c is Button b && b.Tag is SlotPick p && p == pick) b.Text = SlotLabel(pick);
+                if (c is Button b && b.Tag is SlotPick p && p == pick)
+                {
+                    b.Text = SlotLabel(pick);
+                    b.Image = PortraitFor(pick.CharaId);
+                }
             }
         }
 

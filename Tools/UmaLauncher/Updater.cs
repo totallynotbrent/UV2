@@ -1,12 +1,13 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http;
-using System.Reflection;
 using System.Text.Json;
 
 namespace UmaLauncher
 {
-    // checks github for a newer uv2 release and swaps the app folder in place.
+    // checks github for a newer uv2 build and swaps the app folder in place.
+    // the repo ships a rolling prerelease, so the check compares the running
+    // build's commit against the release target instead of version numbers.
     static class Updater
     {
         private const string Repo = "totallynotbrent/UV2";
@@ -17,20 +18,41 @@ namespace UmaLauncher
             DefaultRequestHeaders = { { "User-Agent", "UmaLauncher-Updater" } }
         };
 
+        // the commit this launcher was built from, stamped by CI.
+        private static string? BuildCommit()
+        {
+            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "build.txt");
+            return File.Exists(path) ? File.ReadAllText(path).Trim() : null;
+        }
+
         // runs the flow on a background thread, marshals messages to the parent form.
         public static async void Check(Control parent)
         {
-            Version current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0);
-
             try
             {
-                string body = await http.GetStringAsync($"https://api.github.com/repos/{Repo}/releases/latest");
+                string body = await http.GetStringAsync($"https://api.github.com/repos/{Repo}/releases");
                 using JsonDocument doc = JsonDocument.Parse(body);
                 JsonElement root = doc.RootElement;
 
-                string tag = root.GetProperty("tag_name").GetString() ?? "";
+                JsonElement? release = null;
+                foreach (JsonElement r in root.EnumerateArray())
+                {
+                    if (!r.GetProperty("prerelease").GetBoolean()) continue;
+                    if (r.GetProperty("assets").GetArrayLength() == 0) continue;
+                    release = r;
+                    break;
+                }
+                if (release is null)
+                {
+                    parent.BeginInvoke(() => MessageBox.Show(parent,
+                        "No published build found on github.", LanguageManager.T("update_title"),
+                        MessageBoxButtons.OK, MessageBoxIcon.Information));
+                    return;
+                }
+
+                string target = release.Value.GetProperty("target_commitish").GetString() ?? "";
                 string? url = null;
-                foreach (JsonElement asset in root.GetProperty("assets").EnumerateArray())
+                foreach (JsonElement asset in release.Value.GetProperty("assets").EnumerateArray())
                 {
                     if (asset.GetProperty("name").GetString() == AssetName)
                     {
@@ -39,16 +61,18 @@ namespace UmaLauncher
                     }
                 }
 
-                if (!TryParseTag(tag, out Version? latest) || latest is null || latest <= current || url is null)
+                string mine = BuildCommit() ?? "unknown";
+                if (url is null || target == mine)
                 {
-                    parent.BeginInvoke(() => MessageBox.Show(parent, "You are on the latest build.", "Update check",
+                    parent.BeginInvoke(() => MessageBox.Show(parent,
+                        LanguageManager.T("latest"), LanguageManager.T("update_title"),
                         MessageBoxButtons.OK, MessageBoxIcon.Information));
                     return;
                 }
 
                 DialogResult choice = MessageBox.Show(parent,
-                    $"A newer build is available.\n\nInstalled: {current}\nLatest: {latest}\n\nDownload and install now?",
-                    "Update available", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                    $"{LanguageManager.T("update_available")}\n\n{LanguageManager.T("installed")}: {mine}\n{LanguageManager.T("latest_label")}: {target}\n\n{LanguageManager.T("download_now")}",
+                    LanguageManager.T("update_title"), MessageBoxButtons.YesNo, MessageBoxIcon.Question);
                 if (choice != DialogResult.Yes) return;
 
                 string zipPath = Path.Combine(Path.GetTempPath(), AssetName);
@@ -58,8 +82,9 @@ namespace UmaLauncher
             }
             catch (Exception ex)
             {
-                parent.BeginInvoke(() => MessageBox.Show(parent, "Update check failed: " + ex.Message, "Update check",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning));
+                parent.BeginInvoke(() => MessageBox.Show(parent,
+                    LanguageManager.T("update_failed") + ex.Message,
+                    LanguageManager.T("update_title"), MessageBoxButtons.OK, MessageBoxIcon.Warning));
             }
         }
 
@@ -101,19 +126,6 @@ namespace UmaLauncher
             if (!string.IsNullOrEmpty(exePath))
                 Process.Start(exePath);
             Environment.Exit(0);
-        }
-
-        // vX.Y.Z tags become comparable versions; anything else means no update.
-        private static bool TryParseTag(string tag, out Version? version)
-        {
-            version = null;
-            if (string.IsNullOrEmpty(tag) || !tag.StartsWith('v')) return false;
-            if (Version.TryParse(tag[1..], out Version? parsed))
-            {
-                version = parsed;
-                return true;
-            }
-            return false;
         }
     }
 }

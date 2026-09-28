@@ -83,6 +83,8 @@ jobs:
         run: |
           dotnet publish Tools/UmaLauncher/UmaLauncher.csproj -c Release -r win-x64 --self-contained false -o launcher_out
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          "$env:GITHUB_SHA" | Set-Content -Path "launcher_out/build.txt" -NoNewline
+          Copy-Item -Path "Tools/UmaLauncher/lang" -Destination "launcher_out/lang" -Recurse -Force
 
       - name: Package Windows build
         shell: pwsh

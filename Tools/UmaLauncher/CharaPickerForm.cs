@@ -6,14 +6,14 @@ namespace UmaLauncher
         private readonly ListBox charaList = new();
         private readonly TextBox searchBox = new();
         private readonly ComboBox dressBox = new();
-        private readonly Button okButton = new() { Text = "OK", DialogResult = DialogResult.OK };
-        private readonly Button cancelButton = new() { Text = "Cancel", DialogResult = DialogResult.Cancel };
+        private readonly Button okButton = new();
+        private readonly Button cancelButton = new();
 
         private readonly Dictionary<int, string> charaNames;
         private readonly Dictionary<int, string> dressNames;
         private readonly List<DressData> liveDresses;
         private readonly List<int> allowed;
-        private readonly Dictionary<int, Image?> portraits = [];
+        private readonly Func<int, Image?> portraitLookup;
 
         public int SelectedChara { get; private set; }
         public int SelectedDress { get; private set; } = -1;
@@ -23,14 +23,21 @@ namespace UmaLauncher
             Dictionary<int, string> dressNames,
             List<DressData> liveDresses,
             int currentChara,
-            List<int> allowed)
+            List<int> allowed,
+            Func<int, Image?>? portraitLookup = null)
         {
+            okButton.Text = LanguageManager.T("ok");
+            okButton.DialogResult = DialogResult.OK;
+            cancelButton.Text = LanguageManager.T("cancel");
+            cancelButton.DialogResult = DialogResult.Cancel;
+
+            this.portraitLookup = portraitLookup ?? (id => null);
             this.charaNames = charaNames;
             this.dressNames = dressNames;
             this.liveDresses = liveDresses;
             this.allowed = allowed;
 
-            Text = "Select member";
+            Text = LanguageManager.T("select_member");
             StartPosition = FormStartPosition.CenterParent;
             Size = new Size(420, 620);
 
@@ -80,20 +87,8 @@ namespace UmaLauncher
             }
         }
 
-        // character portrait from the charicons folder exported by the player.
-        private Image? PortraitFor(int charaId)
-        {
-            if (portraits.TryGetValue(charaId, out Image? cached)) return cached;
-            string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "charicons", charaId + ".png");
-            Image? img = null;
-            if (File.Exists(path))
-            {
-                try { img = Image.FromFile(path); }
-                catch { img = null; }
-            }
-            portraits[charaId] = img!;
-            return img;
-        }
+        // character portrait from the shared cache.
+        private Image? PortraitFor(int charaId) => portraitLookup(charaId);
 
         // owner-drawn member row: portrait on the left, name over id.
         private void DrawCharaRow(DrawItemEventArgs e)
@@ -120,11 +115,11 @@ namespace UmaLauncher
             List<CharaEntry> pool = [];
             if (allowed.Count == 0)
             {
-                pool.AddRange(charaNames.Keys.Select(id => new CharaEntry(id, charaNames[id])));
+                pool.AddRange(charaNames.Keys.Select(id => new CharaEntry(id, LanguageManager.Name(charaNames[id]))));
             }
             else
             {
-                pool.AddRange(allowed.Select(id => new CharaEntry(id, charaNames.GetValueOrDefault(id, "chara " + id))));
+                pool.AddRange(allowed.Select(id => new CharaEntry(id, LanguageManager.Name(charaNames.GetValueOrDefault(id, "chara " + id)))));
             }
             foreach (var entry in pool.OrderBy(p => p.Name, StringComparer.CurrentCulture))
             {
@@ -141,7 +136,7 @@ namespace UmaLauncher
             if (charaList.SelectedItem is not CharaEntry entry) return;
             foreach (var dress in liveDresses.Where(d => d.CharaId == entry.Id).OrderBy(d => d.Id))
             {
-                dressBox.Items.Add(new DressEntry(dress.Id, dressNames.GetValueOrDefault(dress.Id, "dress " + dress.Id)));
+                dressBox.Items.Add(new DressEntry(dress.Id, LanguageManager.Name(dressNames.GetValueOrDefault(dress.Id, "dress " + dress.Id))));
             }
             if (dressBox.Items.Count > 0) dressBox.SelectedIndex = 0;
         }
