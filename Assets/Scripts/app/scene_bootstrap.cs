@@ -93,6 +93,40 @@ namespace UV2.App
             }
         }
 
+        // writes the shader bundle's pathID -> name map beside the exe, for offline decoding.
+        public static void dump_shader_map()
+        {
+            try
+            {
+                string base_dir = AppDomain.CurrentDomain.BaseDirectory;
+                using var meta = UV2.Data.meta_reader.reader.open(config.meta_db_path);
+                if (meta == null) { Debug.LogError("[shaders] meta db not found"); return; }
+                var rows = meta.lookup(new HashSet<string> { "shader" });
+                var row = rows.GetValueOrDefault("shader");
+                if (row == null) { Debug.LogError("[shaders] no meta row for bundle 'shader'"); return; }
+
+                var bundle = UV2.Data.game_assets.open(row, config.data_root);
+                if (bundle == null) { Debug.LogError("[shaders] bundle open failed"); return; }
+
+                var sb = new System.Text.StringBuilder();
+                int n = 0;
+                foreach (var path in bundle.GetAllAssetNames())
+                {
+                    var sh = bundle.LoadAsset<Shader>(path);
+                    if (sh == null) continue;
+                    sb.Append(path).Append('\t').Append(sh.name).Append('\n');
+                    n++;
+                }
+                string out_path = System.IO.Path.Combine(base_dir, "shader_name_map.tsv");
+                System.IO.File.WriteAllText(out_path, sb.ToString());
+                Debug.Log($"[shaders] wrote {n} shader entries to {out_path}");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[shaders] dump failed: {e}");
+            }
+        }
+
         // encodes a gpu-resident texture to png by blitting through a render texture.
         private static byte[] encode_png(Texture2D tex)
         {

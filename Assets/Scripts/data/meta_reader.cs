@@ -58,6 +58,7 @@ namespace UV2.Data
             public string hash;
             public long length;
             public long key;
+            public string prereq;
         }
 
         // db handle wrapper so callers can do many lookups without reopening the file.
@@ -88,7 +89,7 @@ namespace UV2.Data
                 var result = new Dictionary<string, asset_row>();
                 foreach (var name in names)
                 {
-                    string sql = $"SELECT n, h, l, e FROM a WHERE n = '{name}'";
+                    string sql = $"SELECT n, h, l, e, d FROM a WHERE n = '{name}'";
                     byte[] sql_bytes = utf8_z(sql);
                     int rc = sqlite3_prepare_v2(_db, sql_bytes, sql_bytes.Length, out IntPtr stmt, IntPtr.Zero);
                     if (rc != SQLITE_OK)
@@ -103,7 +104,8 @@ namespace UV2.Data
                             name = marshal_string(sqlite3_column_text(stmt, 0)),
                             hash = marshal_string(sqlite3_column_text(stmt, 1)),
                             length = sqlite3_column_int64(stmt, 2),
-                            key = sqlite3_column_int64(stmt, 3)
+                            key = sqlite3_column_int64(stmt, 3),
+                            prereq = marshal_string(sqlite3_column_text(stmt, 4))
                         };
                         if (!string.IsNullOrEmpty(row.hash))
                             result[name] = row;
