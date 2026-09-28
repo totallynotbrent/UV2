@@ -100,7 +100,7 @@ namespace UmaLauncher
 
         public MainForm()
         {
-            Text = "UmaLauncher";
+            Text = WindowTitle();
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(1000, 720);
             KeyPreview = true;
@@ -127,7 +127,8 @@ namespace UmaLauncher
                     "\n\n" + ex.Message, "Game data", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
 
-            LanguageManager.Set(Language.Japanese);
+            Config.Ensure();
+            LanguageManager.Set((Language)Config.Language);
             BuildLayout();
             EnsureIcons();
             RefreshSongs("");
@@ -139,8 +140,8 @@ namespace UmaLauncher
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56F));
-            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42F));
-            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58F));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30F));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70F));
 
             // one top bar across the window: search box, current song, language dropdown.
             TableLayoutPanel topBar = new() { Dock = DockStyle.Fill, ColumnCount = 3 };
@@ -161,6 +162,7 @@ namespace UmaLauncher
             languageBox.SelectedIndexChanged += (s, e) =>
             {
                 LanguageManager.Set((Language)languageBox.SelectedIndex);
+                Config.Language = languageBox.SelectedIndex;
                 ApplyLanguage();
             };
             topBar.Controls.Add(languageBox, 2, 0);
@@ -193,6 +195,20 @@ namespace UmaLauncher
             root.SetColumnSpan(bottom, 2);
 
             Controls.Add(root);
+        }
+
+        // window title: UmaLauncher, plus the release tag and commit when known.
+        private static string WindowTitle()
+        {
+            string title = "UmaLauncher";
+            string tag = Application.ProductVersion;
+            string commit_path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "build.txt");
+            string commit = File.Exists(commit_path) ? File.ReadAllText(commit_path).Trim() : "";
+            if (!string.IsNullOrEmpty(tag) && tag != "1.0.0")
+                title += $" v{tag}";
+            if (commit.Length >= 7)
+                title += $" [{commit.Substring(0, 7)}]";
+            return title;
         }
 
         // re-applies every localized string after a language switch.
@@ -284,7 +300,7 @@ namespace UmaLauncher
 
                 Button slotButton = new()
                 {
-                    Size = new Size(96, 96),
+                    Size = new Size(104, 128),
                     Text = SlotLabel(pick),
                     TextAlign = ContentAlignment.BottomCenter,
                     ImageList = slotImages,

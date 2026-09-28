@@ -81,7 +81,8 @@ jobs:
       - name: Build UmaLauncher
         shell: pwsh
         run: |
-          dotnet publish Tools/UmaLauncher/UmaLauncher.csproj -c Release -r win-x64 --self-contained false -o launcher_out
+          $ver = if ("$env:GITHUB_REF" -like "refs/tags/v*") { "$env:GITHUB_REF_NAME".Substring(1) } else { "0.0.0" }
+          dotnet publish Tools/UmaLauncher/UmaLauncher.csproj -c Release -r win-x64 --self-contained false -o launcher_out -p:Version=$ver
           if ($LASTEXITCODE -ne 0) { exit 1 }
           "$env:GITHUB_SHA" | Set-Content -Path "launcher_out/build.txt" -NoNewline
           Copy-Item -Path "Tools/UmaLauncher/lang" -Destination "launcher_out/lang" -Recurse -Force
