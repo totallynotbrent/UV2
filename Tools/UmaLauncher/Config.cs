@@ -42,7 +42,7 @@ namespace UmaLauncher
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 "Umamusume", "umamusume_Data", "Persistent");
 
-        // reads one string field from the json without a parser dependency.
+        // reads one field from the json, quoted or numeric, without a parser dependency.
         private static string read_field(string field)
         {
             try
@@ -54,11 +54,19 @@ namespace UmaLauncher
                 if (at < 0) return null;
                 int colon = body.IndexOf(':', at);
                 if (colon < 0) return null;
-                int open = body.IndexOf('"', colon);
-                if (open < 0) return null;
-                int close = body.IndexOf('"', open + 1);
-                if (close <= open) return null;
-                return body.Substring(open + 1, close - open - 1);
+                int p = colon + 1;
+                while (p < body.Length && char.IsWhiteSpace(body[p])) p++;
+                if (p >= body.Length) return null;
+                if (body[p] == '"')
+                {
+                    int close = body.IndexOf('"', p + 1);
+                    if (close <= p) return null;
+                    return body.Substring(p + 1, close - p - 1);
+                }
+                int end = p;
+                while (end < body.Length && body[end] != ',' && body[end] != '}' && body[end] != '\n') end++;
+                string raw = body.Substring(p, end - p).Trim();
+                return raw.Length > 0 ? raw : null;
             }
             catch { return null; }
         }
