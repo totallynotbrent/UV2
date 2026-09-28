@@ -24,6 +24,8 @@ namespace UmaLauncher
         private readonly List<SlotPick> slots = [];
         private readonly Dictionary<int, Image> jacketCache = [];
         private readonly Dictionary<int, Image?> portraitCache = [];
+        private readonly ImageList slotImages = new() { ImageSize = new Size(40, 40), ColorDepth = ColorDepth.Depth32Bit };
+        private readonly Dictionary<int, int> portraitIndex = [];
 
         // character portrait from the charicons folder exported by the player.
         internal Image? PortraitFor(int charaId)
@@ -38,6 +40,22 @@ namespace UmaLauncher
             }
             portraitCache[charaId] = img!;
             return img;
+        }
+
+        // scaled portrait index for slot buttons; -1 when the character has no image.
+        private int SlotImageIndex(int charaId)
+        {
+            if (portraitIndex.TryGetValue(charaId, out int idx)) return idx;
+            Image? img = PortraitFor(charaId);
+            if (img is null)
+            {
+                portraitIndex[charaId] = -1;
+                return -1;
+            }
+            slotImages.Images.Add(img);
+            idx = slotImages.Images.Count - 1;
+            portraitIndex[charaId] = idx;
+            return idx;
         }
 
         // jacket thumbnails exported by the player's -dumpjackets mode.
@@ -117,12 +135,26 @@ namespace UmaLauncher
 
         private void BuildLayout()
         {
-            TableLayoutPanel root = new() { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 2 };
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34F));
+            TableLayoutPanel root = new() { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 2 };
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40F));
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56F));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42F));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58F));
 
+            // one top bar across the window: search box, current song, language dropdown.
+            TableLayoutPanel topBar = new() { Dock = DockStyle.Fill, ColumnCount = 3 };
+            topBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 36F));
+            topBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F - 36F - 13F));
+            topBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130F));
+            searchBox.Dock = DockStyle.Fill;
+            searchBox.Text = LanguageManager.T("search");
+            searchBox.TextChanged += (s, e) => RefreshSongs(searchBox.Text);
+            topBar.Controls.Add(searchBox, 0, 0);
+            songInfo.Dock = DockStyle.Fill;
+            songInfo.TextAlign = ContentAlignment.MiddleCenter;
+            songInfo.AutoSize = false;
+            topBar.Controls.Add(songInfo, 1, 0);
             ComboBox languageBox = new() { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
             languageBox.Items.AddRange(["日本語", "English", "中文"]);
             languageBox.SelectedIndex = (int)LanguageManager.Current;
@@ -131,34 +163,23 @@ namespace UmaLauncher
                 LanguageManager.Set((Language)languageBox.SelectedIndex);
                 ApplyLanguage();
             };
-            root.Controls.Add(languageBox, 1, 0);
+            topBar.Controls.Add(languageBox, 2, 0);
+            root.Controls.Add(topBar, 0, 0);
+            root.SetColumnSpan(topBar, 2);
 
-            TableLayoutPanel left = new() { Dock = DockStyle.Fill, RowCount = 2 };
-            left.RowStyles.Add(new RowStyle(SizeType.Absolute, 32F));
-            left.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            searchBox.Dock = DockStyle.Fill;
-            searchBox.Text = LanguageManager.T("search");
-            searchBox.TextChanged += (s, e) => RefreshSongs(searchBox.Text);
-            left.Controls.Add(searchBox, 0, 0);
             songList.Dock = DockStyle.Fill;
             songList.IntegralHeight = false;
             songList.DrawMode = DrawMode.OwnerDrawFixed;
             songList.ItemHeight = 56;
             songList.DrawItem += (s, e) => DrawSongRow(e);
             songList.SelectedIndexChanged += (s, e) => SelectSong(songList.SelectedItem as LiveData);
-            left.Controls.Add(songList, 0, 1);
-            root.Controls.Add(left, 0, 1);
+            root.Controls.Add(songList, 0, 1);
 
-            TableLayoutPanel right = new() { Dock = DockStyle.Fill, RowCount = 3 };
-            right.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
-            right.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            right.RowStyles.Add(new RowStyle(SizeType.Absolute, 56F));
-            songInfo.Dock = DockStyle.Fill;
-            right.Controls.Add(songInfo, 0, 0);
             slotPanel.Dock = DockStyle.Fill;
             slotPanel.WrapContents = true;
             slotPanel.AutoScroll = true;
-            right.Controls.Add(slotPanel, 0, 1);
+            root.Controls.Add(slotPanel, 1, 1);
+
             TableLayoutPanel bottom = new() { Dock = DockStyle.Fill, ColumnCount = 2 };
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65F));
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F));
@@ -168,8 +189,8 @@ namespace UmaLauncher
             updateButtonField.Click += (s, e) => Updater.Check(this);
             bottom.Controls.Add(launchButton, 0, 0);
             bottom.Controls.Add(updateButtonField, 1, 0);
-            right.Controls.Add(bottom, 0, 2);
-            root.Controls.Add(right, 1, 1);
+            root.Controls.Add(bottom, 0, 2);
+            root.SetColumnSpan(bottom, 2);
 
             Controls.Add(root);
         }
@@ -230,7 +251,11 @@ namespace UmaLauncher
             slotPanel.Controls.Clear();
             launchButton.Enabled = song is not null;
 
-            if (song is null) return;
+            if (song is null)
+            {
+                songInfo.Text = "";
+                return;
+            }
 
             var allowed = Db.AllowedCharas(song.MusicId);
             var recommended = Db.RecommendedCast(song.MusicId);
@@ -259,10 +284,11 @@ namespace UmaLauncher
 
                 Button slotButton = new()
                 {
-                    Size = new Size(96, 110),
+                    Size = new Size(96, 96),
                     Text = SlotLabel(pick),
                     TextAlign = ContentAlignment.BottomCenter,
-                    Image = PortraitFor(pick.CharaId),
+                    ImageList = slotImages,
+                    ImageIndex = SlotImageIndex(pick.CharaId),
                     ImageAlign = ContentAlignment.TopCenter,
                     Tag = pick
                 };
@@ -301,7 +327,7 @@ namespace UmaLauncher
                 if (c is Button b && b.Tag is SlotPick p && p == pick)
                 {
                     b.Text = SlotLabel(pick);
-                    b.Image = PortraitFor(pick.CharaId);
+                    b.ImageIndex = SlotImageIndex(pick.CharaId);
                 }
             }
         }
