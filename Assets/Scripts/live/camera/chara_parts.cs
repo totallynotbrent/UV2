@@ -30,9 +30,11 @@ namespace UV2.Live
             if (root == null) return null;
             switch (part)
             {
+                case FACE:
                 case INIT_FACE_HEIGHT:
                 case CONST_FACE_HEIGHT:
-                    var head = root.Find("Character1_Head");
+                    var head = root.Find("Head");
+                    if (head == null) head = find_bone(root, "Head");
                     if (head != null) return head.position;
                     return null;
                 case WAIST:
@@ -52,14 +54,16 @@ namespace UV2.Live
             }
         }
 
-        // group resolution: average the part over the enabled characters, the
-        // accumulation loop GetPositionWithCharacters performs.
-        public static Vector3 group_world(List<Transform> chara_roots, int part)
+        // group resolution: average the part over the flagged characters only;
+        // flag bit i enables slot i, exactly the accumulation loop
+        // GetPositionWithCharacters runs over the position flags.
+        public static Vector3 group_world(List<Transform> chara_roots, int flags, int part)
         {
             var values = new List<Vector3>();
-            foreach (var root in chara_roots)
+            for (int i = 0; i < chara_roots.Count; i++)
             {
-                var v = part_world(root, part);
+                if (flags != 0 && (flags & (1 << i)) == 0) continue;
+                var v = part_world(chara_roots[i], part);
                 if (v.HasValue) values.Add(v.Value);
             }
             if (values.Count == 0) return Vector3.zero;

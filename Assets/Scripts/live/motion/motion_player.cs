@@ -6,8 +6,10 @@ using UV2.Live;
 
 namespace UV2.Live
 {
-    // plays the authored dance clips: legacy Animation component per character,
-    // the timeline's own consumer pattern, with per-character start frames.
+    // plays the authored dance clips the way the game does: the timeline
+    // evaluates the active key, computes the clip time from the key's start
+    // frame plus elapsed (timescale-applied) time, sets state.time directly and
+    // samples the pose — no Play()/isPlaying bookkeeping.
     public class motion_player : MonoBehaviour
     {
         private live_worksheet ws;
@@ -15,7 +17,7 @@ namespace UV2.Live
         private readonly Dictionary<int, Animation> animators = new();
         private readonly Dictionary<int, string> current_clips = new();
 
-        // slot -> sequence index per song (from song_config_matrix motionSequenceIndices).
+        // slot -> sequence index (motionSequenceIndices from the cutt data asset).
         private List<int> slot_sequence_map = new();
 
         public void open(live_worksheet worksheet, timeline_clock timeline, List<Transform> chara_roots, List<int> sequence_map)
@@ -40,13 +42,13 @@ namespace UV2.Live
             if (!anim.GetClip(clip.name)) anim.AddClip(clip, clip.name);
         }
 
-        // registers a clip on every character (the common case: all slots can
-        // use any of the song's sequences).
+        // registers a clip on every character (all slots may use any sequence).
         public void bind_clip_all(AnimationClip clip)
         {
             foreach (var kv in animators) bind_clip(kv.Key, clip);
         }
 
+        // pose every character from the worksheet's motion tracks.
         public void play()
         {
             if (ws == null || clock == null) return;
@@ -59,8 +61,7 @@ namespace UV2.Live
                 var seq_keys = ws.motion_sequences[seq];
                 if (seq_keys == null || seq_keys.Count == 0) continue;
 
-                var anim = animators[slot];
-                if (anim == null) continue;
+                if (!animators.TryGetValue(slot, out var anim)) continue;
 
                 // the active motion key at this time
                 int i = key_eval.bracket(seq_keys, t);
@@ -71,23 +72,55 @@ namespace UV2.Live
                 if (string.IsNullOrEmpty(clip_name)) continue;
                 string short_name = clip_name.Substring(clip_name.LastIndexOf('/') + 1);
 
-                // start the clip when it first becomes active, at the authored offset
-                float start_at = key.time + (key.motion_head_frame / 60f);
-                if (!current_clips.TryGetValue(slot, out var playing) || playing != short_name)
+                var state = anim[short_name];
+                if (state == null) continue;
+
+                // per-character start frame: all-share or the separates table.
+                float head_frames = key.motion_head_frame_separates != null && key.motion_head_frame_separates.Length == animators.Count
+                    ? key.motion_head_frame_separates[slot - 1]
+                    : key.motion_head_frame;
+                float start = head_frames / 60f;
+
+                // elapsed since the key, at the key's play speed; the timescale
+                // track rescales time when present.
+                float rate = key.play_speed <= 0f ? 1f : key.play_speed;
+                float interval = (t - key.time) * rate;
+                if (ws.timescale.Count > 0)
                 {
-                    if (anim.GetClip(short_name) != null)
-                    {
-                        // rewind state: crossfade into the new sequence
-                        if (anim.isPlaying) anim.Stop();
-                        var state = anim[short_name];
-                        state.time = Mathf.Max(0f, (t - start_at) * key.play_speed);
-                        state.speed = key.play_speed <= 0f ? 1f : key.play_speed;
-                        state.wrapMode = WrapMode.Loop;
-                        anim.Play(short_name);
-                        current_clips[slot] = short_name;
-                    }
+                    float scaled = scaled_elapsed(key.time, t, rate);
+                    if (scaled >= 0f) interval = scaled;
+                }
+
+                float clip_time = start + interval;
+                state.enabled = true;
+                state.weight = 1f;
+                state.time = key.loop != 0 ? Mathf.Repeat(clip_time, state.length) : clip_time;
+                anim.Sample();
+                state.enabled = false;
+            }
+        }
+
+        // integrates the timescale track between the key's start and now.
+        private float scaled_elapsed(float from, float to, float rate)
+        {
+            if (ws.timescale.Count == 0) return -1f;
+            float scaled = 0f;
+            float cursor = from;
+            for (int i = 0; i < ws.timescale.Count; i++)
+            {
+                var k = ws.timescale[i];
+                float kstart = k.time;
+                if (kstart >= to) break;
+                float kend = i + 1 < ws.timescale.Count ? ws.timescale[i + 1].time : float.MaxValue;
+                float seg_end = Mathf.Min(kend, to);
+                if (seg_end > cursor)
+                {
+                    float scale = k.time_scale <= 0f ? 1f : k.time_scale;
+                    scaled += (seg_end - cursor) * scale * rate;
+                    cursor = seg_end;
                 }
             }
+            return cursor >= to ? scaled : scaled + (to - cursor) * rate;
         }
     }
 }

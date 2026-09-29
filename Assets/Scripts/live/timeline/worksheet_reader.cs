@@ -143,8 +143,9 @@ namespace UV2.Live
                     easing_type = k.easingType,
                     look_at_type = k.lookAtType,
                     position = k.position,
-                    look_at_chara_pos = k.charaPos,
+                    look_at_chara_pos = k.lookAtCharaPos,
                     look_at_chara_parts = k.lookAtCharaParts,
+                    look_at_chara_pos_offset = k.charaPos,
                 }).ToList();
 
             ws.camera_fov = (sheet.cameraFovKeys?.thisList ?? new())
@@ -187,6 +188,7 @@ namespace UV2.Live
                         play_frame_length = k.playFrameLength,
                         play_speed = k.playSpeed <= 0f ? 1f : k.playSpeed,
                         use_second_motion = k.UseSecondMotion,
+                        loop = k.loop,
                         motion_head_frame_separates = (k.motionHeadFrameSeparetes ?? new()).ToArray(),
                     });
                 }

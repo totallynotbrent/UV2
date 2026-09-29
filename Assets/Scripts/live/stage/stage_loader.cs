@@ -495,6 +495,7 @@ namespace UV2.Live
             clock?.advance(Time.deltaTime);
             update_light_track();
             global_shade.publish(FindObjectOfType<Camera>());
+            global_shade.publish_chara_block(chara_roots);
 
             // heartbeat: camera state + what is actually visible, once per second.
             if (Time.time - _last_beat >= 1f)
@@ -511,10 +512,39 @@ namespace UV2.Live
                 int playing = 0;
                 foreach (var a in FindObjectsOfType<Animation>())
                     if (a.isPlaying) playing++;
-                trace_log.write($"beat t={clock?.time ?? 0f:0.0}s cam_pos {cam.transform.position} fov {cam.fieldOfView:0.0} renderers {visible}/{total} visible animations_playing {playing}");
+                // one character's head bone: movement across beats proves the
+                // direct-sample motion actually poses the cast.
+                string pose = "";
+                if (chara_roots.Count > 0)
+                {
+                    var head = find_deep(chara_roots[0], "Head");
+                    if (head != null) pose = $" head {head.position}";
+                }
+                trace_log.write($"beat t={clock?.time ?? 0f:0.0}s cam_pos {cam.transform.position} fwd {cam.transform.forward} fov {cam.fieldOfView:0.0} renderers {visible}/{total} visible animations_playing {playing}{pose}");
+
+                // once: the render state of chara 1 - shader, keywords, clip
+                // distances - so a black frame on a real gpu points at the
+                // exact material the gpu rejected.
+                if (!_render_state_dumped && chara_roots.Count > 0)
+                {
+                    _render_state_dumped = true;
+                    var r0 = chara_roots[0].GetComponentsInChildren<Renderer>().FirstOrDefault();
+                    if (r0 != null)
+                    {
+                        var m0 = r0.sharedMaterial;
+                        trace_log.write($"render_state: chara1 '{r0.name}' shader '{(m0 != null ? m0.shader.name : "<null>")}' keywords [{(m0 != null ? string.Join(",", m0.shaderKeywords) : "")}] bounds {r0.bounds}");
+                    }
+                    var stage_r = FindObjectsOfType<Renderer>().FirstOrDefault(x => x.name.Contains("env"));
+                    if (stage_r != null)
+                    {
+                        var ms = stage_r.sharedMaterial;
+                        trace_log.write($"render_state: stage '{stage_r.name}' shader '{(ms != null ? ms.shader.name : "<null>")}' keywords [{(ms != null ? string.Join(",", ms.shaderKeywords) : "")}] bounds {stage_r.bounds}");
+                    }
+                }
             }
         }
 
         private float _last_beat = -1f;
+        private bool _render_state_dumped;
     }
 }

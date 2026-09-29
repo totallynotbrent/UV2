@@ -39,8 +39,9 @@ namespace UV2.Live
     {
         public int look_at_type;          // 0=Direct, 1=Character
         public Vector3 position;
-        public Vector3 look_at_chara_pos;
+        public int look_at_chara_pos;     // position flags: bit i enables slot i
         public int look_at_chara_parts;
+        public Vector3 look_at_chara_pos_offset;  // the charaPos field
     }
 
     // camera fov key.
@@ -82,6 +83,7 @@ namespace UV2.Live
         public int play_frame_length;
         public float play_speed;
         public int use_second_motion;
+        public int loop;                 // 1 = the game repeats the clip
     }
 
     // formation offset key: stage placement + the mic fields ride here too.

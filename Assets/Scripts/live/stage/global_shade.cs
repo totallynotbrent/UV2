@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace UV2.Live
@@ -48,6 +49,48 @@ namespace UV2.Live
         }
         private static global_light_key _light_key;
         private static float _light_blend;
+
+        // the assembled character mpb: rebuilt when the light track moves.
+        private static MaterialPropertyBlock _chara_mpb;
+        private static Vector3 _last_light_dir = new(12345f, 0f, 0f);
+
+        // applies the toon-light + rim block onto every renderer of every
+        // character, the per-renderer publish the chara shaders consume.
+        public static void publish_chara_block(List<Transform> chara_roots)
+        {
+            if (chara_roots == null || chara_roots.Count == 0) return;
+            if (_chara_mpb == null) _chara_mpb = new MaterialPropertyBlock();
+
+            Vector3 dir = Vector3.down;
+            var k = _light_key;
+            if (k != null && k.light_dir.sqrMagnitude > 1e-06f)
+                dir = -(Quaternion.Euler(k.light_dir) * Vector3.forward).normalized;
+
+            if ((dir - _last_light_dir).sqrMagnitude < 1e-10f) return;
+            _last_light_dir = dir;
+
+            _chara_mpb.SetFloat(id_use_orig_light, 1f);
+            _chara_mpb.SetVector(id_orig_light_dir, dir);
+            if (k != null)
+            {
+                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor"), k.rim_color);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep"), k.rim_step);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather"), k.rim_feather);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate"), k.rim_spec_rate);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate"), k.rim_shadow_rate);
+                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor2"), k.rim_color2);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep2"), k.rim_step2);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather2"), k.rim_feather2);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate2"), k.rim_spec_rate2);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate2"), k.rim_shadow_rate2);
+            }
+
+            foreach (var root in chara_roots)
+            {
+                foreach (var r in root.GetComponentsInChildren<Renderer>())
+                    r.SetPropertyBlock(_chara_mpb);
+            }
+        }
 
         // publishes every frame; call from the loader's update.
         public static void publish(Camera cam)
