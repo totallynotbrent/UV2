@@ -22,9 +22,21 @@ namespace UV2.Live
 
         public void seek(float seconds) => _time = Mathf.Max(0f, seconds);
 
-        // one frame step: delta * current rate while running.
+        // the audio source the clock locks to; when set, the clock reads the
+        // music position instead of accumulating delta.
+        private AudioSource _master;
+
+        public void bind_master(AudioSource src) => _master = src;
+
+        // one frame step: delta * current rate while running, or the live audio
+        // position when a master source is bound.
         public void advance(float delta)
         {
+            if (_master != null && _master.clip != null && _master.isPlaying)
+            {
+                _time = _master.time;
+                return;
+            }
             if (!paused) _time += delta * _rate;
         }
     }

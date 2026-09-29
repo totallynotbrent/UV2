@@ -150,6 +150,8 @@ namespace UV2.Live
 
                 wire_drivers(clips, sel.music_id);
                 trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
+
+                start_music(sel.music_id);
                 return true;
             }
             catch (Exception e)
@@ -417,6 +419,61 @@ namespace UV2.Live
                     return;
                 }
             }
+        }
+
+        private AudioSource music_source;
+
+        // resolves the song's instrumental bank from the install, decodes it,
+        // and starts playback; the concert clock locks to the source.
+        private void start_music(int music_id)
+        {
+            // the game ships _01 and _02 oke variants per song; take whichever
+            // the install carries.
+            var candidates = new[]
+            {
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_02.awb",
+            };
+            meta_reader.asset_row bank_row = null;
+            foreach (var c in candidates)
+            {
+                bank_row = meta_row(c);
+                if (bank_row != null) break;
+            }
+            if (bank_row == null)
+            {
+                trace_log.write($"music: no oke bank for song {music_id}");
+                return;
+            }
+
+            string path = System.IO.Path.Combine(config.data_root, "dat", bank_row.hash.Substring(0, 2), bank_row.hash);
+            if (!System.IO.File.Exists(path))
+            {
+                trace_log.write($"music: oke bank missing on disk: {path}");
+                return;
+            }
+            byte[] bank = System.IO.File.ReadAllBytes(path);
+            var waves = live_audio.parse_afs2(bank);
+            if (waves.Count == 0)
+            {
+                trace_log.write("music: afs2 parse found no waves");
+                return;
+            }
+
+            var clip = live_audio.decode_wave(bank, waves[0], $"oke_{music_id}");
+            if (clip == null)
+            {
+                trace_log.write("music: oke decode failed");
+                return;
+            }
+
+            var go = new GameObject("live_music");
+            music_source = go.AddComponent<AudioSource>();
+            music_source.clip = clip;
+            music_source.loop = false;
+            music_source.Play();
+            clock.bind_master(music_source);
+            trace_log.write($"music: oke playing ({clip.frequency}Hz, {clip.length:0.0}s, {waves.Count} waves)");
         }
 
         // reads the song's livesettings from the game install and picks the
