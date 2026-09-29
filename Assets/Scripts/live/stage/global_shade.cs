@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UV2.App;
 
 namespace UV2.Live
 {
@@ -92,9 +93,47 @@ namespace UV2.Live
             }
         }
 
+        // the scene rig the game's live scenes always carry: one directional sun
+        // and one audio listener. created once; toon shaders render black
+        // without a scene light and unity emits no sound without a listener.
+        private static bool _rig_ready;
+        private static GameObject _sun;
+        private static GameObject _listener_host;
+
+        private static void ensure_scene_rig(Camera cam)
+        {
+            if (_rig_ready) return;
+
+            if (GameObject.Find("AudioListener") == null)
+            {
+                _listener_host = new GameObject("AudioListener");
+                _listener_host.AddComponent<AudioListener>();
+            }
+
+            var existing_lights = Object.FindObjectsOfType<Light>();
+            bool has_dir = false;
+            foreach (var l in existing_lights) if (l.type == LightType.Directional) has_dir = true;
+            if (!has_dir)
+            {
+                _sun = new GameObject("Directional Light");
+                var light = _sun.AddComponent<Light>();
+                light.type = LightType.Directional;
+                light.color = Color.white;
+                light.intensity = 1f;
+                light.shadows = LightShadows.Soft;
+                // the game's sun: overhead angled slightly forward.
+                _sun.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
+            }
+            RenderSettings.sun = null; // the chara mpb drives toon light, not the sun
+
+            _rig_ready = true;
+            trace_log.write("scene rig: directional sun + audio listener live");
+        }
+
         // publishes every frame; call from the loader's update.
         public static void publish(Camera cam)
         {
+            ensure_scene_rig(cam);
             publish_fog_off();
             // lightmap block with the exact decoded folds: both colors scale by
             // 2 first; modulate uses density directly, add clamps 1-density.
@@ -115,6 +154,24 @@ namespace UV2.Live
             Shader.SetGlobalVector(id_toon_color, new Vector4(1f, 1f, 1f, 1f));
             Shader.SetGlobalFloat(id_outline_width, 1.0f);
             Shader.SetGlobalFloat(id_outline_offset, 1.0f);
+
+            // the dirt family + ambient + array globals the game's shaders read;
+            // v1 proved these exact defaults render on a real gpu.
+            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtRimSpecularColor"), new Color(0.25f, 0.25f, 0.25f, 1f));
+            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtToonColor"), new Color(0.5f, 0.5f, 0.5f, 1f));
+            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtColor"), new Color(0.6f, 0.451f, 0.384f, 1f));
+            Shader.SetGlobalColor(Shader.PropertyToID("_AmbientColor"), new Color(0.212f, 0.227f, 0.259f, 1f));
+            Shader.SetGlobalFloat(Shader.PropertyToID("_CylinderBlend"), 0f);
+            Shader.SetGlobalFloat(Shader.PropertyToID("_RimHorizonOffset"), 0f);
+            Shader.SetGlobalFloat(Shader.PropertyToID("_UVEmissivePower"), 0f);
+            Shader.SetGlobalColor(Shader.PropertyToID("_RimColor2"), Color.black);
+            Shader.SetGlobalVectorArray(Shader.PropertyToID("_MainParam"), new Vector4[] { Vector4.zero, Vector4.zero });
+            Shader.SetGlobalVectorArray(Shader.PropertyToID("_HighParam1"), new Vector4[] { new Vector4(0, 0, 0, 1), new Vector4(0, 0, 0, 1), Vector4.zero });
+            Shader.SetGlobalVectorArray(Shader.PropertyToID("_HighParam2"), new Vector4[] { new Vector4(0, 0, 0, 1), new Vector4(0, 0, 0, 1) });
+            var color_array = new Vector4[10];
+            for (int i = 0; i < 10; i++) color_array[i] = Vector4.zero;
+            Shader.SetGlobalVectorArray(Shader.PropertyToID("_ColorArray"), color_array);
+            Shader.SetGlobalFloatArray(Shader.PropertyToID("_DirtRate"), new float[] { 0f, 0f, 0f });
 
             // lod + depth consumers.
             if (cam != null)

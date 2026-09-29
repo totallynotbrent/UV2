@@ -367,6 +367,9 @@ namespace UV2.Live
                 cam.nearClipPlane = 1f;
                 cam.farClipPlane = 100f;
             }
+            // one listener for the whole concert; audio dies without it.
+            if (cam.GetComponent<AudioListener>() == null && FindObjectOfType<AudioListener>() == null)
+                cam.gameObject.AddComponent<AudioListener>();
 
             var director_go = new GameObject("camera_director");
             director = director_go.AddComponent<camera_director>();
