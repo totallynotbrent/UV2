@@ -189,6 +189,7 @@ namespace UV2.Live
                         play_speed = k.playSpeed <= 0f ? 1f : k.playSpeed,
                         use_second_motion = k.UseSecondMotion,
                         loop = k.loop,
+                        is_motion_head_frame_all = k.isMotionHeadFrameAll,
                         motion_head_frame_separates = (k.motionHeadFrameSeparetes ?? new()).ToArray(),
                     });
                 }

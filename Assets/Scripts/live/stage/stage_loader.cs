@@ -493,6 +493,7 @@ namespace UV2.Live
         private void Update()
         {
             clock?.advance(Time.deltaTime);
+            motion?.play();
             update_light_track();
             global_shade.publish(FindObjectOfType<Camera>());
             global_shade.publish_chara_block(chara_roots);
@@ -518,7 +519,7 @@ namespace UV2.Live
                 if (chara_roots.Count > 0)
                 {
                     var head = find_deep(chara_roots[0], "Head");
-                    if (head != null) pose = $" head {head.position}";
+                    if (head != null) pose = $" head {head.position} hrot {head.localEulerAngles}";
                 }
                 trace_log.write($"beat t={clock?.time ?? 0f:0.0}s cam_pos {cam.transform.position} fwd {cam.transform.forward} fov {cam.fieldOfView:0.0} renderers {visible}/{total} visible animations_playing {playing}{pose}");
 

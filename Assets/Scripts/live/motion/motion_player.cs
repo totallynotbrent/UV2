@@ -75,10 +75,13 @@ namespace UV2.Live
                 var state = anim[short_name];
                 if (state == null) continue;
 
-                // per-character start frame: all-share or the separates table.
-                float head_frames = key.motion_head_frame_separates != null && key.motion_head_frame_separates.Length == animators.Count
-                    ? key.motion_head_frame_separates[slot - 1]
-                    : key.motion_head_frame;
+                // per-character start frame: the all-share flag picks the common
+                // head frame, else the separates table, else the common frame.
+                float head_frames;
+                if (key.is_motion_head_frame_all != 0 || key.motion_head_frame_separates == null || slot - 1 >= key.motion_head_frame_separates.Length)
+                    head_frames = key.motion_head_frame;
+                else
+                    head_frames = key.motion_head_frame_separates[slot - 1];
                 float start = head_frames / 60f;
 
                 // elapsed since the key, at the key's play speed; the timescale

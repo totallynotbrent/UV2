@@ -84,6 +84,7 @@ namespace UV2.Live
         public float play_speed;
         public int use_second_motion;
         public int loop;                 // 1 = the game repeats the clip
+        public int is_motion_head_frame_all;  // 1 = every character shares motion_head_frame
     }
 
     // formation offset key: stage placement + the mic fields ride here too.
