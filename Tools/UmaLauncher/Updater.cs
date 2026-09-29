@@ -6,11 +6,13 @@ using System.Text.Json;
 namespace UmaLauncher
 {
     // checks github for a newer uv2 build and swaps the app folder in place.
-    // the repo ships a rolling prerelease, so the check compares the running
-    // build's commit against the release target instead of version numbers.
+    // the rolling experimental release is matched by tag and zip asset, and
+    // the running build's commit is compared against the release target
+    // instead of version numbers.
     static class Updater
     {
         private const string Repo = "totallynotbrent/UV2";
+        private const string ReleaseTag = "experimental";
         private const string AssetName = "UV2-Windows-x64.zip";
 
         private static readonly HttpClient http = new()
@@ -34,11 +36,18 @@ namespace UmaLauncher
                 using JsonDocument doc = JsonDocument.Parse(body);
                 JsonElement root = doc.RootElement;
 
+                // the prerelease flag is unreliable on the releases list
+                // endpoint, so pick the experimental release by tag and zip asset.
                 JsonElement? release = null;
                 foreach (JsonElement r in root.EnumerateArray())
                 {
-                    if (!r.GetProperty("prerelease").GetBoolean()) continue;
-                    if (r.GetProperty("assets").GetArrayLength() == 0) continue;
+                    if (r.GetProperty("tag_name").GetString() != ReleaseTag) continue;
+                    bool hasAsset = false;
+                    foreach (JsonElement asset in r.GetProperty("assets").EnumerateArray())
+                    {
+                        if (asset.GetProperty("name").GetString() == AssetName) { hasAsset = true; break; }
+                    }
+                    if (!hasAsset) continue;
                     release = r;
                     break;
                 }
