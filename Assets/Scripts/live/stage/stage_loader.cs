@@ -41,17 +41,12 @@ namespace UV2.Live
         {
             try
             {
-                var manifest = manifest_reader.song(sel.music_id);
-                if (manifest == null)
-                {
-                    last_error = $"no concert manifest for song {sel.music_id}";
-                    return false;
-                }
-
+                // the worksheet comes straight from the game's cutt camera bundle,
+                // deserialized by the generated stub; no extraction, no sidecar.
                 ws = worksheet_reader.load(sel.music_id);
                 if (ws == null)
                 {
-                    last_error = $"no extracted worksheet for song {sel.music_id}";
+                    last_error = $"no worksheet in the cutt bundles for song {sel.music_id}";
                     return false;
                 }
                 clock = new timeline_clock();
@@ -61,17 +56,23 @@ namespace UV2.Live
                 var shader_row = meta_row("shader");
                 if (shader_row != null)
                     shader_manager.ensure_loaded(shader_row, config.data_root);
-                shader_manager.load_map();
 
-                // stage materials first (the controller prefab references them),
-                // then the controller itself.
-                foreach (var name in manifest.stage_materials.Concat(manifest.stage_controller))
+                // stage: materials from the controller's prereq list, then the
+                // controller itself, all resolved from the selection's stage id.
+                var controllers = manifest_reader.stage_bundles(sel.stage_id);
+                string first_controller = controllers.FirstOrDefault(c => meta_row(c) != null)
+                                          ?? controllers.FirstOrDefault();
+                if (first_controller == null)
                 {
-                    // the repacked geo bundle carries the same serialized files plus the
-                    // full container; loading both trips unity's duplicate-file check.
-                    // the game bundle still loads the controller shell; the geo bundle
-                    // loads last, from the datapack, providing every named root.
-                    var b = name.Contains("controller") ? load_stage_controller_with_geo(name, manifest) : load_bundle_keep(name);
+                    last_error = $"no stage controller for stage {sel.stage_id}";
+                    return false;
+                }
+                var material_names = manifest_reader.stage_materials(sel.stage_id, first_controller);
+                foreach (var name in material_names.Concat(new[] { first_controller }))
+                {
+                    // the stage controller stub deserializes _stageObjects from the
+                    // controller itself, so the plain game bundle carries everything.
+                    var b = load_bundle_keep(name);
                     Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
                     if (b != null && name.Contains("controller"))
                     {
@@ -87,31 +88,25 @@ namespace UV2.Live
                                 Debug.Log($"[stage_loader] stage instantiated: {stage.name}, renderers {stage.GetComponentsInChildren<Renderer>(true).Length}");
                                 shader_manager.fix_game_shaders(stage.transform, "stage");
 
-                                // the controller prefab is a shell: the real geometry lives as
-                                // standalone root prefabs the game's StageController assembles.
-                                // when this bundle is the geo repack its container names every
-                                // root, so instantiate them all under one stage root.
-                                if (all.Length > 1)
+                                // the controller prefab is a shell: the StageController stub
+                                // deserialized the game's own _stageObjects list, which names
+                                // every stage root. instantiate them all under one stage root.
+                                var ctrl = stage.GetComponent<Gallop.Live.StageController>();
+                                var geo_root = new GameObject("stage_geometry");
+                                int placed = 0;
+                                if (ctrl != null && ctrl._stageObjects != null)
                                 {
-                                    var geo_root = new GameObject("stage_geometry");
-                                    int placed = 0;
-                                    foreach (var geo_name in all)
+                                    foreach (var go in ctrl._stageObjects)
                                     {
-                                        if (geo_name == prefab_name) continue;
-                                        var go = b.LoadAsset<GameObject>(geo_name);
                                         if (go == null) continue;
                                         var piece = Instantiate(go, geo_root.transform);
                                         piece.name = go.name;
                                         placed++;
                                     }
-                                    Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
-                                    shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
-                                    shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
                                 }
-                                else
-                                {
-                                    Debug.LogWarning($"[stage_loader] no stage geo repack for {manifest.stage_id}; stage is the controller shell only");
-                                }
+                                Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
+                                shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
+                                shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
                             }
                         }
                     }
@@ -124,11 +119,15 @@ namespace UV2.Live
                     if (root != null) chara_roots.Add(root);
                 }
 
-                // motion clips: bundle per motionName, bound to the characters
-                var clip_names = new HashSet<string>(manifest.motion_clips.Values);
+                // motion clips: one bundle per authored motion name in the worksheet.
+                var clip_names = new HashSet<string>();
+                foreach (var seq in ws.motion_sequences)
+                    foreach (var key in seq)
+                        if (!string.IsNullOrEmpty(key.motion_name))
+                            clip_names.Add(key.motion_name);
                 var clips = load_clips(clip_names);
 
-                wire_drivers(clips, manifest, sel.music_id);
+                wire_drivers(clips, sel.music_id);
                 return true;
             }
             catch (Exception e)
@@ -137,28 +136,6 @@ namespace UV2.Live
                 Debug.LogError($"[stage_loader] open failed: {e}");
                 return false;
             }
-        }
-
-        // the game's controller bundle only lists its shell in the container; the
-        // repacked datapack variant carries the shell plus every stage root. loads
-        // the repack when it exists (same serialized files, fuller container).
-        private AssetBundle load_stage_controller_with_geo(string name, song_manifest manifest)
-        {
-            string geo_path = System.IO.Path.Combine(config.datapack_path,
-                $"stage_geo_{manifest.stage_id}.unity3d");
-            if (!System.IO.File.Exists(geo_path))
-                geo_path = System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory,
-                    "data", $"stage_geo_{manifest.stage_id}.unity3d");
-            if (System.IO.File.Exists(geo_path))
-            {
-                var geo_bundle = AssetBundle.LoadFromFile(geo_path);
-                if (geo_bundle != null)
-                {
-                    Debug.Log($"[stage_loader] geo repack loaded for {manifest.stage_id}: {geo_bundle.GetAllAssetNames().Length} named assets");
-                    return geo_bundle;
-                }
-            }
-            return load_bundle_keep(name);
         }
 
         // opens a bundle by manifest name and keeps it resident.
@@ -260,20 +237,28 @@ namespace UV2.Live
             Debug.Log($"[stage_loader] {root.name}: {n} materials, {fallback} fallbacks");
         }
 
-        // loads every motion clip bundle for the song.
-        private Dictionary<string, AnimationClip> load_clips(HashSet<string> bundle_names)
+        // loads every motion clip bundle for the song; each motion name resolves
+        // to the game's 3d/motion/live/body bundle holding the authored clip.
+        private Dictionary<string, AnimationClip> load_clips(HashSet<string> motion_names)
         {
             var clips = new Dictionary<string, AnimationClip>();
-            foreach (var name in bundle_names)
+            foreach (var motion_name in motion_names)
             {
+                // the authored form is son1004/anm_liv_son1004_1st: the meta db keys
+                // the motion bundle by song + clip name (disk lowercases _L/_R).
+                string song_part = motion_name.Substring(0, motion_name.IndexOf('/'));
+                string clip = motion_name.Substring(motion_name.LastIndexOf('/') + 1);
+                string name = $"3d/motion/live/body/{song_part}/{clip.ToLowerInvariant()}";
                 var row = meta_row(name);
+                if (row == null)
+                    row = meta_row($"3d/motion/live/body/{song_part}/{clip.ToUpperInvariant()}");
                 if (row == null) continue;
                 var bundle = game_assets.open(row, config.data_root);
                 if (bundle == null) continue;
                 foreach (var asset in bundle.GetAllAssetNames())
                 {
-                    var clip = bundle.LoadAsset<AnimationClip>(asset);
-                    if (clip != null) clips[clip.name] = clip;
+                    var loaded_clip = bundle.LoadAsset<AnimationClip>(asset);
+                    if (loaded_clip != null) clips[loaded_clip.name] = loaded_clip;
                 }
                 bundle.Unload(false);
             }
@@ -288,7 +273,7 @@ namespace UV2.Live
             return rows?.GetValueOrDefault(name);
         }
 
-        private void wire_drivers(Dictionary<string, AnimationClip> clips, song_manifest manifest, int music_id)
+        private void wire_drivers(Dictionary<string, AnimationClip> clips, int music_id)
         {
             var cam = FindObjectOfType<Camera>();
             if (cam == null)

@@ -70,16 +70,15 @@ namespace UV2.Live
         {
             switch (group)
             {
-                case "centerKeys": return slot == 1 ? 1 : -1;
-                case "left1Keys": return slot == 2 ? 2 : -1;
-                case "right1Keys": return slot == 3 ? 3 : -1;
-                case "left2Keys": return slot == 4 ? 4 : -1;
-                case "right2Keys": return slot == 5 ? 5 : -1;
+                case "center": return slot == 1 ? 1 : -1;
+                case "left1": return slot == 2 ? 2 : -1;
+                case "right1": return slot == 3 ? 3 : -1;
+                case "left2": return slot == 4 ? 4 : -1;
+                case "right2": return slot == 5 ? 5 : -1;
                 default:
-                    if (group.StartsWith("place"))
+                    if (group.StartsWith("place") && group.Length > 5)
                     {
-                        string num = group.Substring(5, group.Length - 5 - 4); // strip 'place' + 'Keys'
-                        if (int.TryParse(num, out int place) && place >= 6)
+                        if (int.TryParse(group.Substring(5), out int place) && place >= 6)
                             return slot == place ? place : -1;
                     }
                     return -1;

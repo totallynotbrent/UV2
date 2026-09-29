@@ -4,222 +4,202 @@ using System.IO;
 using System.Linq;
 using UnityEngine;
 using UV2.App;
+using UV2.Data;
+using Cutt = Gallop.Live.Cutt;
 
 namespace UV2.Live
 {
-    // parses one extracted worksheet json into the runtime model.
-    // the extraction writes datapack/timeline/<music_id>.json from the game's
-    // LiveTimelineWorkSheet typetree; this maps the raw fields to the key types.
+    // loads one song's LiveTimelineWorkSheet from the game's cutt camera bundle,
+    // deserialized by the generated stub, and maps it into the runtime model.
     public static class worksheet_reader
     {
-        // loads and parses the worksheet for a song id; null when absent.
+        // loads and maps the worksheet for a song id; null when absent.
         public static live_worksheet load(int music_id)
         {
-            // streaming assets first, then the release sidecar data folder.
-            string path = Path.Combine(config.datapack_path, "timeline", music_id + ".json");
-            if (!File.Exists(path))
-            {
-                string sidecar = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "timeline", music_id + ".json");
-                if (!File.Exists(sidecar)) return null;
-                path = sidecar;
-            }
             try
             {
-                string body = File.ReadAllText(path);
-                var raw = parse_raw(body);
-                if (raw == null) return null;
-                return map(raw, music_id);
+                var sheet = load_stub(music_id);
+                if (sheet == null) return null;
+                return map(sheet, music_id);
             }
             catch (Exception e)
             {
-                Debug.LogError($"[worksheet_reader] {music_id}: {e.Message}");
+                Debug.LogError($"[worksheet_reader] {music_id}: {e.GetType().Name}: {e.Message}");
                 return null;
             }
         }
 
-        // minimal json object model: maps to dict/list/number/string.
-        private static Dictionary<string, object> parse_raw(string body)
+        // opens the song's camera cutt bundle and deserializes the worksheet stub.
+        private static Cutt.LiveTimelineWorkSheet load_stub(int music_id)
         {
-            // the extraction is machine-written json; the mini parser returns it.
-            return MiniJson.Parse(body) as Dictionary<string, object>;
+            string bundle_name = $"cutt/cutt_son{music_id}/son{music_id}_camera";
+            var row = meta_row(bundle_name);
+            if (row == null)
+            {
+                foreach (var cand in new[]
+                         {
+                             $"cutt/cutt_son{music_id}/cutt_son{music_id}_camera",
+                             $"cutt/cutt_son{music_id}_camera",
+                         })
+                {
+                    row = meta_row(cand);
+                    if (row != null) break;
+                }
+                if (row == null)
+                {
+                    Debug.LogWarning($"[worksheet_reader] no camera bundle for song {music_id}");
+                    return null;
+                }
+            }
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) return null;
+            var sheet = bundle.LoadAllAssets<Cutt.LiveTimelineWorkSheet>().FirstOrDefault();
+            if (sheet == null)
+                Debug.LogWarning($"[worksheet_reader] no worksheet bound in {row.name}");
+            return sheet;
         }
 
-        private static live_worksheet map(Dictionary<string, object> raw, int music_id)
+        private static meta_reader.asset_row meta_row(string name)
+        {
+            using var meta = meta_reader.reader.open(config.meta_db_path);
+            var rows = meta?.lookup(new HashSet<string> { name });
+            return rows?.GetValueOrDefault(name);
+        }
+
+        // maps the deserialized stub into the runtime key model.
+        private static live_worksheet map(Cutt.LiveTimelineWorkSheet sheet, int music_id)
         {
             var ws = new live_worksheet();
             ws.song_id = music_id.ToString();
+            ws.total_frames = sheet.TotalTimeLength * 60f;
 
-            ws.camera_pos = key_list(raw, "cameraPosKeys", o => new camera_pos_key
-            {
-                frame = i(o, "frame"),
-                attribute = i(o, "attribute"),
-                interpolate_type = i(o, "interpolateType"),
-                easing_type = i(o, "easingType"),
-                set_type = i(o, "setType"),
-                position = v3(o, "position"),
-                chara_pos = v3(o, "charaPos"),
-                chara_relative_base = i(o, "charaRelativeBase"),
-                chara_relative_parts = i(o, "charaRelativeParts"),
-                trace_speed = f(o, "traceSpeed"),
-                near_clip = f(o, "nearClip"),
-                far_clip = f(o, "farClip"),
-                culling_layer = i(o, "cullingLayer"),
-            });
-
-            ws.camera_lookat = key_list(raw, "cameraLookAtKeys", o => new camera_lookat_key
-            {
-                frame = i(o, "frame"),
-                easing_type = i(o, "easingType"),
-                look_at_type = i(o, "lookAtType"),
-                position = v3(o, "position"),
-                look_at_chara_pos = v3(o, "lookAtCharaPos"),
-                look_at_chara_parts = i(o, "lookAtCharaParts"),
-            });
-
-            ws.camera_fov = key_list(raw, "cameraFovKeys", o => new camera_fov_key
-            {
-                frame = i(o, "frame"),
-                easing_type = i(o, "easingType"),
-                fov_type = i(o, "fovType"),
-                fov = f(o, "fov"),
-            });
-
-            ws.camera_roll = key_list(raw, "cameraRollKeys", o => new camera_roll_key
-            {
-                frame = i(o, "frame"),
-                easing_type = i(o, "easingType"),
-                degree = f(o, "degree"),
-            });
-
-            ws.camera_switcher = key_list(raw, "cameraSwitcherKeys", o => new camera_switcher_key
-            {
-                frame = i(o, "frame"),
-                easing_type = i(o, "easingType"),
-                camera_index = i(o, "cameraIndex"),
-            });
-
-            ws.timescale = key_list(raw, "timescaleKeys", o => new timescale_key
-            {
-                frame = i(o, "frame"),
-                easing_type = i(o, "easingType"),
-                time_scale = f(o, "timeScale"),
-            });
-
-            // motion sequences: charaMotSeqList[].keys.thisList[]
-            if (raw.TryGetValue("charaMotSeqList", out var seqs_obj) && seqs_obj is List<object> seqs)
-            {
-                foreach (var seq_o in seqs)
+            ws.camera_pos = (sheet.cameraPosKeys?.thisList ?? new())
+                .Select(k => new camera_pos_key
                 {
-                    var keys = new List<motion_seq_key>();
-                    if (seq_o is Dictionary<string, object> seq &&
-                        seq.TryGetValue("keys", out var keys_obj) &&
-                        keys_obj is Dictionary<string, object> keys_d &&
-                        keys_d.TryGetValue("thisList", out var lst_obj) &&
-                        lst_obj is List<object> lst)
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    set_type = k.setType,
+                    position = k.position,
+                    chara_pos = k.charaPos,
+                    chara_relative_base = k.charaRelativeBase,
+                    chara_relative_parts = k.charaRelativeParts,
+                    trace_speed = k.traceSpeed,
+                    near_clip = k.nearClip,
+                    far_clip = k.farClip,
+                    culling_layer = k.cullingLayer,
+                }).ToList();
+
+            ws.camera_lookat = (sheet.cameraLookAtKeys?.thisList ?? new())
+                .Select(k => new camera_lookat_key
+                {
+                    frame = k.frame,
+                    easing_type = k.easingType,
+                    look_at_type = k.lookAtType,
+                    position = k.position,
+                    look_at_chara_pos = k.charaPos,
+                    look_at_chara_parts = k.lookAtCharaParts,
+                }).ToList();
+
+            ws.camera_fov = (sheet.cameraFovKeys?.thisList ?? new())
+                .Select(k => new camera_fov_key
+                {
+                    frame = k.frame,
+                    easing_type = k.easingType,
+                    fov_type = k.fovType,
+                    fov = k.fov,
+                }).ToList();
+
+            ws.camera_roll = (sheet.cameraRollKeys?.thisList ?? new())
+                .Select(k => new camera_roll_key
+                {
+                    frame = k.frame,
+                    easing_type = k.easingType,
+                    degree = k.degree,
+                }).ToList();
+
+            ws.timescale = (sheet.timescaleKeys?.thisList ?? new())
+                .Select(k => new timescale_key
+                {
+                    frame = k.frame,
+                    easing_type = 0,
+                    time_scale = k.Timescale <= 0f ? 1f : k.Timescale,
+                }).ToList();
+
+            // motion sequences: one list per charaMotSeqList entry.
+            foreach (var seq in sheet.charaMotSeqList)
+            {
+                var keys = new List<motion_seq_key>();
+                foreach (var k in seq?.keys?.thisList ?? new())
+                {
+                    keys.Add(new motion_seq_key
                     {
-                        foreach (var k_o in lst)
-                        {
-                            if (k_o is not Dictionary<string, object> o) continue;
-                            keys.Add(new motion_seq_key
-                            {
-                                frame = i(o, "frame"),
-                                easing_type = i(o, "easingType"),
-                                motion_name = s(o, "motionName"),
-                                motion_head_frame = i(o, "motionHeadFrame"),
-                                play_frame_length = i(o, "playFrameLength"),
-                                play_speed = f(o, "playSpeed"),
-                                use_second_motion = i(o, "UseSecondMotion"),
-                                motion_head_frame_separates = int_array(o, "motionHeadFrameSeparetes"),
-                            });
-                        }
-                    }
-                    ws.motion_sequences.Add(keys);
+                        frame = k.frame,
+                        easing_type = k.easingType,
+                        motion_name = k.motionName,
+                        motion_head_frame = k.motionHeadFrame,
+                        play_frame_length = k.playFrameLength,
+                        play_speed = k.playSpeed <= 0f ? 1f : k.playSpeed,
+                        use_second_motion = k.UseSecondMotion,
+                        motion_head_frame_separates = (k.motionHeadFrameSeparetes ?? new()).ToArray(),
+                    });
                 }
+                ws.motion_sequences.Add(keys);
             }
 
-            // formation: formationOffsetSet.{group}Keys.thisList[]
-            if (raw.TryGetValue("formationOffsetSet", out var fos_obj) && fos_obj is Dictionary<string, object> fos)
+            // formation: each slot group in the set shares one entry type.
+            var fos = sheet.formationOffsetSet;
+            if (fos != null)
             {
-                foreach (var kv in fos)
-                {
-                    if (kv.Key == "_attribute" || kv.Key == "_playMode") continue;
-                    if (kv.Key == "positionTrack") continue;
-                    if (kv.Key.Contains("positionPriority")) continue;
-                    if (!kv.Key.EndsWith("Keys")) continue;
-                    string group = kv.Key;
-                    var keys = new List<formation_key>();
-                    if (kv.Value is Dictionary<string, object> gd &&
-                        gd.TryGetValue("thisList", out var lst_obj) && lst_obj is List<object> lst)
-                    {
-                        foreach (var k_o in lst)
-                        {
-                            if (k_o is not Dictionary<string, object> o) continue;
-                            keys.Add(new formation_key
-                            {
-                                frame = i(o, "frame"),
-                                easing_type = i(o, "easingType"),
-                                position = v3(o, "Position"),
-                                rotation_y = f(o, "RotationY"),
-                                local_rotation_y = f(o, "LocalRotationY"),
-                                scale_factor = f(o, "ScaleFactor"),
-                                visible = i(o, "visible"),
-                                ik_system = i(o, "IKSystem"),
-                                ik_param1 = i(o, "IKSystemParam1"),
-                                ik_param2 = i(o, "IKSystemParam2"),
-                                ik_enabled_l = i(o, "IsEnabledIKMicStandLOffset"),
-                                ik_enabled_r = i(o, "IsEnabledIKMicStandROffset"),
-                                ik_l_high = v3(o, "IKMicStandLOffsetHigh"),
-                                ik_l_low = v3(o, "IKMicStandLOffsetLow"),
-                                ik_r_high = v3(o, "IKMicStandROffsetHigh"),
-                                ik_r_low = v3(o, "IKMicStandROffsetLow"),
-                            });
-                        }
-                    }
-                    ws.formation[group] = keys;
-                }
+                add_formation(ws, "center", fos.centerKeys);
+                add_formation(ws, "left1", fos.left1Keys);
+                add_formation(ws, "right1", fos.right1Keys);
+                add_formation(ws, "left2", fos.left2Keys);
+                add_formation(ws, "right2", fos.right2Keys);
+                add_formation(ws, "place06", fos.place06Keys);
+                add_formation(ws, "place07", fos.place07Keys);
+                add_formation(ws, "place08", fos.place08Keys);
+                add_formation(ws, "place09", fos.place09Keys);
+                add_formation(ws, "place10", fos.place10Keys);
+                add_formation(ws, "place11", fos.place11Keys);
+                add_formation(ws, "place12", fos.place12Keys);
+                add_formation(ws, "place13", fos.place13Keys);
+                add_formation(ws, "place14", fos.place14Keys);
+                add_formation(ws, "place15", fos.place15Keys);
+                add_formation(ws, "place16", fos.place16Keys);
+                add_formation(ws, "place17", fos.place17Keys);
+                add_formation(ws, "place18", fos.place18Keys);
+                add_formation(ws, "place19", fos.place19Keys);
+                add_formation(ws, "place20", fos.place20Keys);
             }
 
-            ws.total_frames = f(raw, "TotalTimeLength");
+            Debug.Log($"[worksheet_reader] {music_id}: {ws.camera_pos.Count} cam keys, " +
+                      $"{ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups");
             return ws;
         }
 
-        // key list helper: reads <track>{thisList:[...]} and maps each entry.
-        private static List<T> key_list<T>(Dictionary<string, object> raw, string track, Func<Dictionary<string, object>, T> make)
+        // maps one formation group's keys into the model.
+        private static void add_formation(live_worksheet ws, string name,
+            Cutt.LiveTimelineKeyFormationOffsetDataList group)
         {
-            var result = new List<T>();
-            if (!raw.TryGetValue(track, out var track_obj) || track_obj is not Dictionary<string, object> td) return result;
-            if (!td.TryGetValue("thisList", out var lst_obj) || lst_obj is not List<object> lst) return result;
-            foreach (var k_o in lst)
+            if (group?.thisList == null || group.thisList.Count == 0) return;
+            var list = new List<formation_key>();
+            foreach (var k in group.thisList)
             {
-                if (k_o is Dictionary<string, object> o) result.Add(make(o));
+                list.Add(new formation_key
+                {
+                    frame = k.frame,
+                    easing_type = k.easingType,
+                    position = k.Position,
+                    rotation_y = k.RotationY,
+                    local_rotation_y = k.LocalRotationY,
+                    scale_factor = k.ScaleFactor <= 0f ? 1f : k.ScaleFactor,
+                    visible = k.visible,
+                    ik_system = k.IKSystem,
+                });
             }
-            return result;
-        }
-
-        private static int i(Dictionary<string, object> o, string k) =>
-            o.TryGetValue(k, out var v) && v is long l ? (int)l : o.TryGetValue(k, out var v2) && v2 is double d ? (int)d : 0;
-
-        private static float f(Dictionary<string, object> o, string k)
-        {
-            if (!o.TryGetValue(k, out var v)) return 0f;
-            if (v is double d) return (float)d;
-            if (v is long l) return l;
-            return 0f;
-        }
-
-        private static string s(Dictionary<string, object> o, string k) =>
-            o.TryGetValue(k, out var v) && v is string str ? str : "";
-
-        private static Vector3 v3(Dictionary<string, object> o, string k)
-        {
-            if (!o.TryGetValue(k, out var v) || v is not Dictionary<string, object> d) return Vector3.zero;
-            return new Vector3(f(d, "x"), f(d, "y"), f(d, "z"));
-        }
-
-        private static int[] int_array(Dictionary<string, object> o, string k)
-        {
-            if (!o.TryGetValue(k, out var v) || v is not List<object> lst) return Array.Empty<int>();
-            return lst.Select(x => x is long l ? (int)l : 0).ToArray();
+            ws.formation[name] = list;
         }
     }
 }

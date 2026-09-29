@@ -38,40 +38,23 @@ namespace UV2.Live
             return bundle.LoadAsset<Shader>(shader_name);
         }
 
-        // the offline-built material -> shader asset path map (datapack).
-        private static Dictionary<string, string> mat_map;
-
-        // fixes a hierarchy's materials by reassigning the shader the game intended,
-        // using the datapack map. returns the number of materials fixed.
+        // reports fallback-shader coverage; the game's shaders bind natively via
+        // the stub assembly, so this only surfaces what still misses.
         public static int fix_game_shaders(Transform root, string context)
         {
-            if (bundle == null || mat_map == null) return 0;
             int fixed_count = 0, unknown = 0;
             foreach (var r in root.GetComponentsInChildren<Renderer>(true))
             {
-                var mats = r.sharedMaterials;
-                var changed = false;
-                for (int i = 0; i < mats.Length; i++)
+                foreach (var m in r.sharedMaterials)
                 {
-                    var m = mats[i];
                     if (m == null) continue;
-                    // log what shader the material carries so mismatches are visible.
-                    if (m.shader != null && m.shader.name != "Hidden/InternalErrorShader")
-                        Debug.Log($"[shader_manager] {context}: material {m.name} already on {m.shader.name}");
-                    if (!mat_map.TryGetValue(m.name, out var shader_path)) { unknown++; continue; }
-                    var sh = bundle.Contains(shader_path) ? bundle.LoadAsset<Shader>(shader_path) : null;
-                    if (sh == null) { unknown++; continue; }
-                    var fixed_mat = new Material(sh);
-                    fixed_mat.name = m.name;
-                    // copy the game material's texture/color properties across.
-                    copy_properties(m, fixed_mat);
-                    mats[i] = fixed_mat;
-                    changed = true;
-                    fixed_count++;
+                    if (m.shader == null || m.shader.name == "Hidden/InternalErrorShader")
+                        unknown++;
+                    else
+                        fixed_count++;
                 }
-                if (changed) r.sharedMaterials = mats;
             }
-            Debug.Log($"[shader_manager] {context}: {fixed_count} materials reshaded, {unknown} unknown");
+            Debug.Log($"[shader_manager] {context}: {fixed_count} ok, {unknown} fallback");
             return fixed_count;
         }
 
@@ -151,30 +134,5 @@ namespace UV2.Live
             }
         }
 
-        // loads the material map from the datapack sidecar.
-        public static bool load_map()
-        {
-            if (mat_map != null) return true;
-            string path = System.IO.Path.Combine(UV2.App.config.datapack_path, "material_shader_map.json");
-            if (!System.IO.File.Exists(path))
-                path = System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "data", "material_shader_map.json");
-            if (!System.IO.File.Exists(path))
-            {
-                Debug.LogWarning($"[shader_manager] no material map at {path}");
-                return false;
-            }
-            var text = System.IO.File.ReadAllText(path);
-            var parsed = MiniJson.Parse(text) as Dictionary<string, object>;
-            if (parsed == null)
-            {
-                Debug.LogWarning("[shader_manager] material map parse failed");
-                return false;
-            }
-            mat_map = new Dictionary<string, string>();
-            foreach (var kv in parsed)
-                mat_map[kv.Key] = kv.Value as string;
-            Debug.Log($"[shader_manager] material map loaded: {mat_map.Count} entries");
-            return true;
-        }
     }
 }

@@ -4,100 +4,122 @@ using System.IO;
 using System.Linq;
 using UnityEngine;
 using UV2.App;
+using UV2.Data;
 
 namespace UV2.Live
 {
-    // reads the slot->sequence map (datapack/slot_sequence_map.json): per-song
-    // motionSequenceIndices straight from the game's decoded config matrix.
-    public static class slot_sequences
+    // resolves a song's stage + a cast member's body bundle at runtime from the
+    // game's own master db and meta db: no prebuilt manifest, no sidecar files.
+    public static class manifest_reader
     {
-        private static Dictionary<string, object> songs;
-
-        public static List<int> for_song(int music_id)
+        // stage bundle names for a song's stage id (controller variants 000-009).
+        public static List<string> stage_bundles(int stage_id)
         {
-            if (songs == null) load();
-            if (songs == null || !songs.TryGetValue(music_id.ToString(), out var raw)) return null;
-            if (raw is not Dictionary<string, object> entry) return null;
-            if (entry.TryGetValue("motion_sequence_indices", out var arr) && arr is List<object> list)
-                return list.Select(v => (int)(long)v).ToList();
-            return null;
+            var names = new List<string>();
+            for (int i = 0; i < 10; i++)
+                names.Add($"3d/env/live/live{stage_id}/pfb_env_live{stage_id}_controller{i:d3}");
+            return names;
         }
 
-        private static void load()
+        // the stage material bundles the controller's prereq column names.
+        public static List<string> stage_materials(int stage_id, string controller_name)
         {
-            string path = Path.Combine(config.datapack_path, "slot_sequence_map.json");
-            if (!File.Exists(path))
-                path = Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory, "data", "slot_sequence_map.json");
-            if (!File.Exists(path)) { Debug.LogWarning("[slot_sequences] no slot_sequence_map.json"); return; }
-            try
+            using var meta = meta_reader.reader.open(config.meta_db_path);
+            if (meta == null) return new List<string>();
+            var rows = meta.lookup(new HashSet<string> { controller_name });
+            var row = rows.GetValueOrDefault(controller_name);
+            if (row?.prereq == null) return new List<string>();
+            return row.prereq.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => p.Trim())
+                .Where(p => p.StartsWith("sourceresources/"))
+                .ToList();
+        }
+
+        // body bundle + prefab for (chara, dress), computed from the phase-1
+        // naming rules against the live master db.
+        public static (string bundle, string prefab)? chara_body(int chara_id, int dress_id)
+        {
+            using var db = master_db.reader.open(config.master_db_path);
+            if (db == null) return null;
+
+            // the dress row: its chara and body type columns drive the naming.
+            var dress_rows = db.query(
+                $"SELECT chara_id, body_type, body_type_sub FROM dress_data WHERE id={dress_id}");
+            if (dress_rows.Count == 0) return null;
+            var dress = dress_rows[0];
+            int dress_chara = (int)dress.get_int(0);
+            int body_type = (int)dress.get_int(1);
+            int body_sub = (int)dress.get_int(2);
+
+            if (dress_chara != 0)
             {
-                songs = MiniJson.Parse(File.ReadAllText(path)) as Dictionary<string, object>;
-                Debug.Log($"[slot_sequences] loaded {songs?.Count ?? 0} songs");
+                // character-specific: one folder, one prefab, both from the ids.
+                string folder = $"3d/chara/body/bdy{dress_chara}_{body_sub:d2}";
+                string prefab = $"pfb_bdy{dress_chara}_{body_sub:d2}";
+                return (folder, prefab);
             }
-            catch (System.Exception e) { Debug.LogWarning($"[slot_sequences] parse failed: {e.Message}"); }
+
+            // shared: parameterized prefab from the character's body columns.
+            var chara_rows = db.query(
+                $"SELECT height, shape, bust FROM chara_data WHERE id={chara_id}");
+            if (chara_rows.Count == 0) return null;
+            var chara = chara_rows[0];
+            int height = (int)chara.get_int(0);
+            int shape = (int)chara.get_int(1);
+            int bust = (int)chara.get_int(2);
+
+            // the variant slot is a per-dress disk fact, not a db column: probe
+            // the meta db for the real prefab name (00 first, then 01..).
+            using var meta = meta_reader.reader.open(config.meta_db_path);
+            if (meta == null) return null;
+            for (int variant = 0; variant < 4; variant++)
+            {
+                string folder = $"3d/chara/body/bdy{body_type:d4}_00";
+                string prefab = $"pfb_bdy{body_type:d4}_00_{variant:d2}_{height}_{shape}_{bust}";
+                string full = $"{folder}/{prefab}";
+                var rows = meta.lookup(new HashSet<string> { full });
+                if (rows.ContainsKey(full))
+                    return (full, prefab);
+            }
+            return null;
         }
     }
 
-    // reads the concert manifest (datapack/concert_manifest.json): per-song
-    // bundle names + per-(chara,dress) body prefab names.
-    public static class manifest_reader
+    // loads the slot->sequence map from the game's cutt data bundle, deserialized
+    // by the LiveTimelineData stub (characterSettings.motionSequenceIndices).
+    public static class slot_sequences
     {
-        private static Dictionary<string, object> root;
-
-        private static void ensure()
+        // returns the per-song motionSequenceIndices; null when the data is absent.
+        public static List<int> for_song(int music_id)
         {
-            if (root != null) return;
-            string path = Path.Combine(config.datapack_path, "concert_manifest.json");
-            if (!File.Exists(path))
-                path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "concert_manifest.json");
-            if (!File.Exists(path))
-            {
-                Debug.LogError("[manifest_reader] concert_manifest.json not found");
-                root = new Dictionary<string, object>();
-                return;
-            }
             try
             {
-                root = MiniJson.Parse(File.ReadAllText(path)) as Dictionary<string, object>;
+                string bundle_name = $"cutt/cutt_son{music_id}/data";
+                using var meta = meta_reader.reader.open(config.meta_db_path);
+                var rows = meta?.lookup(new HashSet<string> { bundle_name });
+                var row = rows?.GetValueOrDefault(bundle_name);
+                if (row == null)
+                {
+                    Debug.LogWarning($"[slot_sequences] no cutt data bundle for {music_id}");
+                    return null;
+                }
+                var bundle = game_assets.open(row, config.data_root);
+                if (bundle == null) return null;
+                var data = bundle.LoadAllAssets<Gallop.Live.Cutt.LiveTimelineData>().FirstOrDefault();
+                if (data?.characterSettings == null)
+                {
+                    Debug.LogWarning($"[slot_sequences] no LiveTimelineData bound for {music_id}");
+                    return null;
+                }
+                var msi = data.characterSettings.motionSequenceIndices;
+                Debug.Log($"[slot_sequences] {music_id}: {msi?.Count ?? 0} slots mapped");
+                return msi;
             }
-            catch (Exception e)
+            catch (System.Exception e)
             {
-                Debug.LogError($"[manifest_reader] parse failed: {e.Message}");
-                root = new Dictionary<string, object>();
+                Debug.LogWarning($"[slot_sequences] {music_id}: {e.GetType().Name}: {e.Message}");
+                return null;
             }
-        }
-
-        // one song's manifest entry; null when the song is absent.
-        public static song_manifest song(int music_id)
-        {
-            ensure();
-            if (!root.TryGetValue("songs", out var songs_obj) || songs_obj is not Dictionary<string, object> songs) return null;
-            if (!songs.TryGetValue(music_id.ToString(), out var s_obj) || s_obj is not Dictionary<string, object> s) return null;
-
-            var m = new song_manifest();
-            if (s.TryGetValue("stage_id", out var sid)) m.stage_id = sid as string;
-            if (s.TryGetValue("stage_controller", out var sc) && sc is List<object> sc_l)
-                m.stage_controller = sc_l.OfType<string>().ToList();
-            if (s.TryGetValue("stage_materials", out var sm) && sm is List<object> sm_l)
-                m.stage_materials = sm_l.OfType<string>().ToList();
-            if (s.TryGetValue("motion_clips", out var mc) && mc is Dictionary<string, object> mc_d)
-                m.motion_clips = mc_d.Where(kv => kv.Value is string).ToDictionary(kv => kv.Key, kv => (string)kv.Value);
-            return m;
-        }
-
-        // body bundle + prefab names for a (chara, dress) pair; null when absent.
-        public static (string bundle, string prefab)? chara_body(int chara_id, int dress_id)
-        {
-            ensure();
-            if (!root.TryGetValue("chara_bodies", out var cb_obj) || cb_obj is not Dictionary<string, object> cb) return null;
-            if (!cb.TryGetValue($"{chara_id}:{dress_id}", out var e_obj) || e_obj is not Dictionary<string, object> e) return null;
-            string bundle = e.TryGetValue("bundle", out var b) ? b as string : null;
-            string prefab = e.TryGetValue("prefab", out var p) ? p as string : null;
-            // meta_name is the full path the game's manifest keys the bundle by.
-            if (e.TryGetValue("meta_name", out var mn) && mn is string meta && meta.Length > 0)
-                return (meta, prefab);
-            if (string.IsNullOrEmpty(bundle) || string.IsNullOrEmpty(prefab)) return null;
-            return (bundle, prefab);
         }
     }
 }

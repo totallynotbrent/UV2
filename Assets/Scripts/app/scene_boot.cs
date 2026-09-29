@@ -27,6 +27,15 @@ namespace UV2.App
                 Application.Quit();
                 yield break;
             }
+
+            bool probe_cutt = false;
+            foreach (var a in pre_args) if (a == "-probecutt") probe_cutt = true;
+            if (probe_cutt)
+            {
+                scene_bootstrap.probe_cutt_binding();
+                Application.Quit();
+                yield break;
+            }
             if (dump_icons)
             {
                 scene_bootstrap.dump_icons();
