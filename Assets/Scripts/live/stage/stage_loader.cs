@@ -516,6 +516,15 @@ namespace UV2.Live
                 int playing = 0;
                 foreach (var a in FindObjectsOfType<Animation>())
                     if (a.isPlaying) playing++;
+                // center-pixel color: a uniform gray reading means nothing
+                // rendered even when the renderer counts say otherwise.
+                var probe = new Texture2D(1, 1);
+                probe.ReadPixels(new Rect(cam.pixelWidth / 2, cam.pixelHeight / 2, 1, 1), 0, 0);
+                probe.Apply();
+                var px = probe.GetPixel(0, 0);
+                trace_log.write($"px {px.r:0.00},{px.g:0.00},{px.b:0.00}");
+                Destroy(probe);
+
                 // one character's head bone: movement across beats proves the
                 // direct-sample motion actually poses the cast.
                 string pose = "";
