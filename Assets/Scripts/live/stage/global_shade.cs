@@ -21,14 +21,38 @@ namespace UV2.Live
         private static readonly int id_vertex_depth = Shader.PropertyToID("_GlobalVertexDepthLinear");
         private static readonly int id_far_clip_log = Shader.PropertyToID("_GlobalFarClipLog");
 
+        // the fog block the game publishes every frame; the decoded off-state
+        // (GraphicSettings::SetDefaultFog) is the only safe default.
+        private static readonly int id_fog_color = Shader.PropertyToID("_Global_FogColor");
+        private static readonly int id_fog_min_distance = Shader.PropertyToID("_Global_FogMinDistance");
+        private static readonly int id_fog_length = Shader.PropertyToID("_Global_FogLength");
+        private static readonly int id_fog_max_density = Shader.PropertyToID("_Global_MaxDensity");
+        private static readonly int id_fog_max_height = Shader.PropertyToID("_Global_MaxHeight");
+        private static readonly int id_fog_world_origin = Shader.PropertyToID("_Global_FogWorld_Origin");
+
+        // the toon light the chara shaders consume: a direction published from
+        // the worksheet's global-light track, not a unity light object.
+        private static readonly int id_use_orig_light = Shader.PropertyToID("_UseOriginalDirectionalLight");
+        private static readonly int id_orig_light_dir = Shader.PropertyToID("_OriginalDirectionalLightDir");
+
         // the decoded defaults: density 1.0, densityColor 0.5 gray, min 0.
         private const float lightmap_density = 1.0f;
         private const float lightmap_min_density = 0.0f;
         private static readonly Color lightmap_density_color = new(0.5f, 0.5f, 0.5f, 1f);
 
+        // the latest global-light key interpolated for the current frame.
+        public static void set_light_track(global_light_key key, float blend)
+        {
+            _light_key = key;
+            _light_blend = blend;
+        }
+        private static global_light_key _light_key;
+        private static float _light_blend;
+
         // publishes every frame; call from the loader's update.
         public static void publish(Camera cam)
         {
+            publish_fog_off();
             // lightmap block with the exact decoded folds: both colors scale by
             // 2 first; modulate uses density directly, add clamps 1-density.
             float density_add = Mathf.Max(1f - lightmap_density, lightmap_min_density);
@@ -56,6 +80,40 @@ namespace UV2.Live
                 Shader.SetGlobalFloat(id_vertex_depth, cam.farClipPlane - cam.nearClipPlane);
                 Shader.SetGlobalFloat(id_far_clip_log, Mathf.Log(cam.farClipPlane));
             }
+
+            publish_toon_light();
+        }
+
+        // the decoded fog-off state: zero fog color, far start, full survive,
+        // so stage shaders never fade the frame to the fog color.
+        private static void publish_fog_off()
+        {
+            Shader.SetGlobalColor(id_fog_color, Color.clear);
+            Shader.SetGlobalVector(id_fog_min_distance, new Vector4(100000f, 0f, 0f, 0f));
+            Shader.SetGlobalVector(id_fog_length, new Vector4(0f, 0f, 0f, 1e-06f));
+            Shader.SetGlobalFloat(id_fog_max_density, 1f);
+            Shader.SetGlobalFloat(id_fog_max_height, 100f);
+            Shader.SetGlobalVector(id_fog_world_origin, Vector4.zero);
+        }
+
+        // the chara toon light: direction from the worksheet's global-light
+        // track, lerped between neighboring keys; identity tilt when no track.
+        private static void publish_toon_light()
+        {
+            Shader.SetGlobalFloat(id_use_orig_light, 1f);
+            var dir = Vector3.down;
+            if (_light_key != null)
+            {
+                var k = _light_key;
+                Vector3 light_dir = k.light_dir;
+                if (light_dir.sqrMagnitude < 1e-06f)
+                    light_dir = Vector3.down;
+                // the game's euler angles point the light; the shader wants the
+                // direction the light travels.
+                var rot = Quaternion.Euler(light_dir);
+                dir = -(rot * Vector3.forward).normalized;
+            }
+            Shader.SetGlobalVector(id_orig_light_dir, dir);
         }
     }
 }

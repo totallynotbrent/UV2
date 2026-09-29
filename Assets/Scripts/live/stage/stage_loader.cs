@@ -361,10 +361,9 @@ namespace UV2.Live
             {
                 var cam_go = new GameObject("main_camera", typeof(Camera));
                 cam = cam_go.GetComponent<Camera>();
-                cam.clearFlags = CameraClearFlags.SolidColor;
-                cam.backgroundColor = new Color(0.05f, 0.05f, 0.07f, 1f);
-                cam.nearClipPlane = 0.3f;
-                cam.farClipPlane = 1000f;
+                cam.clearFlags = CameraClearFlags.Skybox;
+                cam.nearClipPlane = 1f;
+                cam.farClipPlane = 100f;
             }
 
             var director_go = new GameObject("camera_director");
@@ -395,6 +394,31 @@ namespace UV2.Live
             motion.play();
         }
 
+        // samples the worksheet's global-light track for the current frame and
+        // hands the interpolated key to the shade publisher.
+        private void update_light_track()
+        {
+            if (ws == null || ws.global_light.Count == 0) return;
+            float frame = clock?.time ?? 0f;
+            frame *= 60f;
+
+            var keys = ws.global_light;
+            int last = keys.Count - 1;
+            if (frame <= keys[0].frame) { global_shade.set_light_track(keys[0], 0f); return; }
+            if (frame >= keys[last].frame) { global_shade.set_light_track(keys[last], 1f); return; }
+
+            for (int i = 0; i < last; i++)
+            {
+                if (frame >= keys[i].frame && frame < keys[i + 1].frame)
+                {
+                    float span = keys[i + 1].frame - keys[i].frame;
+                    float blend = span <= 0 ? 0f : (frame - keys[i].frame) / span;
+                    global_shade.set_light_track(keys[i], blend);
+                    return;
+                }
+            }
+        }
+
         // reads the song's livesettings from the game install and picks the
         // stage id row, for selections that never carried one.
         private int resolve_stage_id(int music_id)
@@ -412,6 +436,7 @@ namespace UV2.Live
         private void Update()
         {
             clock?.advance(Time.deltaTime);
+            update_light_track();
             global_shade.publish(FindObjectOfType<Camera>());
 
             // heartbeat: camera state + what is actually visible, once per second.

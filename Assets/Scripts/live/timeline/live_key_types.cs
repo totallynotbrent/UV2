@@ -104,11 +104,31 @@ namespace UV2.Live
         public Vector3 ik_r_low;
     }
 
-    // the parsed worksheet: every track phase 2 consumes.
+    // one authored global-light key: the toon light direction for the frame.
     [Serializable]
+    public class global_light_key
+    {
+        public int frame;
+        public int attribute;
+        public int interpolate_type;
+        public int easing_type;
+        public Vector3 light_dir;
+        public Color rim_color;
+        public float rim_step;
+        public float rim_feather;
+        public float rim_spec_rate;
+        public float rim_shadow_rate;
+        public Color rim_color2;
+        public float rim_step2;
+        public float rim_feather2;
+        public float rim_spec_rate2;
+        public float rim_shadow_rate2;
+    }
+
     public class live_worksheet
     {
         public string song_id;
+        public List<global_light_key> global_light = new();
         public List<camera_pos_key> camera_pos = new();
         public List<camera_lookat_key> camera_lookat = new();
         public List<camera_fov_key> camera_fov = new();
