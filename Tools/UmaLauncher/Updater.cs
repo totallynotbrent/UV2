@@ -97,6 +97,35 @@ namespace UmaLauncher
             }
         }
 
+        // re-extracts entries that were locked while the old process was still
+        // alive; runs before the form opens so the app boots fully updated.
+        public static void ApplyPending()
+        {
+            try
+            {
+                string appDir = AppDomain.CurrentDomain.BaseDirectory;
+                string pendingPath = Path.Combine(appDir, "backup", "pending.txt");
+                string zipPath = Path.Combine(appDir, "backup", "pending.zip");
+                if (!File.Exists(pendingPath) || !File.Exists(zipPath)) return;
+
+                var pending = new HashSet<string>(File.ReadAllLines(pendingPath));
+                using ZipArchive archive = ZipFile.OpenRead(zipPath);
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                {
+                    if (!pending.Contains(entry.FullName)) continue;
+                    string target = Path.Combine(appDir, entry.FullName);
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    entry.ExtractToFile(target, true);
+                }
+                File.Delete(pendingPath);
+                File.Delete(zipPath);
+            }
+            catch
+            {
+                // a failed catch-up must never block boot.
+            }
+        }
+
         // extracts over the app folder; locked files land in a pending list for the next boot.
         private static void InstallAndRestart(Control parent, string zipPath)
         {
@@ -130,7 +159,10 @@ namespace UmaLauncher
             }
 
             if (pending.Count > 0)
+            {
                 File.WriteAllLines(Path.Combine(backupDir, "pending.txt"), pending);
+                File.Copy(zipPath, Path.Combine(backupDir, "pending.zip"), true);
+            }
 
             if (!string.IsNullOrEmpty(exePath))
                 Process.Start(exePath);
