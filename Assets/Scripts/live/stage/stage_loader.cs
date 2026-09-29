@@ -50,12 +50,18 @@ namespace UV2.Live
                     return false;
                 }
                 clock = new timeline_clock();
+                trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
 
                 // the game's shader bundle must be resident before any material-bearing
                 // bundle loads, or their shader externals resolve to the magenta fallback.
                 var shader_row = meta_row("shader");
                 if (shader_row != null)
-                    shader_manager.ensure_loaded(shader_row, config.data_root);
+                {
+                    bool shaders_ok = shader_manager.ensure_loaded(shader_row, config.data_root);
+                    trace_log.write($"shader bundle: {(shaders_ok ? "loaded" : "FAILED")}");
+                }
+                else
+                    trace_log.write("shader bundle: NO META ROW");
 
                 // stage: materials from the controller's prereq list, then the
                 // controller itself, all resolved from the selection's stage id.
@@ -68,6 +74,7 @@ namespace UV2.Live
                     return false;
                 }
                 var material_names = manifest_reader.stage_materials(sel.stage_id, first_controller);
+                trace_log.write($"stage {sel.stage_id}: controller '{first_controller}', {material_names.Count} material bundles");
                 foreach (var name in material_names.Concat(new[] { first_controller }))
                 {
                     // the stage controller stub deserializes _stageObjects from the
@@ -86,6 +93,7 @@ namespace UV2.Live
                             {
                                 var stage = Instantiate(prefab);
                                 Debug.Log($"[stage_loader] stage instantiated: {stage.name}, renderers {stage.GetComponentsInChildren<Renderer>(true).Length}");
+                                trace_log.write($"stage controller instantiated: {stage.name}");
                                 shader_manager.fix_game_shaders(stage.transform, "stage");
 
                                 // the controller prefab is a shell: the StageController stub
@@ -105,6 +113,7 @@ namespace UV2.Live
                                     }
                                 }
                                 Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
+                                trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
                                 shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
                                 shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
                             }
@@ -113,11 +122,14 @@ namespace UV2.Live
                 }
 
                 // cast
+                int cast_loaded = 0, cast_missed = 0;
                 foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
                 {
                     var root = load_character(slot.chara_id, slot.dress_id);
-                    if (root != null) chara_roots.Add(root);
+                    if (root != null) { chara_roots.Add(root); cast_loaded++; }
+                    else cast_missed++;
                 }
+                trace_log.write($"cast: {cast_loaded} loaded, {cast_missed} missed, {chara_roots.Count} roots total");
 
                 // motion clips: one bundle per authored motion name in the worksheet.
                 var clip_names = new HashSet<string>();
@@ -126,8 +138,10 @@ namespace UV2.Live
                         if (!string.IsNullOrEmpty(key.motion_name))
                             clip_names.Add(key.motion_name);
                 var clips = load_clips(clip_names);
+                trace_log.write($"motion: {clip_names.Count} authored names -> {clips.Count} clips loaded");
 
                 wire_drivers(clips, sel.music_id);
+                trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
                 return true;
             }
             catch (Exception e)
@@ -192,7 +206,8 @@ namespace UV2.Live
             if (prefab == null) { Debug.LogWarning($"[stage_loader] chara {chara_id}: LoadAsset null for {prefab_name}"); return null; }
 
             var instance = Instantiate(prefab);
-            Debug.Log($"[stage_loader] chara {chara_id} dress {dress_id} -> {body.prefab}");
+            int chara_renderers = instance.GetComponentsInChildren<Renderer>(true).Length;
+            trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: {chara_renderers} renderers");
             shader_manager.fix_game_shaders(instance.transform, $"chara {chara_id}");
             return instance.transform;
         }
@@ -317,6 +332,27 @@ namespace UV2.Live
         private void Update()
         {
             clock?.advance(Time.deltaTime);
+            global_shade.publish(FindObjectOfType<Camera>());
+
+            // heartbeat: camera state + what is actually visible, once per second.
+            if (Time.time - _last_beat >= 1f)
+            {
+                _last_beat = Time.time;
+                var cam = Camera.main != null ? Camera.main : FindObjectOfType<Camera>();
+                if (cam == null) { trace_log.write($"beat {Time.time:0}: NO CAMERA"); return; }
+                int visible = 0, total = 0;
+                foreach (var r in FindObjectsOfType<Renderer>())
+                {
+                    total++;
+                    if (r.isVisible) visible++;
+                }
+                int playing = 0;
+                foreach (var a in FindObjectsOfType<Animation>())
+                    if (a.isPlaying) playing++;
+                trace_log.write($"beat t={clock?.time ?? 0f:0.0}s cam_pos {cam.transform.position} fov {cam.fieldOfView:0.0} renderers {visible}/{total} visible animations_playing {playing}");
+            }
         }
+
+        private float _last_beat = -1f;
     }
 }
