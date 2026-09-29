@@ -52,6 +52,14 @@ namespace UV2.Live
                 clock = new timeline_clock();
                 trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
 
+                // selections written by older launchers carry no stage id; resolve
+                // it from the game's livesettings the same way the catalog does.
+                if (sel.stage_id <= 0)
+                {
+                    sel.stage_id = resolve_stage_id(sel.music_id);
+                    trace_log.write($"stage id resolved at runtime: {sel.stage_id}");
+                }
+
                 // the game's shader bundle must be resident before any material-bearing
                 // bundle loads, or their shader externals resolve to the magenta fallback.
                 var shader_row = meta_row("shader");
@@ -206,10 +214,68 @@ namespace UV2.Live
             if (prefab == null) { Debug.LogWarning($"[stage_loader] chara {chara_id}: LoadAsset null for {prefab_name}"); return null; }
 
             var instance = Instantiate(prefab);
+
+            // the body ships without its head: the head prefab lives in the
+            // chr{chara}_00 head bundle; parent its Head bone onto the body's
+            // Head bone so both share one skeleton.
+            int head_renderers = attach_head(instance.transform, chara_id);
+
             int chara_renderers = instance.GetComponentsInChildren<Renderer>(true).Length;
-            trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: {chara_renderers} renderers");
+            trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: {chara_renderers} renderers (head +{head_renderers})");
             shader_manager.fix_game_shaders(instance.transform, $"chara {chara_id}");
             return instance.transform;
+        }
+
+        // loads the character's head prefab and parents its Head bone under the
+        // body's Head bone; returns the renderers the head added (0 on failure).
+        private int attach_head(Transform body_root, int chara_id)
+        {
+            string head_name = $"3d/chara/head/chr{chara_id}_00/pfb_chr{chara_id}_00";
+            var row = meta_row(head_name);
+            if (row == null)
+            {
+                trace_log.write($"chara {chara_id}: no head bundle row {head_name}");
+                return 0;
+            }
+            if (!string.IsNullOrEmpty(row.prereq))
+                foreach (var pre in row.prereq.Split(new[] { ';' }, System.StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var pre_row = meta_row(pre.Trim());
+                    if (pre_row != null) game_assets.open(pre_row, config.data_root);
+                }
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) { trace_log.write($"chara {chara_id}: head bundle open failed"); return 0; }
+
+            string[] all = bundle.GetAllAssetNames();
+            string prefab_name = all.FirstOrDefault(n => n.EndsWith($"/{row.name.Split('/').Last()}.prefab"))
+                                 ?? all.FirstOrDefault(n => n.EndsWith(".prefab"));
+            var prefab = string.IsNullOrEmpty(prefab_name) ? null : bundle.LoadAsset<GameObject>(prefab_name);
+            if (prefab == null) { trace_log.write($"chara {chara_id}: head LoadAsset null"); return 0; }
+
+            var head = Instantiate(prefab);
+            var body_head_bone = body_root.GetComponentInChildren<Transform>().Find("Head")
+                ?? find_deep(body_root, "Head");
+            var head_head_bone = find_deep(head.transform, "Head");
+            if (body_head_bone == null || head_head_bone == null)
+            {
+                trace_log.write($"chara {chara_id}: head bones not found (body {body_head_bone != null}, head {head_head_bone != null})");
+                return head.GetComponentsInChildren<Renderer>(true).Length;
+            }
+            head_head_bone.SetParent(body_head_bone, false);
+            // the head prefab root stays as a sibling shell; keep it for materials.
+            return head.GetComponentsInChildren<Renderer>(true).Length;
+        }
+
+        // depth-first name search through a hierarchy.
+        private Transform find_deep(Transform root, string name)
+        {
+            foreach (Transform c in root)
+            {
+                if (c.name == name) return c;
+                var hit = find_deep(c, name);
+                if (hit != null) return hit;
+            }
+            return null;
         }
 
         // fixes materials whose shader externals resolved to fallbacks.
@@ -327,6 +393,20 @@ namespace UV2.Live
                 }
             }
             motion.play();
+        }
+
+        // reads the song's livesettings from the game install and picks the
+        // stage id row, for selections that never carried one.
+        private int resolve_stage_id(int music_id)
+        {
+            var ls_row = meta_row("livesettings");
+            if (ls_row == null) return -1;
+            var ls_bundle = game_assets.open(ls_row, config.data_root);
+            if (ls_bundle == null) return -1;
+            if (!ls_bundle.Contains(music_id.ToString())) return -1;
+            var text = ls_bundle.LoadAsset<TextAsset>(music_id.ToString());
+            var rows = livesettings.parse_csv(text != null ? text.text : null);
+            return livesettings.stage_id(rows);
         }
 
         private void Update()
