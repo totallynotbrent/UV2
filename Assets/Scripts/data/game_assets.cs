@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -47,9 +48,15 @@ namespace UV2.Data
     // loads named assets out of the game's own install: meta row -> decrypt stream -> AssetBundle.
     public static class game_assets
     {
-        // opens the bundle for one manifest row and returns the loaded AssetBundle.
+        // already-loaded bundles by hash: unity refuses to load the same bundle file
+        // twice, and shared prereqs (materials, ikcols) load repeatedly across a cast.
+        private static readonly Dictionary<string, AssetBundle> loaded = new();
+
+        // opens the bundle for one manifest row, reusing an already-loaded instance.
         public static AssetBundle open(meta_reader.asset_row row, string data_root)
         {
+            if (loaded.TryGetValue(row.hash, out var existing) && existing != null)
+                return existing;
             string path = Path.Combine(data_root, "dat", row.hash.Substring(0, 2), row.hash);
             if (!File.Exists(path))
             {
@@ -61,7 +68,11 @@ namespace UV2.Data
                 var stream = new decrypt_stream(path, row.key);
                 var bundle = AssetBundle.LoadFromStream(stream);
                 if (bundle == null)
+                {
                     Debug.LogWarning($"[game_assets] LoadFromStream returned null for {row.name} (hash {row.hash}, key {row.key})");
+                    return null;
+                }
+                loaded[row.hash] = bundle;
                 return bundle;
             }
             catch (System.Exception e)

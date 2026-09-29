@@ -14,8 +14,28 @@ namespace UV2.App
         {
             var pre_args = System.Environment.GetCommandLineArgs();
             bool dump_icons = false;
-            foreach (var a in pre_args) if (a == "-dumpicons") dump_icons = true;
+            bool dump_shaders = false;
+            foreach (var a in pre_args)
+            {
+                if (a == "-dumpicons") dump_icons = true;
+                if (a == "-dumpshaders") dump_shaders = true;
+            }
 
+            if (dump_shaders)
+            {
+                scene_bootstrap.dump_shader_map();
+                Application.Quit();
+                yield break;
+            }
+
+            bool probe_cutt = false;
+            foreach (var a in pre_args) if (a == "-probecutt") probe_cutt = true;
+            if (probe_cutt)
+            {
+                scene_bootstrap.probe_cutt_binding();
+                Application.Quit();
+                yield break;
+            }
             if (dump_icons)
             {
                 scene_bootstrap.dump_icons();

@@ -27,6 +27,19 @@ namespace UV2.UI
             title_rect.pivot = new Vector2(0.5f, 1f);
             title_rect.anchoredPosition = new Vector2(0, -40);
 
+            // phase 2: when the song's worksheet is extracted, run the real concert.
+            var loader_go = new GameObject("stage_loader");
+            var loader = loader_go.AddComponent<UV2.Live.stage_loader>();
+            if (loader.open(sel))
+            {
+                // the concert assembled: tear down the whole summary ui (canvas
+                // included) so the 3d camera has the screen to itself.
+                Destroy(canvas.gameObject);
+                Destroy(gameObject);
+                return;
+            }
+            Destroy(loader_go);
+
             // the launcher only knows the song and cast; the stage resolves from the install here.
             if (sel.stage_id < 0)
             {
