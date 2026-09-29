@@ -16,6 +16,9 @@ namespace UV2.UI
             ui_theme.panel(root, "backdrop", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.05f, 0.05f, 0.07f, 1f), raycast: true);
 
             var sel = selection_store.load();
+            trace_log.write(sel == null
+                ? "no selection file"
+                : $"selection: song {sel.music_id} '{sel.title}' stage {sel.stage_id} members {sel.member_count} slots {sel.slots.Count}");
             if (sel == null)
             {
                 ui_theme.make_text(root, "empty", "no selection file found.\nlaunch a concert from the desktop launcher.", 18, ui_theme.text_main).GetComponent<RectTransform>().anchoredPosition = new Vector2(40, -40);
@@ -32,12 +35,14 @@ namespace UV2.UI
             var loader = loader_go.AddComponent<UV2.Live.stage_loader>();
             if (loader.open(sel))
             {
+                trace_log.write("concert open: SUCCESS - tearing down the summary ui");
                 // the concert assembled: tear down the whole summary ui (canvas
                 // included) so the 3d camera has the screen to itself.
                 Destroy(canvas.gameObject);
                 Destroy(gameObject);
                 return;
             }
+            trace_log.write($"concert open: FAILED - {loader.last_error}");
             Destroy(loader_go);
 
             // the launcher only knows the song and cast; the stage resolves from the install here.

@@ -21,6 +21,9 @@ namespace UV2.App
                 if (a == "-dumpshaders") dump_shaders = true;
             }
 
+            trace_log.open();
+            trace_log.write($"args: {string.Join(" ", System.Environment.GetCommandLineArgs())}");
+
             if (dump_shaders)
             {
                 scene_bootstrap.dump_shader_map();
