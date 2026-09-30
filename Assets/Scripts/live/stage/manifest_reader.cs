@@ -54,10 +54,11 @@ namespace UV2.Live
 
             if (dress_chara != 0)
             {
-                // character-specific: one folder, one prefab, both from the ids.
+                // character-specific: one folder, one prefab, both from the
+                // ids; the meta row keys on the full folder/prefab path.
                 string folder = $"3d/chara/body/bdy{dress_chara}_{body_sub:d2}";
                 string prefab = $"pfb_bdy{dress_chara}_{body_sub:d2}";
-                return (folder, prefab);
+                return ($"{folder}/{prefab}", prefab);
             }
 
             // shared: parameterized prefab from the character's body columns.
