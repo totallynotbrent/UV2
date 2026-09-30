@@ -68,6 +68,7 @@ namespace UV2.Live
                 var root = run_phase_character(slot);
                 if (root == null) { _cast_missed++; continue; }
                 chara_roots.Add(root);
+                UV2.Live.chara_parts.record(root);
             }
             trace_log.write($"cast: {chara_roots.Count} loaded, {_cast_missed} missed, {chara_roots.Count} roots total");
 
