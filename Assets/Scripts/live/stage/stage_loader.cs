@@ -39,31 +39,67 @@ namespace UV2.Live
         // (caller falls back to the summary screen with the reason shown).
         public string last_error { get; private set; }
 
-        public bool open(selection_state sel)
+        // builds the whole concert for the selection; yields between load
+        // phases so the ui paints live progress. C# forbids yields inside
+        // try/catch, so each phase is a plain method that returns an error
+        // string (null = keep going) and the coroutine yields between phases.
+        private System.Collections.IEnumerator open_core(selection_state sel)
+        {
+            if (!run_phase_worksheet(sel)) yield break;
+            UV2.UI.load_progress.report($"binding worksheet ({ws.camera_pos.Count} cam keys)");
+            trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
+            yield return null;
+
+            if (!run_phase_stage(sel)) yield break;
+            int stage_step = 0;
+            var stage_bundles = _stage_material_names.Concat(new[] { _stage_first_controller }).ToList();
+            foreach (var name in stage_bundles)
+            {
+                UV2.UI.load_progress.report($"loading stage {sel.stage_id}: bundle {++stage_step}/{stage_bundles.Count}");
+                yield return null;
+                if (!run_phase_stage_bundle(name)) yield break;
+            }
+
+            int cast_step = 0, cast_total = sel.slots.Count(s => s.chara_id > 0);
+            foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
+            {
+                UV2.UI.load_progress.report($"loading cast {++cast_step}/{cast_total}");
+                yield return null;
+                var root = run_phase_character(slot);
+                if (root == null) { _cast_missed++; continue; }
+                chara_roots.Add(root);
+            }
+            trace_log.write($"cast: {chara_roots.Count} loaded, {_cast_missed} missed, {chara_roots.Count} roots total");
+
+            UV2.UI.load_progress.report("loading motion clips");
+            yield return null;
+            var clips = run_phase_clips(sel);
+            if (clips == null) yield break;
+
+            wire_drivers(clips, sel.music_id);
+            trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
+
+            UV2.UI.load_progress.report("starting music");
+            yield return null;
+            start_music(sel.music_id);
+            UV2.UI.load_progress.report("concert ready");
+            _open_ok = true;
+        }
+
+        // non-yielding phase helpers, each wrapped in try/catch, returning
+        // false/null on failure with last_error set.
+        private bool run_phase_worksheet(selection_state sel)
         {
             try
             {
-                // the worksheet comes straight from the game's cutt camera bundle,
-                // deserialized by the generated stub; no extraction, no sidecar.
                 ws = worksheet_reader.load(sel.music_id);
-                if (ws == null)
-                {
-                    last_error = $"no worksheet in the cutt bundles for song {sel.music_id}";
-                    return false;
-                }
+                if (ws == null) { last_error = $"no worksheet in the cutt bundles for song {sel.music_id}"; return false; }
                 clock = new timeline_clock();
-                trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
-
-                // selections written by older launchers carry no stage id; resolve
-                // it from the game's livesettings the same way the catalog does.
                 if (sel.stage_id <= 0)
                 {
                     sel.stage_id = resolve_stage_id(sel.music_id);
                     trace_log.write($"stage id resolved at runtime: {sel.stage_id}");
                 }
-
-                // the game's shader bundle must be resident before any material-bearing
-                // bundle loads, or their shader externals resolve to the magenta fallback.
                 var shader_row = meta_row("shader");
                 if (shader_row != null)
                 {
@@ -73,75 +109,93 @@ namespace UV2.Live
                 else
                     trace_log.write("shader bundle: NO META ROW");
 
-                // stage: materials from the controller's prereq list, then the
-                // controller itself, all resolved from the selection's stage id.
                 var controllers = manifest_reader.stage_bundles(sel.stage_id);
-                string first_controller = controllers.FirstOrDefault(c => meta_row(c) != null)
+                _stage_first_controller = controllers.FirstOrDefault(c => meta_row(c) != null)
                                           ?? controllers.FirstOrDefault();
-                if (first_controller == null)
+                if (_stage_first_controller == null)
                 {
                     last_error = $"no stage controller for stage {sel.stage_id}";
                     return false;
                 }
-                var material_names = manifest_reader.stage_materials(sel.stage_id, first_controller);
-                trace_log.write($"stage {sel.stage_id}: controller '{first_controller}', {material_names.Count} material bundles");
-                foreach (var name in material_names.Concat(new[] { first_controller }))
-                {
-                    // the stage controller stub deserializes _stageObjects from the
-                    // controller itself, so the plain game bundle carries everything.
-                    var b = load_bundle_keep(name);
-                    Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
-                    if (b != null && name.Contains("controller"))
-                    {
-                        // instantiate the stage controller prefab
-                        string[] all = b.GetAllAssetNames();
-                        string prefab_name = all.FirstOrDefault(n => n.EndsWith(".prefab"));
-                        if (prefab_name != null)
-                        {
-                            var prefab = b.LoadAsset<GameObject>(prefab_name);
-                            if (prefab != null)
-                            {
-                                var stage = Instantiate(prefab);
-                                Debug.Log($"[stage_loader] stage instantiated: {stage.name}, renderers {stage.GetComponentsInChildren<Renderer>(true).Length}");
-                                trace_log.write($"stage controller instantiated: {stage.name}");
-                                shader_manager.fix_game_shaders(stage.transform, "stage");
+                _stage_material_names = manifest_reader.stage_materials(sel.stage_id, _stage_first_controller);
+                trace_log.write($"stage {sel.stage_id}: controller '{_stage_first_controller}', {_stage_material_names.Count} material bundles");
+                return true;
+            }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] open phase failed: {e}");
+                return false;
+            }
+        }
 
-                                // the controller prefab is a shell: the StageController stub
-                                // deserialized the game's own _stageObjects list, which names
-                                // every stage root. instantiate them all under one stage root.
-                                var ctrl = stage.GetComponent<Gallop.Live.StageController>();
-                                var geo_root = new GameObject("stage_geometry");
-                                int placed = 0;
-                                if (ctrl != null && ctrl._stageObjects != null)
+        private bool run_phase_stage(selection_state sel) => true;
+
+        private bool run_phase_stage_bundle(string name)
+        {
+            try
+            {
+                var b = load_bundle_keep(name);
+                Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
+                if (b != null && name.Contains("controller"))
+                {
+                    string[] all = b.GetAllAssetNames();
+                    string prefab_name = all.FirstOrDefault(n => n.EndsWith(".prefab"));
+                    if (prefab_name != null)
+                    {
+                        var prefab = b.LoadAsset<GameObject>(prefab_name);
+                        if (prefab != null)
+                        {
+                            var stage = Instantiate(prefab);
+                            Debug.Log($"[stage_loader] stage instantiated: {stage.name}, renderers {stage.GetComponentsInChildren<Renderer>(true).Length}");
+                            trace_log.write($"stage controller instantiated: {stage.name}");
+                            shader_manager.fix_game_shaders(stage.transform, "stage");
+
+                            var ctrl = stage.GetComponent<Gallop.Live.StageController>();
+                            var geo_root = new GameObject("stage_geometry");
+                            int placed = 0;
+                            if (ctrl != null && ctrl._stageObjects != null)
+                            {
+                                foreach (var go in ctrl._stageObjects)
                                 {
-                                    foreach (var go in ctrl._stageObjects)
-                                    {
-                                        if (go == null) continue;
-                                        var piece = Instantiate(go, geo_root.transform);
-                                        piece.name = go.name;
-                                        placed++;
-                                    }
+                                    if (go == null) continue;
+                                    var piece = Instantiate(go, geo_root.transform);
+                                    piece.name = go.name;
+                                    placed++;
                                 }
-                                Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
-                                trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
-                                shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
-                                shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
                             }
+                            Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
+                            trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
+                            shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
+                            shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
                         }
                     }
                 }
+                return true;
+            }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] stage bundle phase failed: {e}");
+                return false;
+            }
+        }
 
-                // cast
-                int cast_loaded = 0, cast_missed = 0;
-                foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
-                {
-                    var root = load_character(slot.chara_id, slot.dress_id);
-                    if (root != null) { chara_roots.Add(root); cast_loaded++; }
-                    else cast_missed++;
-                }
-                trace_log.write($"cast: {cast_loaded} loaded, {cast_missed} missed, {chara_roots.Count} roots total");
+        private Transform run_phase_character(UV2.App.slot_pick slot)
+        {
+            try { return load_character(slot.chara_id, slot.dress_id); }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] character phase failed: {e}");
+                return null;
+            }
+        }
 
-                // motion clips: one bundle per authored motion name in the worksheet.
+        private System.Collections.Generic.Dictionary<string, AnimationClip> run_phase_clips(selection_state sel)
+        {
+            try
+            {
                 var clip_names = new HashSet<string>();
                 foreach (var seq in ws.motion_sequences)
                     foreach (var key in seq)
@@ -149,20 +203,25 @@ namespace UV2.Live
                             clip_names.Add(key.motion_name);
                 var clips = load_clips(clip_names);
                 trace_log.write($"motion: {clip_names.Count} authored names -> {clips.Count} clips loaded");
-
-                wire_drivers(clips, sel.music_id);
-                trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
-
-                start_music(sel.music_id);
-                return true;
+                return clips;
             }
             catch (Exception e)
             {
                 last_error = $"{e.GetType().Name}: {e.Message}";
-                Debug.LogError($"[stage_loader] open failed: {e}");
-                return false;
+                Debug.LogError($"[stage_loader] clips phase failed: {e}");
+                return null;
             }
         }
+
+        private System.Collections.Generic.List<string> _stage_material_names;
+        private string _stage_first_controller;
+        private int _cast_missed;
+
+        // true once open_core ran to completion.
+        public bool opened { get { return _open_ok; } }
+        private bool _open_ok;
+
+        public System.Collections.IEnumerator open(selection_state sel) { yield return open_core(sel); }
 
         // opens a bundle by manifest name and keeps it resident.
         private AssetBundle load_bundle_keep(string name)
@@ -625,7 +684,8 @@ namespace UV2.Live
             var waves = live_audio.parse_afs2(bank);
             if (waves.Count == 0)
             {
-                trace_log.write("music: afs2 parse found no waves");
+                UV2.UI.load_progress.report("starting music");
+            trace_log.write("music: afs2 parse found no waves");
                 return;
             }
 

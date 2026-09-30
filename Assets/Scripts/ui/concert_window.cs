@@ -30,20 +30,21 @@ namespace UV2.UI
             title_rect.pivot = new Vector2(0.5f, 1f);
             title_rect.anchoredPosition = new Vector2(0, -40);
 
-            // phase 2: when the song's worksheet is extracted, run the real concert.
+            // phase 2: the load runs as a coroutine so the ui paints live
+            // progress between phases instead of freezing the frame.
             var loader_go = new GameObject("stage_loader");
             var loader = loader_go.AddComponent<UV2.Live.stage_loader>();
-            if (loader.open(sel))
-            {
-                trace_log.write("concert open: SUCCESS - tearing down the summary ui");
-                // the concert assembled: tear down the whole summary ui (canvas
-                // included) so the 3d camera has the screen to itself.
-                Destroy(canvas.gameObject);
-                Destroy(gameObject);
-                return;
-            }
-            trace_log.write($"concert open: FAILED - {loader.last_error}");
-            Destroy(loader_go);
+
+            var progress_rect = ui_theme.make_text(root, "progress", "starting concert...", 17, ui_theme.text_main).GetComponent<RectTransform>();
+            progress_rect.anchorMin = progress_rect.anchorMax = new Vector2(0.5f, 0f);
+            progress_rect.pivot = new Vector2(0.5f, 0.5f);
+            progress_rect.anchoredPosition = new Vector2(0, 120);
+
+            var progress_text = progress_rect.GetComponent<UnityEngine.UI.Text>();
+            _pending_loader = loader;
+            _pending_canvas = canvas.gameObject;
+            _progress_text = progress_text;
+            StartCoroutine(run_open(loader, progress_text));
 
             // the launcher only knows the song and cast; the stage resolves from the install here.
             if (sel.stage_id < 0)
@@ -104,6 +105,34 @@ namespace UV2.UI
             var note_rect = note.GetComponent<RectTransform>();
             note_rect.anchorMin = note_rect.anchorMax = note_rect.pivot = new Vector2(0, 0);
             note_rect.anchoredPosition = new Vector2(40, 28);
+        }
+
+        // drives the loader coroutine and repaints the progress line every
+        // frame; tears the ui down on success, keeps it on failure.
+        private UV2.Live.stage_loader _pending_loader;
+        private GameObject _pending_canvas;
+        private UnityEngine.UI.Text _progress_text;
+
+        private System.Collections.IEnumerator run_open(UV2.Live.stage_loader loader, UnityEngine.UI.Text progress_text)
+        {
+            yield return loader.open(selection_store.load());
+            if (loader.opened)
+            {
+                trace_log.write("concert open: SUCCESS - tearing down the summary ui");
+                Destroy(_pending_canvas);
+                Destroy(gameObject);
+                yield break;
+            }
+            trace_log.write($"concert open: FAILED - {loader.last_error}");
+            Destroy(loader.gameObject);
+            if (progress_text != null)
+                progress_text.text = $"could not open concert:\n{loader.last_error}";
+        }
+
+        private void Update()
+        {
+            if (_progress_text != null && _pending_loader != null && !_pending_loader.opened)
+                _progress_text.text = UV2.UI.load_progress.describe();
         }
     }
 }
