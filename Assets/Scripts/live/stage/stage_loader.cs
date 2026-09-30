@@ -385,17 +385,53 @@ namespace UV2.Live
             if (prefab == null) { trace_log.write($"chara {chara_id}: head LoadAsset null"); return 0; }
 
             var head = Instantiate(prefab);
-            var body_head_bone = body_root.GetComponentInChildren<Transform>().Find("Head")
-                ?? find_deep(body_root, "Head");
-            var head_head_bone = find_deep(head.transform, "Head");
-            if (body_head_bone == null || head_head_bone == null)
+            int head_renderers = head.GetComponentsInChildren<Renderer>(true).Length;
+
+            // the game's rig is one skeleton shared by body and head meshes;
+            // remap every head skinned mesh onto the body's bones by name so
+            // the head deforms with (and is culled with) the body skeleton.
+            var body_bones = new Dictionary<string, Transform>();
+            foreach (var smr in body_root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                foreach (var b in smr.bones)
+                    if (b != null && !body_bones.ContainsKey(b.name)) body_bones[b.name] = b;
+
+            var replaced = new List<Transform>();
+            int remapped_total = 0, kept = 0;
+            foreach (var skin in head.GetComponentsInChildren<SkinnedMeshRenderer>(true))
             {
-                trace_log.write($"chara {chara_id}: head bones not found (body {body_head_bone != null}, head {head_head_bone != null})");
-                return head.GetComponentsInChildren<Renderer>(true).Length;
+                if (skin.rootBone != null && body_bones.TryGetValue(skin.rootBone.name, out var new_root))
+                    skin.rootBone = new_root;
+                var remapped = new Transform[skin.bones.Length];
+                for (int i = 0; i < remapped.Length; i++)
+                {
+                    var src = skin.bones[i];
+                    if (src != null && body_bones.TryGetValue(src.name, out var tgt))
+                    {
+                        remapped[i] = tgt;
+                        src.position = tgt.position;
+                        while (src.childCount > 0) src.GetChild(0).SetParent(tgt);
+                        if (!replaced.Contains(src)) replaced.Add(src);
+                        remapped_total++;
+                    }
+                    else
+                    {
+                        remapped[i] = src;
+                        if (src != null) kept++;
+                    }
+                }
+                skin.bones = remapped;
             }
-            head_head_bone.SetParent(body_head_bone, false);
-            // the head prefab root stays as a sibling shell; keep it for materials.
-            return head.GetComponentsInChildren<Renderer>(true).Length;
+
+            // surviving head objects (meshes + private physics bones) live
+            // under the character root; the replaced copies are torn down.
+            while (head.transform.childCount > 0)
+                head.transform.GetChild(0).SetParent(body_root);
+            foreach (var dead in replaced)
+                if (dead != null) Destroy(dead.gameObject);
+            Destroy(head);
+
+            trace_log.write($"chara {chara_id}: head merged onto body skeleton ({remapped_total} bones remapped, {kept} private kept, body skeleton {body_bones.Count})");
+            return head_renderers;
         }
 
         // depth-first name search through a hierarchy.
