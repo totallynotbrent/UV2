@@ -16,11 +16,13 @@ namespace UV2.App
             bool dump_icons = false;
             bool dump_shaders = false;
             bool pose_probe = false;
+            bool free_clock = false;
             foreach (var a in pre_args)
             {
                 if (a == "-dumpicons") dump_icons = true;
                 if (a == "-dumpshaders") dump_shaders = true;
                 if (a == "-uv2poseprobe") pose_probe = true;
+                if (a == "-uv2freeclock") free_clock = true;
             }
 
             trace_log.open();
@@ -55,7 +57,7 @@ namespace UV2.App
                 yield break;
             }
 
-            if (method_name == "build_concert_scene") scene_bootstrap.build_concert_scene();
+            if (method_name == "build_concert_scene") scene_bootstrap.build_concert_scene(free_clock);
             else Debug.LogError($"[scene_boot] unknown bootstrap: {method_name}");
 
             // headless e2e evidence: dump the rendered frame after the ui settles.

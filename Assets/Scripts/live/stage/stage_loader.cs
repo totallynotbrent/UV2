@@ -24,6 +24,8 @@ namespace UV2.Live
     // clips, then wires the timeline drivers onto them.
     public class stage_loader : MonoBehaviour
     {
+        // e2e switch: run the timeline on real time even when audio binds.
+        public static bool force_free_clock;
         private live_worksheet ws;
         private timeline_clock clock;
         private readonly List<Transform> chara_roots = new();
@@ -475,7 +477,8 @@ namespace UV2.Live
             music_source.clip = clip;
             music_source.loop = false;
             music_source.Play();
-            clock.bind_master(music_source);
+            if (!force_free_clock) clock.bind_master(music_source);
+            else trace_log.write("clock: forced free-run for this run");
             trace_log.write($"music: oke playing ({clip.frequency}Hz, {clip.length:0.0}s, {waves.Count} waves)");
         }
 

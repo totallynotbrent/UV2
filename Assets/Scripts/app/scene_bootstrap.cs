@@ -6,16 +6,18 @@ using UnityEngine;
 using UV2.App;
 using UV2.Concert;
 using UV2.Data;
+using UV2.Live;
 
 namespace UV2.App
 {
     // scene bootstrappers: the concert window is the whole app, built at runtime.
     public static class scene_bootstrap
     {
-        public static void build_concert_scene()
+        public static void build_concert_scene(bool free_clock = false)
         {
             try
             {
+                stage_loader.force_free_clock = free_clock;
                 var cam_go = new GameObject("main_camera", typeof(Camera));
                 var cam = cam_go.GetComponent<Camera>();
                 // the game's live camera: perspective, near 1/far 100, skybox
