@@ -173,6 +173,22 @@ namespace UV2.Live
                     degree = k.degree,
                 }).ToList();
 
+            ws.camera_motion = (sheet.cameraMotionKeys?.thisList ?? new())
+                .Select(k => new camera_motion_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    is_enable = k.IsEnable != 0,
+                    motion_type = k.MotionType,
+                    clip_name = k.Clip != null ? k.Clip.name : null,
+                    motion_head_time = k.MotionHeadTime,
+                    play_speed = k.PlaySpeed > 0f ? k.PlaySpeed : 1f,
+                    chara_relative_base = k.CharaRelativeBase,
+                    chara_relative_parts = k.CharaRelativeParts,
+                    offset = k.Offset,
+                    chara_pos = k.CharaPos,
+                }).ToList();
+
             ws.timescale = (sheet.timescaleKeys?.thisList ?? new())
                 .Select(k => new timescale_key
                 {

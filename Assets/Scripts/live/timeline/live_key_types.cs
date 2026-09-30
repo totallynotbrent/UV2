@@ -136,6 +136,22 @@ namespace UV2.Live
         public float rim_shadow_rate2;
     }
 
+    // cinematic animation-clip camera move (the cameraMotionKeys track):
+    // an authored clip samples onto a proxy transform and the camera rides it.
+    [Serializable]
+    public class camera_motion_key : live_key
+    {
+        public bool is_enable;
+        public int motion_type;
+        public string clip_name;
+        public float motion_head_time;
+        public float play_speed;
+        public int chara_relative_base;
+        public int chara_relative_parts;
+        public Vector3 offset;
+        public Vector3 chara_pos;
+    }
+
     public class live_worksheet
     {
         public string song_id;
@@ -145,6 +161,7 @@ namespace UV2.Live
         public List<camera_fov_key> camera_fov = new();
         public List<camera_roll_key> camera_roll = new();
         public List<camera_switcher_key> camera_switcher = new();
+        public List<camera_motion_key> camera_motion = new();
         public List<timescale_key> timescale = new();
         public List<List<motion_seq_key>> motion_sequences = new();
         public Dictionary<string, List<formation_key>> formation = new();

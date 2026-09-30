@@ -25,20 +25,64 @@ namespace UV2.Live
             cam = target;
         }
 
+        // samples the authored cinematic clip onto a proxy transform and
+        // drives the camera with it, exactly v1's OnUpdateCameraMotion.
+        private Transform motion_proxy;
+        private string motion_proxy_clip;
+        private string loaded_clip_name;
+        private AnimationClip motion_proxy_clip_data;
+
+        // loads a camera-motion clip bundle straight from the install by its
+        // authored name; null when the install doesn't carry it.
+        private AnimationClip load_camera_clip(string clip_name)
+        {
+            if (loaded_clip_name == clip_name) return motion_proxy_clip_data;
+            using var meta = UV2.Data.meta_reader.reader.open(UV2.App.config.meta_db_path);
+            if (meta == null) return null;
+            var rows = meta.lookup(new System.Collections.Generic.HashSet<string> { clip_name });
+            if (!rows.TryGetValue(clip_name, out var row)) return null;
+            var bundle = UV2.Data.game_assets.open(row, UV2.App.config.data_root);
+            if (bundle == null) return null;
+            var clip = bundle.LoadAllAssets<AnimationClip>().FirstOrDefault();
+            if (clip == null) return null;
+            loaded_clip_name = clip_name;
+            motion_proxy_clip_data = clip;
+            return clip;
+        }
+
+        private bool apply_camera_motion(float t)
+        {
+            if (ws.camera_motion.Count == 0) return false;
+            int i = key_eval.bracket(ws.camera_motion, t);
+            if (i < 0) return false;
+            var key = ws.camera_motion[i];
+            if (!key.is_enable || string.IsNullOrEmpty(key.clip_name)) return false;
+
+            if (motion_proxy == null)
+                motion_proxy = new GameObject("TimelineCameraMotionProxy").transform;
+            if (motion_proxy_clip != key.clip_name)
+            {
+                var clip = load_camera_clip(key.clip_name);
+                if (clip == null) return false;
+                motion_proxy_clip = key.clip_name;
+            }
+            float clip_time = (t - key.time) * key.play_speed + key.motion_head_time;
+            motion_proxy_clip_data.SampleAnimation(motion_proxy.gameObject, clip_time);
+            cam.transform.SetPositionAndRotation(motion_proxy.position + key.offset, motion_proxy.rotation);
+            return true;
+        }
+
         private void LateUpdate()
         {
             if (ws == null || clock == null || cam == null) return;
             float t = clock.time;
 
-            // switcher first: which camera's tracks run (index 0 = the base camera
-            // sheet; the locators for multi-camera are phase-6 scope).
-            int active_sheet = 0;
-            if (ws.camera_switcher.Count > 0)
-            {
-                int i = key_eval.bracket(ws.camera_switcher, t);
-                if (i >= 0) active_sheet = ws.camera_switcher[i].camera_index;
-            }
-            if (active_sheet != 0) return; // multi-camera composite is out of phase-2 scope
+            // switcher: with one camera, indices other than 0 leave the base
+            // camera running (v1 only touches cameras it actually has; the
+            // multi-camera composite is later scope).
+
+            // the authored cinematic clip drives the camera while it runs.
+            if (apply_camera_motion(t)) return;
 
             // position
             if (ws.camera_pos.Count > 0)
@@ -132,6 +176,9 @@ namespace UV2.Live
                     }
                     if (fov > 0f)
                     {
+                        // v1's width limit: wide aspects narrow the vertical fov.
+                        float aspect = (float)cam.pixelWidth / Mathf.Max(1, cam.pixelHeight);
+                        if (aspect > 16f / 9f) fov /= aspect / (16f / 9f);
                         cam.fieldOfView = fov;
                         // the game publishes a normalized fov shader global.
                         Shader.SetGlobalFloat("_GlobalCameraFov", Mathf.Min(fov / 30f, 1f));

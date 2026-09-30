@@ -35,38 +35,6 @@ namespace UV2.Live
                 .ToList();
         }
 
-        // the chibi tree: per-dress dirs use the dress chara, shared dirs use
-        // the body type. mini rows are keyed by the full folder/prefab path,
-        // and the dress sub can differ from the row we guessed, so probe both.
-        private static (string bundle, string prefab)? mini_body(int dress_chara, int body_type, int body_sub)
-        {
-            using var meta = meta_reader.reader.open(config.meta_db_path);
-            if (meta == null) return null;
-
-            // per-dress dirs: the dress chara + sub, then the sub-1 sibling
-            // (the disk carries _00 and _10-style variants per chara).
-            var candidates = new List<(string full, string prefab)>();
-            if (dress_chara != 0)
-            {
-                string p = $"pfb_mbdy{dress_chara:d4}_{body_sub:d2}";
-                candidates.Add(($"3d/chara/mini/body/mbdy{dress_chara:d4}_{body_sub:d2}/{p}", p));
-                string p2 = $"pfb_mbdy{dress_chara:d4}_10";
-                candidates.Add(($"3d/chara/mini/body/mbdy{dress_chara:d4}_10/{p2}", p2));
-            }
-            else
-            {
-                string ps = $"pfb_mbdy{body_type:d4}_{body_sub:d2}";
-                candidates.Add(($"3d/chara/mini/body/mbdy{body_type:d4}_{body_sub:d2}/{ps}", ps));
-            }
-
-            var names = new HashSet<string>(candidates.Select(c => c.full));
-            var rows = meta.lookup(names);
-            foreach (var (full, prefab) in candidates)
-                if (rows.ContainsKey(full))
-                    return (full, prefab);
-            return null;
-        }
-
         // body bundle + prefab for (chara, dress), computed from the phase-1
         // naming rules against the live master db.
         public static (string bundle, string prefab)? chara_body(int chara_id, int dress_id)
@@ -83,10 +51,6 @@ namespace UV2.Live
             int body_type = (int)dress.get_int(1);
             int body_sub = (int)dress.get_int(2);
             int costume_type = (int)dress.get_int(3);
-
-            // mini-live dresses render the chibi tree instead of the normal body.
-            if (costume_type == 1 || body_type == 100)
-                return mini_body(dress_chara, body_type, body_sub);
 
             if (dress_chara != 0)
             {

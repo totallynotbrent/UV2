@@ -101,10 +101,6 @@ namespace UV2.UI
                 slot_rect.anchoredPosition = new Vector2(left_margin + column * column_step, -(top_margin + row * row_step));
             }
 
-            var note = ui_theme.make_text(root, "note", "the concert could not open from this install. the stage, cast, motion and audio all load at runtime.", 14, ui_theme.text_dim);
-            var note_rect = note.GetComponent<RectTransform>();
-            note_rect.anchorMin = note_rect.anchorMax = note_rect.pivot = new Vector2(0, 0);
-            note_rect.anchoredPosition = new Vector2(40, 28);
         }
 
         // drives the loader coroutine and repaints the progress line every
