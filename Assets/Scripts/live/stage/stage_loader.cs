@@ -220,9 +220,10 @@ namespace UV2.Live
             var instance = Instantiate(prefab);
 
             // the body ships without its head: the head prefab lives in the
-            // chr{chara}_00 head bundle; parent its Head bone onto the body's
-            // Head bone so both share one skeleton.
-            int head_renderers = attach_head(instance.transform, chara_id);
+            // chr{chara}_00 head bundle (mchr for mini casts); parent its Head
+            // bone onto the body's Head bone so both share one skeleton.
+            bool mini = body.bundle.StartsWith("3d/chara/mini/");
+            int head_renderers = attach_head(instance.transform, chara_id, mini);
 
             int chara_renderers = instance.GetComponentsInChildren<Renderer>(true).Length;
             trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: {chara_renderers} renderers (head +{head_renderers})");
@@ -231,10 +232,13 @@ namespace UV2.Live
         }
 
         // loads the character's head prefab and parents its Head bone under the
-        // body's Head bone; returns the renderers the head added (0 on failure).
-        private int attach_head(Transform body_root, int chara_id)
+        // body's Head bone; mini casts use the chibi head tree. returns the
+        // renderers the head added (0 on failure).
+        private int attach_head(Transform body_root, int chara_id, bool mini)
         {
-            string head_name = $"3d/chara/head/chr{chara_id}_00/pfb_chr{chara_id}_00";
+            string head_name = mini
+                ? $"3d/chara/mini/head/mchr{chara_id:d4}_00/pfb_mchr{chara_id:d4}_00_hair"
+                : $"3d/chara/head/chr{chara_id}_00/pfb_chr{chara_id}_00";
             var row = meta_row(head_name);
             if (row == null)
             {
