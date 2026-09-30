@@ -49,13 +49,15 @@ namespace UV2.Live
                     var next = i + 1 < ws.camera_pos.Count ? ws.camera_pos[i + 1] : null;
                     float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
 
+                    // character keys: position + charaPos + the flagged
+                    // group's part average, the GetValue contract.
                     Vector3 pos = cur.set_type == 1
-                        ? chara_parts.group_world(chara_roots, cur.chara_relative_parts) + cur.position + cur.chara_pos
+                        ? chara_parts.group_world(chara_roots, cur.chara_relative_base, cur.chara_relative_parts) + cur.position + cur.chara_pos
                         : cur.position;
                     if (next != null && cur.set_type == next.set_type)
                     {
                         Vector3 pos_next = next.set_type == 1
-                            ? chara_parts.group_world(chara_roots, next.chara_relative_parts) + next.position + next.chara_pos
+                            ? chara_parts.group_world(chara_roots, next.chara_relative_base, next.chara_relative_parts) + next.position + next.chara_pos
                             : next.position;
                         pos = key_eval.lerp_v3(pos, pos_next, k);
                     }
@@ -76,17 +78,19 @@ namespace UV2.Live
                     var next = i + 1 < ws.camera_lookat.Count ? ws.camera_lookat[i + 1] : null;
                     float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
 
+                    // character keys: position + charaPos + the flagged
+                    // group's part average, mirroring the position track.
                     Vector3 look = cur.look_at_type == 1
-                        ? chara_parts.group_world(chara_roots, cur.look_at_chara_parts) + cur.position
+                        ? chara_parts.group_world(chara_roots, cur.look_at_chara_pos, cur.look_at_chara_parts) + cur.position + cur.look_at_chara_pos_offset
                         : cur.position;
                     if (next != null && cur.look_at_type == next.look_at_type)
                     {
                         Vector3 look_next = next.look_at_type == 1
-                            ? chara_parts.group_world(chara_roots, next.look_at_chara_parts) + next.position
+                            ? chara_parts.group_world(chara_roots, next.look_at_chara_pos, next.look_at_chara_parts) + next.position + next.look_at_chara_pos_offset
                             : next.position;
                         look = key_eval.lerp_v3(look, look_next, k);
                     }
-                    cam.transform.LookAt(look);
+                    cam.transform.LookAt(look, Vector3.up);
                 }
             }
 

@@ -6,11 +6,13 @@ using System.Text.Json;
 namespace UmaLauncher
 {
     // checks github for a newer uv2 build and swaps the app folder in place.
-    // the repo ships a rolling prerelease, so the check compares the running
-    // build's commit against the release target instead of version numbers.
+    // the rolling experimental release is matched by tag and zip asset, and
+    // the running build's commit is compared against the release target
+    // instead of version numbers.
     static class Updater
     {
         private const string Repo = "totallynotbrent/UV2";
+        private const string ReleaseTag = "experimental";
         private const string AssetName = "UV2-Windows-x64.zip";
 
         private static readonly HttpClient http = new()
@@ -34,11 +36,18 @@ namespace UmaLauncher
                 using JsonDocument doc = JsonDocument.Parse(body);
                 JsonElement root = doc.RootElement;
 
+                // the prerelease flag is unreliable on the releases list
+                // endpoint, so pick the experimental release by tag and zip asset.
                 JsonElement? release = null;
                 foreach (JsonElement r in root.EnumerateArray())
                 {
-                    if (!r.GetProperty("prerelease").GetBoolean()) continue;
-                    if (r.GetProperty("assets").GetArrayLength() == 0) continue;
+                    if (r.GetProperty("tag_name").GetString() != ReleaseTag) continue;
+                    bool hasAsset = false;
+                    foreach (JsonElement asset in r.GetProperty("assets").EnumerateArray())
+                    {
+                        if (asset.GetProperty("name").GetString() == AssetName) { hasAsset = true; break; }
+                    }
+                    if (!hasAsset) continue;
                     release = r;
                     break;
                 }
@@ -88,6 +97,35 @@ namespace UmaLauncher
             }
         }
 
+        // re-extracts entries that were locked while the old process was still
+        // alive; runs before the form opens so the app boots fully updated.
+        public static void ApplyPending()
+        {
+            try
+            {
+                string appDir = AppDomain.CurrentDomain.BaseDirectory;
+                string pendingPath = Path.Combine(appDir, "backup", "pending.txt");
+                string zipPath = Path.Combine(appDir, "backup", "pending.zip");
+                if (!File.Exists(pendingPath) || !File.Exists(zipPath)) return;
+
+                var pending = new HashSet<string>(File.ReadAllLines(pendingPath));
+                using ZipArchive archive = ZipFile.OpenRead(zipPath);
+                foreach (ZipArchiveEntry entry in archive.Entries)
+                {
+                    if (!pending.Contains(entry.FullName)) continue;
+                    string target = Path.Combine(appDir, entry.FullName);
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    entry.ExtractToFile(target, true);
+                }
+                File.Delete(pendingPath);
+                File.Delete(zipPath);
+            }
+            catch
+            {
+                // a failed catch-up must never block boot.
+            }
+        }
+
         // extracts over the app folder; locked files land in a pending list for the next boot.
         private static void InstallAndRestart(Control parent, string zipPath)
         {
@@ -121,7 +159,10 @@ namespace UmaLauncher
             }
 
             if (pending.Count > 0)
+            {
                 File.WriteAllLines(Path.Combine(backupDir, "pending.txt"), pending);
+                File.Copy(zipPath, Path.Combine(backupDir, "pending.zip"), true);
+            }
 
             if (!string.IsNullOrEmpty(exePath))
                 Process.Start(exePath);

@@ -122,6 +122,8 @@ jobs:
             gh release delete "$NAME" --yes --cleanup-tag 2>/dev/null || true
             NOTE=$(git log --format='%s' -1 -- . ':!.github')
             gh release create "$NAME" "UV2-Windows-x64.zip" "UV2-Windows-x64.zip.sha256" --target "$GITHUB_SHA" --prerelease --title "$NAME" --notes "$NOTE"
+            # re-assert the prerelease flag so the releases list endpoint agrees even if it drifts.
+            gh release edit "$NAME" --prerelease
           else
             gh release create "$RELEASE_TAG" "UV2-Windows-x64.zip" "UV2-Windows-x64.zip.sha256" --title "$RELEASE_TAG" --notes ""
           fi

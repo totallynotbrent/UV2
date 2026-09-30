@@ -20,13 +20,38 @@ namespace UV2.Live
             {
                 var sheet = load_stub(music_id);
                 if (sheet == null) return null;
-                return map(sheet, music_id);
+                var ws = map(sheet, music_id);
+
+                // the data asset's timeLength (seconds) is the authoritative
+                // duration; the sheet's TotalTimeLength serializes 0 on disk
+                // for main sheets, so it only overrides when valid.
+                int time_length = load_data_time_length(music_id);
+                if (time_length > 0)
+                {
+                    if (sheet.TotalTimeLength > 1f && sheet.TotalTimeLength <= time_length)
+                        ws.total_frames = sheet.TotalTimeLength * 60f;
+                    else
+                        ws.total_frames = time_length * 60f;
+                }
+                return ws;
             }
             catch (Exception e)
             {
                 Debug.LogError($"[worksheet_reader] {music_id}: {e.GetType().Name}: {e.Message}");
                 return null;
             }
+        }
+
+        // loads the song's cutt data asset and returns its authored length.
+        private static int load_data_time_length(int music_id)
+        {
+            string data_name = $"cutt/cutt_son{music_id}/data";
+            var row = meta_row(data_name);
+            if (row == null) return 0;
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) return 0;
+            var data = bundle.LoadAllAssets<Cutt.LiveTimelineData>().FirstOrDefault();
+            return data?.timeLength ?? 0;
         }
 
         // opens the song's camera cutt bundle and deserializes the worksheet stub.
@@ -73,6 +98,26 @@ namespace UV2.Live
             ws.song_id = music_id.ToString();
             ws.total_frames = sheet.TotalTimeLength * 60f;
 
+            ws.global_light = (sheet.globalLightDataLists?.FirstOrDefault()?.keys?.thisList ?? new())
+                .Select(k => new global_light_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    light_dir = k.lightDir,
+                    rim_color = k.rimColor,
+                    rim_step = k.rimStep,
+                    rim_feather = k.rimFeather,
+                    rim_spec_rate = k.rimSpecRate,
+                    rim_shadow_rate = k.globalRimShadowRate,
+                    rim_color2 = k.rimColor2,
+                    rim_step2 = k.rimStep2,
+                    rim_feather2 = k.rimFeather2,
+                    rim_spec_rate2 = k.rimSpecRate2,
+                    rim_shadow_rate2 = k.globalRimShadowRate2,
+                }).ToList();
+
             ws.camera_pos = (sheet.cameraPosKeys?.thisList ?? new())
                 .Select(k => new camera_pos_key
                 {
@@ -98,8 +143,9 @@ namespace UV2.Live
                     easing_type = k.easingType,
                     look_at_type = k.lookAtType,
                     position = k.position,
-                    look_at_chara_pos = k.charaPos,
+                    look_at_chara_pos = k.lookAtCharaPos,
                     look_at_chara_parts = k.lookAtCharaParts,
+                    look_at_chara_pos_offset = k.charaPos,
                 }).ToList();
 
             ws.camera_fov = (sheet.cameraFovKeys?.thisList ?? new())
@@ -142,6 +188,8 @@ namespace UV2.Live
                         play_frame_length = k.playFrameLength,
                         play_speed = k.playSpeed <= 0f ? 1f : k.playSpeed,
                         use_second_motion = k.UseSecondMotion,
+                        loop = k.loop,
+                        is_motion_head_frame_all = k.isMotionHeadFrameAll,
                         motion_head_frame_separates = (k.motionHeadFrameSeparetes ?? new()).ToArray(),
                     });
                 }

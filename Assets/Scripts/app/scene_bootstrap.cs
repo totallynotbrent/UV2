@@ -6,22 +6,26 @@ using UnityEngine;
 using UV2.App;
 using UV2.Concert;
 using UV2.Data;
+using UV2.Live;
 
 namespace UV2.App
 {
     // scene bootstrappers: the concert window is the whole app, built at runtime.
     public static class scene_bootstrap
     {
-        public static void build_concert_scene()
+        public static void build_concert_scene(bool free_clock = false)
         {
             try
             {
+                stage_loader.force_free_clock = free_clock;
                 var cam_go = new GameObject("main_camera", typeof(Camera));
                 var cam = cam_go.GetComponent<Camera>();
-                cam.clearFlags = CameraClearFlags.SolidColor;
-                cam.backgroundColor = new Color(0.05f, 0.05f, 0.07f, 1f);
-                cam.orthographic = true;
-                cam.nearClipPlane = -10f;
+                // the game's live camera: perspective, near 1/far 100, skybox
+                // clear; the fov/position come from the worksheet camera keys.
+                cam.clearFlags = CameraClearFlags.Skybox;
+                cam.orthographic = false;
+                cam.fieldOfView = 60f;
+                cam.nearClipPlane = 1f;
                 cam.farClipPlane = 100f;
 
                 var host = new GameObject("concert_host");

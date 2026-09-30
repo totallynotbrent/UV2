@@ -24,6 +24,8 @@ namespace UV2.Live
     // clips, then wires the timeline drivers onto them.
     public class stage_loader : MonoBehaviour
     {
+        // e2e switch: run the timeline on real time even when audio binds.
+        public static bool force_free_clock;
         private live_worksheet ws;
         private timeline_clock clock;
         private readonly List<Transform> chara_roots = new();
@@ -150,6 +152,8 @@ namespace UV2.Live
 
                 wire_drivers(clips, sel.music_id);
                 trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
+
+                start_music(sel.music_id);
                 return true;
             }
             catch (Exception e)
@@ -361,11 +365,13 @@ namespace UV2.Live
             {
                 var cam_go = new GameObject("main_camera", typeof(Camera));
                 cam = cam_go.GetComponent<Camera>();
-                cam.clearFlags = CameraClearFlags.SolidColor;
-                cam.backgroundColor = new Color(0.05f, 0.05f, 0.07f, 1f);
-                cam.nearClipPlane = 0.3f;
-                cam.farClipPlane = 1000f;
+                cam.clearFlags = CameraClearFlags.Skybox;
+                cam.nearClipPlane = 1f;
+                cam.farClipPlane = 100f;
             }
+            // one listener for the whole concert; audio dies without it.
+            if (cam.GetComponent<AudioListener>() == null && FindObjectOfType<AudioListener>() == null)
+                cam.gameObject.AddComponent<AudioListener>();
 
             var director_go = new GameObject("camera_director");
             director = director_go.AddComponent<camera_director>();
@@ -395,6 +401,87 @@ namespace UV2.Live
             motion.play();
         }
 
+        // samples the worksheet's global-light track for the current frame and
+        // hands the interpolated key to the shade publisher.
+        private void update_light_track()
+        {
+            if (ws == null || ws.global_light.Count == 0) return;
+            float frame = clock?.time ?? 0f;
+            frame *= 60f;
+
+            var keys = ws.global_light;
+            int last = keys.Count - 1;
+            if (frame <= keys[0].frame) { global_shade.set_light_track(keys[0], 0f); return; }
+            if (frame >= keys[last].frame) { global_shade.set_light_track(keys[last], 1f); return; }
+
+            for (int i = 0; i < last; i++)
+            {
+                if (frame >= keys[i].frame && frame < keys[i + 1].frame)
+                {
+                    float span = keys[i + 1].frame - keys[i].frame;
+                    float blend = span <= 0 ? 0f : (frame - keys[i].frame) / span;
+                    global_shade.set_light_track(keys[i], blend);
+                    return;
+                }
+            }
+        }
+
+        private AudioSource music_source;
+
+        // resolves the song's instrumental bank from the install, decodes it,
+        // and starts playback; the concert clock locks to the source.
+        private void start_music(int music_id)
+        {
+            // the game ships _01 and _02 oke variants per song; take whichever
+            // the install carries.
+            var candidates = new[]
+            {
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_02.awb",
+            };
+            meta_reader.asset_row bank_row = null;
+            foreach (var c in candidates)
+            {
+                bank_row = meta_row(c);
+                if (bank_row != null) break;
+            }
+            if (bank_row == null)
+            {
+                trace_log.write($"music: no oke bank for song {music_id}");
+                return;
+            }
+
+            string path = System.IO.Path.Combine(config.data_root, "dat", bank_row.hash.Substring(0, 2), bank_row.hash);
+            if (!System.IO.File.Exists(path))
+            {
+                trace_log.write($"music: oke bank missing on disk: {path}");
+                return;
+            }
+            byte[] bank = System.IO.File.ReadAllBytes(path);
+            var waves = live_audio.parse_afs2(bank);
+            if (waves.Count == 0)
+            {
+                trace_log.write("music: afs2 parse found no waves");
+                return;
+            }
+
+            var clip = live_audio.decode_wave(bank, waves[0], $"oke_{music_id}");
+            if (clip == null)
+            {
+                trace_log.write("music: oke decode failed");
+                return;
+            }
+
+            var go = new GameObject("live_music");
+            music_source = go.AddComponent<AudioSource>();
+            music_source.clip = clip;
+            music_source.loop = false;
+            music_source.Play();
+            if (!force_free_clock) clock.bind_master(music_source);
+            else trace_log.write("clock: forced free-run for this run");
+            trace_log.write($"music: oke playing ({clip.frequency}Hz, {clip.length:0.0}s, {waves.Count} waves)");
+        }
+
         // reads the song's livesettings from the game install and picks the
         // stage id row, for selections that never carried one.
         private int resolve_stage_id(int music_id)
@@ -412,7 +499,10 @@ namespace UV2.Live
         private void Update()
         {
             clock?.advance(Time.deltaTime);
+            motion?.play();
+            update_light_track();
             global_shade.publish(FindObjectOfType<Camera>());
+            global_shade.publish_chara_block(chara_roots);
 
             // heartbeat: camera state + what is actually visible, once per second.
             if (Time.time - _last_beat >= 1f)
@@ -429,10 +519,48 @@ namespace UV2.Live
                 int playing = 0;
                 foreach (var a in FindObjectsOfType<Animation>())
                     if (a.isPlaying) playing++;
-                trace_log.write($"beat t={clock?.time ?? 0f:0.0}s cam_pos {cam.transform.position} fov {cam.fieldOfView:0.0} renderers {visible}/{total} visible animations_playing {playing}");
+                // center-pixel color: a uniform gray reading means nothing
+                // rendered even when the renderer counts say otherwise.
+                var probe = new Texture2D(1, 1);
+                probe.ReadPixels(new Rect(cam.pixelWidth / 2, cam.pixelHeight / 2, 1, 1), 0, 0);
+                probe.Apply();
+                var px = probe.GetPixel(0, 0);
+                trace_log.write($"px {px.r:0.00},{px.g:0.00},{px.b:0.00}");
+                Destroy(probe);
+
+                // one character's head bone: movement across beats proves the
+                // direct-sample motion actually poses the cast.
+                string pose = "";
+                if (chara_roots.Count > 0)
+                {
+                    var head = find_deep(chara_roots[0], "Head");
+                    if (head != null) pose = $" head {head.position} hrot {head.localEulerAngles}";
+                }
+                trace_log.write($"beat t={clock?.time ?? 0f:0.0}s cam_pos {cam.transform.position} fwd {cam.transform.forward} fov {cam.fieldOfView:0.0} renderers {visible}/{total} visible animations_playing {playing}{pose}");
+
+                // once: the render state of chara 1 - shader, keywords, clip
+                // distances - so a black frame on a real gpu points at the
+                // exact material the gpu rejected.
+                if (!_render_state_dumped && chara_roots.Count > 0)
+                {
+                    _render_state_dumped = true;
+                    var r0 = chara_roots[0].GetComponentsInChildren<Renderer>().FirstOrDefault();
+                    if (r0 != null)
+                    {
+                        var m0 = r0.sharedMaterial;
+                        trace_log.write($"render_state: chara1 '{r0.name}' shader '{(m0 != null ? m0.shader.name : "<null>")}' keywords [{(m0 != null ? string.Join(",", m0.shaderKeywords) : "")}] bounds {r0.bounds}");
+                    }
+                    var stage_r = FindObjectsOfType<Renderer>().FirstOrDefault(x => x.name.Contains("env"));
+                    if (stage_r != null)
+                    {
+                        var ms = stage_r.sharedMaterial;
+                        trace_log.write($"render_state: stage '{stage_r.name}' shader '{(ms != null ? ms.shader.name : "<null>")}' keywords [{(ms != null ? string.Join(",", ms.shaderKeywords) : "")}] bounds {stage_r.bounds}");
+                    }
+                }
             }
         }
 
         private float _last_beat = -1f;
+        private bool _render_state_dumped;
     }
 }

@@ -1,5 +1,5 @@
-using System;
 using UnityEngine;
+using UV2.App;
 
 namespace UV2.Live
 {
@@ -22,9 +22,41 @@ namespace UV2.Live
 
         public void seek(float seconds) => _time = Mathf.Max(0f, seconds);
 
-        // one frame step: delta * current rate while running.
+        // the audio source the clock locks to; when set, the clock reads the
+        // music position instead of accumulating delta.
+        private AudioSource _master;
+
+        public void bind_master(AudioSource src) => _master = src;
+
+        // tracks whether the audio clock has ever reported sane progress;
+        // device-less containers report the clip end from the first read.
+        private bool _audio_trusted;
+
+        // one frame step: the audio position once it has proven it advances
+        // plausibly, else real-time accumulation.
         public void advance(float delta)
         {
+            if (_master != null && _master.clip != null && _master.isPlaying)
+            {
+                float at = _master.time;
+                if (!_audio_trusted)
+                {
+                    // trust only a read that starts near zero and moves forward
+                    // by roughly the elapsed frames.
+                    if (at < 1f)
+                    {
+                        _audio_trusted = true;
+                        trace_log.write("clock: audio clock trusted");
+                    }
+                    else
+                    {
+                        if (!paused) _time += delta * _rate;
+                        return;
+                    }
+                }
+                _time = at;
+                return;
+            }
             if (!paused) _time += delta * _rate;
         }
     }
