@@ -228,7 +228,131 @@ namespace UV2.Live
             int chara_renderers = instance.GetComponentsInChildren<Renderer>(true).Length;
             trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: {chara_renderers} renderers (head +{head_renderers})");
             shader_manager.fix_game_shaders(instance.transform, $"chara {chara_id}");
+
+            // generic bodies ship with null texture slots; the game assigns
+            // per-character variant textures at runtime (v1's IsGeneric path).
+            // runs after the shader swap so the material properties exist.
+            assign_generic_body_textures(instance.transform, chara_id, body.bundle);
             return instance.transform;
+        }
+
+        // finds the shader's main texture property name (the gallop family
+        // may not call it _MainTex).
+        private static string shader_tex_prop(Shader sh)
+        {
+            for (int i = 0; i < sh.GetPropertyCount(); i++)
+            {
+                if (sh.GetPropertyType(i) == UnityEngine.Rendering.ShaderPropertyType.Texture)
+                {
+                    var n = sh.GetPropertyName(i);
+                    if (n.StartsWith("_M") || n.StartsWith("_T")) return n;
+                }
+            }
+            return null;
+        }
+
+        // assigns the generic body's four texture slots from the install's
+        // per-character variant rows; names follow the game's default costume
+        // family: diff/shad_c keyed on (skin, bust), base/ctrl keyed on bust.
+        private void assign_generic_body_textures(Transform body_root, int chara_id, string body_bundle)
+        {
+            string folder = body_bundle.Split('/')[3];
+            using var db = master_db.reader.open(config.master_db_path);
+            if (db == null) return;
+            var rows = db.query(
+                $"SELECT skin, bust FROM chara_data WHERE id={chara_id}");
+            if (rows.Count == 0) return;
+            int skin = (int)rows[0].get_int(0);
+            int bust = (int)rows[0].get_int(1);
+
+            bool any_null = false;
+            string slot_report = "";
+            foreach (var r in body_root.GetComponentsInChildren<Renderer>(true))
+            {
+                var mats = r.sharedMaterials;
+                slot_report += $"[{r.name}:mats={mats.Length}] ";
+                foreach (var m in mats)
+                {
+                    if (m == null) { slot_report += "nullmat "; continue; }
+                    var sh = m.shader;
+                    string sh_desc = sh == null ? "noshader" : $"{sh.name}/props:{sh.GetPropertyCount()}";
+                    slot_report += $"{m.name.Replace("(Instance)","")}[{sh_desc}{(sh != null && sh.GetPropertyCount() > 0 && shader_tex_prop(sh) != null ? "/tex=" + shader_tex_prop(sh) : "")}] ";
+                    Texture cur = null;
+                    try { cur = m.GetTexture("_MainTex"); } catch { }
+                    slot_report += $":main={(cur == null ? "null" : "set")} ";
+                    if (cur == null && m.name.Contains("bdy")) any_null = true;
+                }
+            }
+            trace_log.write($"generic body {chara_id} slots: {slot_report}");
+            if (!any_null) return;
+
+            string tex_dir = $"3d/chara/body/{folder}/textures";
+            var names = new HashSet<string>
+            {
+                $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_diff",
+                $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_shad_c",
+                $"{tex_dir}/tex_{folder}_00_0_{bust}_base",
+                $"{tex_dir}/tex_{folder}_00_0_{bust}_ctrl",
+            };
+            using var meta = meta_reader.reader.open(config.meta_db_path);
+            if (meta == null) return;
+            var tex_rows = meta.lookup(names);
+            if (tex_rows.Count == 0) { trace_log.write($"generic body {chara_id}: no texture rows"); return; }
+
+            var loaded = new Dictionary<string, Texture2D>();
+            foreach (var kv in tex_rows)
+            {
+                var bundle = game_assets.open(kv.Value, config.data_root);
+                if (bundle == null) continue;
+                foreach (var n in bundle.GetAllAssetNames())
+                {
+                    var t = bundle.LoadAsset<Texture2D>(n);
+                    if (t != null) loaded[n] = t;
+                }
+            }
+            if (loaded.Count == 0) { trace_log.write($"generic body {chara_id}: textures failed to load"); return; }
+
+            int assigned = 0;
+            foreach (var r in body_root.GetComponentsInChildren<Renderer>(true))
+            {
+                // the body material asset is shared cast-wide; instance it so
+                // each character keeps their own skin/bust variant.
+                var mats = r.materials;
+                foreach (var m in mats)
+                {
+                    if (m == null || !m.name.Contains("bdy")) continue;
+                    Texture cur = null;
+                    try { cur = m.GetTexture("_MainTex"); } catch { }
+                    if (cur == null)
+                    {
+                        var diff = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_diff")).Value;
+                        if (diff != null) { m.SetTexture("_MainTex", diff); assigned++; }
+                    }
+                    Texture toon = null;
+                    try { toon = m.GetTexture("_ToonMap"); } catch { }
+                    if (toon == null)
+                    {
+                        var shad = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_shad_c")).Value;
+                        if (shad != null) { m.SetTexture("_ToonMap", shad); assigned++; }
+                    }
+                    Texture tri = null;
+                    try { tri = m.GetTexture("_TripleMaskMap"); } catch { }
+                    if (tri == null)
+                    {
+                        var base_t = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_base")).Value;
+                        if (base_t != null) { m.SetTexture("_TripleMaskMap", base_t); assigned++; }
+                    }
+                    Texture opt = null;
+                    try { opt = m.GetTexture("_OptionMaskMap"); } catch { }
+                    if (opt == null)
+                    {
+                        var ctrl = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_ctrl")).Value;
+                        if (ctrl != null) { m.SetTexture("_OptionMaskMap", ctrl); assigned++; }
+                    }
+                }
+                r.materials = mats;
+            }
+            trace_log.write($"generic body {chara_id}: {assigned} texture slots assigned ({loaded.Count} textures loaded)");
         }
 
         // loads the character's head prefab and parents its Head bone under the
