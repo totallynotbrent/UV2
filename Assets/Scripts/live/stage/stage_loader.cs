@@ -352,6 +352,7 @@ namespace UV2.Live
                 $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_shad_c",
                 $"{tex_dir}/tex_{folder}_00_0_{bust}_base",
                 $"{tex_dir}/tex_{folder}_00_0_{bust}_ctrl",
+                "3d/chara/common/textures/tex_chr_tear00",
             };
             using var meta = meta_reader.reader.open(config.meta_db_path);
             if (meta == null) return;
@@ -371,6 +372,7 @@ namespace UV2.Live
             }
             if (loaded.Count == 0) { trace_log.write($"generic body {chara_id}: textures failed to load"); return; }
 
+            var tear_tex = loaded.Values.FirstOrDefault(t => t.name.Contains("tear"));
             int assigned = 0;
             foreach (var r in body_root.GetComponentsInChildren<Renderer>(true))
             {
@@ -379,7 +381,21 @@ namespace UV2.Live
                 var mats = r.materials;
                 foreach (var m in mats)
                 {
-                    if (m == null || !m.name.Contains("bdy")) continue;
+                    if (m == null) continue;
+                    if (m.name.Contains("tear"))
+                    {
+                        // the tear materials ship a null main slot; the game
+                        // assigns the shared tear texture at runtime.
+                        Texture cur_tear = null;
+                        try { cur_tear = m.GetTexture("_MainTex"); } catch { }
+                        if (cur_tear == null && tear_tex != null)
+                        {
+                            m.SetTexture("_MainTex", tear_tex);
+                            assigned++;
+                        }
+                        continue;
+                    }
+                    if (!m.name.Contains("bdy")) continue;
                     Texture cur = null;
                     try { cur = m.GetTexture("_MainTex"); } catch { }
                     if (cur == null)
