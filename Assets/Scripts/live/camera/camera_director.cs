@@ -50,16 +50,21 @@ namespace UV2.Live
                     var next = i + 1 < ws.camera_pos.Count ? ws.camera_pos[i + 1] : null;
                     float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
 
-                    // character keys: position + charaPos + the flagged
-                    // group's part average, the GetValue contract.
+                    // character keys: the flagged group's part anchor plus
+                    // the key's position; chara_pos only rides the const-height
+                    // parts (the game adds it inside those cases only).
+                    bool const_anchor = cur.chara_relative_parts >= 11 && cur.chara_relative_parts <= 14;
                     Vector3 pos = cur.set_type == 1
-                        ? chara_parts.group_world(chara_roots, cur.chara_relative_base, cur.chara_relative_parts) + cur.position + cur.chara_pos
-                        : cur.position;
+                        ? chara_parts.group_world(chara_roots, cur.chara_relative_base, cur.chara_relative_parts) + cur.position + (const_anchor ? cur.chara_pos : Vector3.zero)
+                        : cur.position + cur.pos_direct;
+                    pos += cur.offset;
                     if (next != null && cur.set_type == next.set_type)
                     {
+                        bool next_const = next.chara_relative_parts >= 11 && next.chara_relative_parts <= 14;
                         Vector3 pos_next = next.set_type == 1
-                            ? chara_parts.group_world(chara_roots, next.chara_relative_base, next.chara_relative_parts) + next.position + next.chara_pos
-                            : next.position;
+                            ? chara_parts.group_world(chara_roots, next.chara_relative_base, next.chara_relative_parts) + next.position + (next_const ? next.chara_pos : Vector3.zero)
+                            : next.position + next.pos_direct;
+                        pos_next += next.offset;
                         // authored bezier control points shape the segment.
                         if (next.bezier_points != null && next.bezier_points.Count > 0)
                             pos = key_eval.bezier_v3(pos, pos_next, next.bezier_points, k);
@@ -90,15 +95,17 @@ namespace UV2.Live
                     var next = i + 1 < ws.camera_lookat.Count ? ws.camera_lookat[i + 1] : null;
                     float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
 
-                    // character keys: position + charaPos + the flagged
-                    // group's part average, mirroring the position track.
+                    // character keys mirror the position track; the offset
+                    // only rides the const-height parts.
+                    bool look_const = cur.look_at_chara_parts >= 11 && cur.look_at_chara_parts <= 14;
                     Vector3 look = cur.look_at_type == 1
-                        ? chara_parts.group_world(chara_roots, cur.look_at_chara_pos, cur.look_at_chara_parts) + cur.position + cur.look_at_chara_pos_offset
+                        ? chara_parts.group_world(chara_roots, cur.look_at_chara_pos, cur.look_at_chara_parts) + cur.position + (look_const ? cur.look_at_chara_pos_offset : Vector3.zero)
                         : cur.position;
                     if (next != null && cur.look_at_type == next.look_at_type)
                     {
+                        bool next_look_const = next.look_at_chara_parts >= 11 && next.look_at_chara_parts <= 14;
                         Vector3 look_next = next.look_at_type == 1
-                            ? chara_parts.group_world(chara_roots, next.look_at_chara_pos, next.look_at_chara_parts) + next.position + next.look_at_chara_pos_offset
+                            ? chara_parts.group_world(chara_roots, next.look_at_chara_pos, next.look_at_chara_parts) + next.position + (next_look_const ? next.look_at_chara_pos_offset : Vector3.zero)
                             : next.position;
                         if (next.bezier_points != null && next.bezier_points.Count > 0)
                             look = key_eval.bezier_v3(look, look_next, next.bezier_points, k);

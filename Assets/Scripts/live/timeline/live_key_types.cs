@@ -24,6 +24,8 @@ namespace UV2.Live
     {
         public int set_type;               // 0=Direct, 1=Character
         public Vector3 position;           // direct world position
+        public Vector3 pos_direct;         // extra direct-space offset
+        public Vector3 offset;             // final additive offset (containOffset)
         public Vector3 chara_pos;          // offset from the character target
         public int chara_relative_base;    // 0=center group, others=formation group base
         public int chara_relative_parts;   // 21-member parts table

@@ -127,6 +127,8 @@ namespace UV2.Live
                     easing_type = k.easingType,
                     set_type = k.setType,
                     position = k.position,
+                    pos_direct = k.posDirect,
+                    offset = k.offset,
                     chara_pos = k.charaPos,
                     chara_relative_base = k.charaRelativeBase,
                     chara_relative_parts = k.charaRelativeParts,

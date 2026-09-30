@@ -83,25 +83,26 @@ namespace UV2.Live
                 case FOOT:
                     var chest = find_bone(root, "Chest");
                     return chest == null ? null : new Vector3(chest.position.x, 0f, chest.position.z);
-                case INIT_FACE_HEIGHT:
+                // the const-height anchors contribute only their rest-pose
+                // height; the key's chara_pos supplies x/z (the game reads
+                // only the .y of its const-height locator fields).
                 case CONST_FACE_HEIGHT:
+                case INIT_FACE_HEIGHT:
                     if (anchors.TryGetValue(root, out var a_head))
-                        return new Vector3(a_head.initial_position.x, a_head.head_height, a_head.initial_position.z);
+                        return new Vector3(0f, a_head.head_height, 0f);
                     return null;
-                case INIT_WAIST_HEIGHT:
                 case CONST_WAIST_HEIGHT:
+                case INIT_WAIST_HEIGHT:
                     if (anchors.TryGetValue(root, out var a_waist))
-                        return new Vector3(a_waist.initial_position.x, a_waist.waist_height, a_waist.initial_position.z);
+                        return new Vector3(0f, a_waist.waist_height, 0f);
                     return null;
-                case INIT_CHEST_HEIGHT:
                 case CONST_CHEST_HEIGHT:
+                case INIT_CHEST_HEIGHT:
                     if (anchors.TryGetValue(root, out var a_chest))
-                        return new Vector3(a_chest.initial_position.x, a_chest.chest_height, a_chest.initial_position.z);
+                        return new Vector3(0f, a_chest.chest_height, 0f);
                     return null;
                 case CONST_FOOT_HEIGHT:
-                    if (anchors.TryGetValue(root, out var a_foot))
-                        return new Vector3(a_foot.initial_position.x, 0f, a_foot.initial_position.z);
-                    return null;
+                    return Vector3.zero;
                 case POSITION:
                 case POSITION_WITHOUT_OFFSET:
                     return root.position;
