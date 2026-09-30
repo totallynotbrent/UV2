@@ -31,6 +31,9 @@ namespace UV2.Live
         public float near_clip;
         public float far_clip;
         public int culling_layer;
+
+        // authored bezier control points between this key and the next.
+        public List<Vector3> bezier_points = new();
     }
 
     // camera look-at key.
@@ -42,6 +45,9 @@ namespace UV2.Live
         public int look_at_chara_pos;     // position flags: bit i enables slot i
         public int look_at_chara_parts;
         public Vector3 look_at_chara_pos_offset;  // the charaPos field
+
+        // authored bezier control points between this key and the next.
+        public List<Vector3> bezier_points = new();
     }
 
     // camera fov key.

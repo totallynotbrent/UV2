@@ -131,6 +131,7 @@ namespace UV2.Live
                     chara_relative_base = k.charaRelativeBase,
                     chara_relative_parts = k.charaRelativeParts,
                     trace_speed = k.traceSpeed,
+                    bezier_points = (k.bezierPoints ?? new()).ToList(),
                     near_clip = k.nearClip,
                     far_clip = k.farClip,
                     culling_layer = k.cullingLayer,
@@ -140,12 +141,15 @@ namespace UV2.Live
                 .Select(k => new camera_lookat_key
                 {
                     frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
                     easing_type = k.easingType,
                     look_at_type = k.lookAtType,
                     position = k.position,
                     look_at_chara_pos = k.lookAtCharaPos,
                     look_at_chara_parts = k.lookAtCharaParts,
                     look_at_chara_pos_offset = k.charaPos,
+                    bezier_points = (k.bezierPoints ?? new()).ToList(),
                 }).ToList();
 
             ws.camera_fov = (sheet.cameraFovKeys?.thisList ?? new())
@@ -153,6 +157,7 @@ namespace UV2.Live
                 {
                     frame = k.frame,
                     easing_type = k.easingType,
+                    interpolate_type = k.interpolateType,
                     fov_type = k.fovType,
                     fov = k.fov,
                 }).ToList();
@@ -162,6 +167,7 @@ namespace UV2.Live
                 {
                     frame = k.frame,
                     easing_type = k.easingType,
+                    interpolate_type = k.interpolateType,
                     degree = k.degree,
                 }).ToList();
 

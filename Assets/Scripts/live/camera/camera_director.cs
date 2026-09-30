@@ -15,6 +15,7 @@ namespace UV2.Live
         private List<Transform> chara_roots = new();
 
         private Camera cam;
+        private Vector3? trace_prev_pos;
 
         public void open(live_worksheet worksheet, timeline_clock timeline, List<Transform> characters, Camera target)
         {
@@ -59,9 +60,20 @@ namespace UV2.Live
                         Vector3 pos_next = next.set_type == 1
                             ? chara_parts.group_world(chara_roots, next.chara_relative_base, next.chara_relative_parts) + next.position + next.chara_pos
                             : next.position;
-                        pos = key_eval.lerp_v3(pos, pos_next, k);
+                        // authored bezier control points shape the segment.
+                        if (next.bezier_points != null && next.bezier_points.Count > 0)
+                            pos = key_eval.bezier_v3(pos, pos_next, next.bezier_points, k);
+                        else
+                            pos = key_eval.lerp_v3(pos, pos_next, k);
                     }
+
+                    // camera-delay trace: the flag on the current key asks the
+                    // camera to slerp toward the target instead of snapping.
+                    if ((cur.attribute & 4) != 0 && trace_prev_pos.HasValue)
+                        pos = Vector3.Slerp(trace_prev_pos.Value, pos, Mathf.Clamp01(cur.trace_speed * Time.deltaTime * 60f));
+
                     cam.transform.position = pos;
+                    trace_prev_pos = pos;
 
                     if (cur.near_clip > 0f) cam.nearClipPlane = cur.near_clip;
                     if (cur.far_clip > 0f) cam.farClipPlane = cur.far_clip;
@@ -88,7 +100,10 @@ namespace UV2.Live
                         Vector3 look_next = next.look_at_type == 1
                             ? chara_parts.group_world(chara_roots, next.look_at_chara_pos, next.look_at_chara_parts) + next.position + next.look_at_chara_pos_offset
                             : next.position;
-                        look = key_eval.lerp_v3(look, look_next, k);
+                        if (next.bezier_points != null && next.bezier_points.Count > 0)
+                            look = key_eval.bezier_v3(look, look_next, next.bezier_points, k);
+                        else
+                            look = key_eval.lerp_v3(look, look_next, k);
                     }
                     cam.transform.LookAt(look, Vector3.up);
                 }
@@ -108,7 +123,12 @@ namespace UV2.Live
                         float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
                         fov = key_eval.lerp_f(cur.fov, next.fov, k);
                     }
-                    if (fov > 0f) cam.fieldOfView = fov;
+                    if (fov > 0f)
+                    {
+                        cam.fieldOfView = fov;
+                        // the game publishes a normalized fov shader global.
+                        Shader.SetGlobalFloat("_GlobalCameraFov", Mathf.Min(fov / 30f, 1f));
+                    }
                 }
             }
 
