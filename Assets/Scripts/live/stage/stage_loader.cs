@@ -345,12 +345,19 @@ namespace UV2.Live
             if (!any_null) return;
 
             string tex_dir = $"3d/chara/body/{folder}/textures";
+            // the generic families use two name shapes: the plain 5-segment
+            // form and a variant-segment form (bdy0001/0003/0006/0009/0015).
+            // both go to the lookup; whichever exists wins.
             var names = new HashSet<string>
             {
                 $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_diff",
                 $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_shad_c",
                 $"{tex_dir}/tex_{folder}_00_0_{bust}_base",
                 $"{tex_dir}/tex_{folder}_00_0_{bust}_ctrl",
+                $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_00_diff",
+                $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_00_shad_c",
+                $"{tex_dir}/tex_{folder}_00_0_{bust}_00_base",
+                $"{tex_dir}/tex_{folder}_00_0_{bust}_00_ctrl",
                 "3d/chara/common/textures/tex_chr_tear00",
             };
             using var meta = meta_reader.reader.open(config.meta_db_path);
@@ -399,28 +406,32 @@ namespace UV2.Live
                     try { cur = m.GetTexture("_MainTex"); } catch { }
                     if (cur == null)
                     {
-                        var diff = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_diff")).Value;
+                        var diff = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_diff")
+                                                              || kv.Key.Contains($"_{skin}_{bust}_00_diff")).Value;
                         if (diff != null) { m.SetTexture("_MainTex", diff); assigned++; }
                     }
                     Texture toon = null;
                     try { toon = m.GetTexture("_ToonMap"); } catch { }
                     if (toon == null)
                     {
-                        var shad = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_shad_c")).Value;
+                        var shad = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_shad_c")
+                                                              || kv.Key.Contains($"_{skin}_{bust}_00_shad_c")).Value;
                         if (shad != null) { m.SetTexture("_ToonMap", shad); assigned++; }
                     }
                     Texture tri = null;
                     try { tri = m.GetTexture("_TripleMaskMap"); } catch { }
                     if (tri == null)
                     {
-                        var base_t = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_base")).Value;
+                        var base_t = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_base")
+                                                              || kv.Key.Contains($"_0_{bust}_00_base")).Value;
                         if (base_t != null) { m.SetTexture("_TripleMaskMap", base_t); assigned++; }
                     }
                     Texture opt = null;
                     try { opt = m.GetTexture("_OptionMaskMap"); } catch { }
                     if (opt == null)
                     {
-                        var ctrl = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_ctrl")).Value;
+                        var ctrl = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_ctrl")
+                                                              || kv.Key.Contains($"_0_{bust}_00_ctrl")).Value;
                         if (ctrl != null) { m.SetTexture("_OptionMaskMap", ctrl); assigned++; }
                     }
                 }
