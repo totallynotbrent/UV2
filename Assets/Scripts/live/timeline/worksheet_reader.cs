@@ -164,6 +164,17 @@ namespace UV2.Live
                     fov = k.fov,
                 }).ToList();
 
+            ws.camera_layer = (sheet.cameraLayerKeys?.thisList ?? new())
+                .Select(k => new camera_layer_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    offset_min_position = k.offsetMinPosition,
+                    offset_max_position = k.offsetMaxPosition,
+                }).ToList();
+
             ws.camera_roll = (sheet.cameraRollKeys?.thisList ?? new())
                 .Select(k => new camera_roll_key
                 {
