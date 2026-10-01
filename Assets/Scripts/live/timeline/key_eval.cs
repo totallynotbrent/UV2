@@ -19,12 +19,18 @@ namespace UV2.Live
             float span = next.time - cur.time;
             float raw = span <= 0f ? 0f : (t - cur.time) / span;
 
+            // the next key's authored AnimationCurve drives the blend when it
+            // carries keyframes (the game's CurveInterpolateKeyframes);
+            // linear keys with an empty curve plain-lerp.
+            if (next.curve != null && next.curve.Count > 0)
+                return evaluate_curve(next.curve, Mathf.Clamp01(raw));
+
             switch (next.interpolate_type)
             {
                 case 2: // linear
                     return Mathf.Clamp01(raw);
-                case 4: // curve: a fixed smooth profile stands in for the
-                    // authored AnimationCurve until curves deserialize.
+                case 4: // curve: a fixed smooth profile stands in when the
+                    // authored curve carries no keyframes.
                     return Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(raw));
                 case 6: // ease: the game's 41-entry table
                     return Mathf.Clamp01(live_easing.evaluate(next.easing_type,
@@ -32,6 +38,26 @@ namespace UV2.Live
                 default:
                     return 0f; // hold
             }
+        }
+
+        // the authored curve evaluated at u in 0..1: piecewise-linear through
+        // the keyframe values (the game's AnimationCurve.Evaluate shape).
+        public static float evaluate_curve(List<curve_key> curve, float u)
+        {
+            if (curve == null || curve.Count == 0) return u;
+            if (curve.Count == 1) return curve[0].value;
+            for (int i = 0; i < curve.Count - 1; i++)
+            {
+                var a = curve[i];
+                var b = curve[i + 1];
+                if (u <= b.time)
+                {
+                    float span = b.time - a.time;
+                    float local = span <= 0f ? 1f : (u - a.time) / span;
+                    return Mathf.Lerp(a.value, b.value, local);
+                }
+            }
+            return curve[curve.Count - 1].value;
         }
 
         // index of the last key at or before time t; -1 when t precedes the first key.

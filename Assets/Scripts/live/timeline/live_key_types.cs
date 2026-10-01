@@ -5,6 +5,16 @@ using UnityEngine;
 
 namespace UV2.Live
 {
+    // one authored AnimationCurve keyframe (time/value in 0..1, slopes).
+    [Serializable]
+    public class curve_key
+    {
+        public float time;
+        public float value;
+        public float in_slope;
+        public float out_slope;
+    }
+
     // one timeline key: frame + the common blend fields every track shares.
     [Serializable]
     public class live_key
@@ -13,6 +23,10 @@ namespace UV2.Live
         public int attribute;
         public int interpolate_type;
         public int easing_type;
+
+        // the key's authored AnimationCurve keyframes; the game evaluates the
+        // NEXT key's curve between keys, so the blend reads this list.
+        public List<curve_key> curve = new();
 
         // seconds position of this key on the clock.
         public float time => frame / 60f;
