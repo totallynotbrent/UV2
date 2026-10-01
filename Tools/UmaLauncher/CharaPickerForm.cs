@@ -54,7 +54,7 @@ namespace UmaLauncher
             charaList.Dock = DockStyle.Fill;
             charaList.IntegralHeight = false;
             charaList.DrawMode = DrawMode.OwnerDrawFixed;
-            charaList.ItemHeight = 52;
+            charaList.ItemHeight = 65;
             charaList.DrawItem += (s, e) => DrawCharaRow(e);
             charaList.SelectedIndexChanged += (s, e) => RefreshDresses();
             root.Controls.Add(charaList, 0, 1);
@@ -99,13 +99,13 @@ namespace UmaLauncher
 
             Image? portrait = PortraitFor(entry.Id);
             if (portrait is not null)
-                e.Graphics.DrawImage(portrait, e.Bounds.Left + 6, e.Bounds.Top + 2, 48, 48);
+                e.Graphics.DrawImage(portrait, e.Bounds.Left + 6, e.Bounds.Top + 2, 60, 60);
 
             bool selected = e.State.HasFlag(DrawItemState.Selected);
             using var nameBrush = new SolidBrush(selected ? SystemColors.HighlightText : SystemColors.ControlText);
             using var dimBrush = new SolidBrush(SystemColors.GrayText);
-            e.Graphics.DrawString(entry.Name, Font, nameBrush, e.Bounds.Left + 62, e.Bounds.Top + 14);
-            e.Graphics.DrawString(entry.Id.ToString(), Font, dimBrush, e.Bounds.Left + 62, e.Bounds.Top + 32);
+            e.Graphics.DrawString(entry.Name, Font, nameBrush, e.Bounds.Left + 74, e.Bounds.Top + 18);
+            e.Graphics.DrawString(entry.Id.ToString(), Font, dimBrush, e.Bounds.Left + 74, e.Bounds.Top + 40);
             if (selected) e.DrawFocusRectangle();
         }
 
@@ -113,15 +113,12 @@ namespace UmaLauncher
         {
             charaList.Items.Clear();
             List<CharaEntry> pool = [];
-            if (allowed.Count == 0)
-            {
-                pool.AddRange(charaNames.Keys.Select(id => new CharaEntry(id, LanguageManager.Name(charaNames[id]))));
-            }
-            else
-            {
-                pool.AddRange(allowed.Select(id => new CharaEntry(id, LanguageManager.Name(charaNames.GetValueOrDefault(id, "chara " + id)))));
-            }
-            foreach (var entry in pool.OrderBy(p => p.Name, StringComparer.CurrentCulture))
+            // every character is pickable (user 09-30); the song's permitted
+            // cast just sorts ahead of the rest.
+            pool.AddRange(allowed.Select(id => new CharaEntry(id, LanguageManager.Name(charaNames.GetValueOrDefault(id, "chara " + id)))));
+            pool.AddRange(charaNames.Keys.Where(id => !allowed.Contains(id))
+                .Select(id => new CharaEntry(id, LanguageManager.Name(charaNames[id]))));
+            foreach (var entry in pool)
             {
                 if (filter.Length > 0 &&
                     !entry.Name.Contains(filter, StringComparison.OrdinalIgnoreCase) &&
