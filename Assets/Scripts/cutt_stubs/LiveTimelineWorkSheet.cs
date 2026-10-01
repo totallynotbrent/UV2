@@ -39,6 +39,8 @@ namespace Gallop.Live.Cutt
         public List<Vector3> bezierPoints = new();
         public int charaRelativeBase;
         public int charaRelativeParts;
+        public Vector3 posDirect;
+        public Vector3 offset;
         public float traceSpeed;
         public float nearClip;
         public float farClip;

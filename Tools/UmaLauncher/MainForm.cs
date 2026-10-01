@@ -24,7 +24,7 @@ namespace UmaLauncher
         private readonly List<SlotPick> slots = [];
         private readonly Dictionary<int, Image> jacketCache = [];
         private readonly Dictionary<int, Image?> portraitCache = [];
-        private readonly ImageList slotImages = new() { ImageSize = new Size(40, 40), ColorDepth = ColorDepth.Depth32Bit };
+        private readonly ImageList slotImages = new() { ImageSize = new Size(50, 50), ColorDepth = ColorDepth.Depth32Bit };
         private readonly Dictionary<int, int> portraitIndex = [];
 
         // character portrait from the charicons folder exported by the player.
@@ -300,7 +300,7 @@ namespace UmaLauncher
 
                 Button slotButton = new()
                 {
-                    Size = new Size(104, 128),
+                    Size = new Size(130, 160),
                     Text = SlotLabel(pick),
                     TextAlign = ContentAlignment.BottomCenter,
                     ImageList = slotImages,
@@ -323,11 +323,16 @@ namespace UmaLauncher
             return $"pos {pick.Position + 1}\n{who}{dress}";
         }
 
+        // the character's first live-usable outfit is the default clothing
+        // for every character (user 09-30); the song default only fills when
+        // the character has none of their own.
         private int DefaultDress(LiveData song, int charaId)
         {
+            var own = liveDresses.Where(d => d.CharaId == charaId).OrderBy(d => d.Id).FirstOrDefault();
+            if (own != null) return own.Id;
             int songDefault = charaId != 0 && song.DefaultMainDress != 0 ? song.DefaultMainDress : song.BackdancerDress;
             if (liveDresses.Any(d => d.Id == songDefault)) return songDefault;
-            return liveDresses.Where(d => d.CharaId == charaId).OrderBy(d => d.Id).FirstOrDefault()?.Id ?? -1;
+            return -1;
         }
 
         private void OpenCharaPicker(SlotPick pick)

@@ -39,31 +39,68 @@ namespace UV2.Live
         // (caller falls back to the summary screen with the reason shown).
         public string last_error { get; private set; }
 
-        public bool open(selection_state sel)
+        // builds the whole concert for the selection; yields between load
+        // phases so the ui paints live progress. C# forbids yields inside
+        // try/catch, so each phase is a plain method that returns an error
+        // string (null = keep going) and the coroutine yields between phases.
+        private System.Collections.IEnumerator open_core(selection_state sel)
+        {
+            if (!run_phase_worksheet(sel)) yield break;
+            UV2.UI.load_progress.report($"binding worksheet ({ws.camera_pos.Count} cam keys)");
+            trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
+            yield return null;
+
+            if (!run_phase_stage(sel)) yield break;
+            int stage_step = 0;
+            var stage_bundles = _stage_material_names.Concat(new[] { _stage_first_controller }).ToList();
+            foreach (var name in stage_bundles)
+            {
+                UV2.UI.load_progress.report($"loading stage {sel.stage_id}: bundle {++stage_step}/{stage_bundles.Count}");
+                yield return null;
+                if (!run_phase_stage_bundle(name)) yield break;
+            }
+
+            int cast_step = 0, cast_total = sel.slots.Count(s => s.chara_id > 0);
+            foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
+            {
+                UV2.UI.load_progress.report($"loading cast {++cast_step}/{cast_total}");
+                yield return null;
+                var root = run_phase_character(slot);
+                if (root == null) { _cast_missed++; continue; }
+                chara_roots.Add(root);
+                UV2.Live.chara_parts.record(root);
+            }
+            trace_log.write($"cast: {chara_roots.Count} loaded, {_cast_missed} missed, {chara_roots.Count} roots total");
+
+            UV2.UI.load_progress.report("loading motion clips");
+            yield return null;
+            var clips = run_phase_clips(sel);
+            if (clips == null) yield break;
+
+            wire_drivers(clips, sel.music_id);
+            trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
+
+            UV2.UI.load_progress.report("starting music");
+            yield return null;
+            start_music(sel.music_id);
+            UV2.UI.load_progress.report("concert ready");
+            _open_ok = true;
+        }
+
+        // non-yielding phase helpers, each wrapped in try/catch, returning
+        // false/null on failure with last_error set.
+        private bool run_phase_worksheet(selection_state sel)
         {
             try
             {
-                // the worksheet comes straight from the game's cutt camera bundle,
-                // deserialized by the generated stub; no extraction, no sidecar.
                 ws = worksheet_reader.load(sel.music_id);
-                if (ws == null)
-                {
-                    last_error = $"no worksheet in the cutt bundles for song {sel.music_id}";
-                    return false;
-                }
+                if (ws == null) { last_error = $"no worksheet in the cutt bundles for song {sel.music_id}"; return false; }
                 clock = new timeline_clock();
-                trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
-
-                // selections written by older launchers carry no stage id; resolve
-                // it from the game's livesettings the same way the catalog does.
                 if (sel.stage_id <= 0)
                 {
                     sel.stage_id = resolve_stage_id(sel.music_id);
                     trace_log.write($"stage id resolved at runtime: {sel.stage_id}");
                 }
-
-                // the game's shader bundle must be resident before any material-bearing
-                // bundle loads, or their shader externals resolve to the magenta fallback.
                 var shader_row = meta_row("shader");
                 if (shader_row != null)
                 {
@@ -73,75 +110,93 @@ namespace UV2.Live
                 else
                     trace_log.write("shader bundle: NO META ROW");
 
-                // stage: materials from the controller's prereq list, then the
-                // controller itself, all resolved from the selection's stage id.
                 var controllers = manifest_reader.stage_bundles(sel.stage_id);
-                string first_controller = controllers.FirstOrDefault(c => meta_row(c) != null)
+                _stage_first_controller = controllers.FirstOrDefault(c => meta_row(c) != null)
                                           ?? controllers.FirstOrDefault();
-                if (first_controller == null)
+                if (_stage_first_controller == null)
                 {
                     last_error = $"no stage controller for stage {sel.stage_id}";
                     return false;
                 }
-                var material_names = manifest_reader.stage_materials(sel.stage_id, first_controller);
-                trace_log.write($"stage {sel.stage_id}: controller '{first_controller}', {material_names.Count} material bundles");
-                foreach (var name in material_names.Concat(new[] { first_controller }))
-                {
-                    // the stage controller stub deserializes _stageObjects from the
-                    // controller itself, so the plain game bundle carries everything.
-                    var b = load_bundle_keep(name);
-                    Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
-                    if (b != null && name.Contains("controller"))
-                    {
-                        // instantiate the stage controller prefab
-                        string[] all = b.GetAllAssetNames();
-                        string prefab_name = all.FirstOrDefault(n => n.EndsWith(".prefab"));
-                        if (prefab_name != null)
-                        {
-                            var prefab = b.LoadAsset<GameObject>(prefab_name);
-                            if (prefab != null)
-                            {
-                                var stage = Instantiate(prefab);
-                                Debug.Log($"[stage_loader] stage instantiated: {stage.name}, renderers {stage.GetComponentsInChildren<Renderer>(true).Length}");
-                                trace_log.write($"stage controller instantiated: {stage.name}");
-                                shader_manager.fix_game_shaders(stage.transform, "stage");
+                _stage_material_names = manifest_reader.stage_materials(sel.stage_id, _stage_first_controller);
+                trace_log.write($"stage {sel.stage_id}: controller '{_stage_first_controller}', {_stage_material_names.Count} material bundles");
+                return true;
+            }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] open phase failed: {e}");
+                return false;
+            }
+        }
 
-                                // the controller prefab is a shell: the StageController stub
-                                // deserialized the game's own _stageObjects list, which names
-                                // every stage root. instantiate them all under one stage root.
-                                var ctrl = stage.GetComponent<Gallop.Live.StageController>();
-                                var geo_root = new GameObject("stage_geometry");
-                                int placed = 0;
-                                if (ctrl != null && ctrl._stageObjects != null)
+        private bool run_phase_stage(selection_state sel) => true;
+
+        private bool run_phase_stage_bundle(string name)
+        {
+            try
+            {
+                var b = load_bundle_keep(name);
+                Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
+                if (b != null && name.Contains("controller"))
+                {
+                    string[] all = b.GetAllAssetNames();
+                    string prefab_name = all.FirstOrDefault(n => n.EndsWith(".prefab"));
+                    if (prefab_name != null)
+                    {
+                        var prefab = b.LoadAsset<GameObject>(prefab_name);
+                        if (prefab != null)
+                        {
+                            var stage = Instantiate(prefab);
+                            Debug.Log($"[stage_loader] stage instantiated: {stage.name}, renderers {stage.GetComponentsInChildren<Renderer>(true).Length}");
+                            trace_log.write($"stage controller instantiated: {stage.name}");
+                            shader_manager.fix_game_shaders(stage.transform, "stage");
+
+                            var ctrl = stage.GetComponent<Gallop.Live.StageController>();
+                            var geo_root = new GameObject("stage_geometry");
+                            int placed = 0;
+                            if (ctrl != null && ctrl._stageObjects != null)
+                            {
+                                foreach (var go in ctrl._stageObjects)
                                 {
-                                    foreach (var go in ctrl._stageObjects)
-                                    {
-                                        if (go == null) continue;
-                                        var piece = Instantiate(go, geo_root.transform);
-                                        piece.name = go.name;
-                                        placed++;
-                                    }
+                                    if (go == null) continue;
+                                    var piece = Instantiate(go, geo_root.transform);
+                                    piece.name = go.name;
+                                    placed++;
                                 }
-                                Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
-                                trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
-                                shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
-                                shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
                             }
+                            Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
+                            trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
+                            shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
+                            shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
                         }
                     }
                 }
+                return true;
+            }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] stage bundle phase failed: {e}");
+                return false;
+            }
+        }
 
-                // cast
-                int cast_loaded = 0, cast_missed = 0;
-                foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
-                {
-                    var root = load_character(slot.chara_id, slot.dress_id);
-                    if (root != null) { chara_roots.Add(root); cast_loaded++; }
-                    else cast_missed++;
-                }
-                trace_log.write($"cast: {cast_loaded} loaded, {cast_missed} missed, {chara_roots.Count} roots total");
+        private Transform run_phase_character(UV2.App.slot_pick slot)
+        {
+            try { return load_character(slot.chara_id, slot.dress_id); }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] character phase failed: {e}");
+                return null;
+            }
+        }
 
-                // motion clips: one bundle per authored motion name in the worksheet.
+        private System.Collections.Generic.Dictionary<string, AnimationClip> run_phase_clips(selection_state sel)
+        {
+            try
+            {
                 var clip_names = new HashSet<string>();
                 foreach (var seq in ws.motion_sequences)
                     foreach (var key in seq)
@@ -149,20 +204,25 @@ namespace UV2.Live
                             clip_names.Add(key.motion_name);
                 var clips = load_clips(clip_names);
                 trace_log.write($"motion: {clip_names.Count} authored names -> {clips.Count} clips loaded");
-
-                wire_drivers(clips, sel.music_id);
-                trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
-
-                start_music(sel.music_id);
-                return true;
+                return clips;
             }
             catch (Exception e)
             {
                 last_error = $"{e.GetType().Name}: {e.Message}";
-                Debug.LogError($"[stage_loader] open failed: {e}");
-                return false;
+                Debug.LogError($"[stage_loader] clips phase failed: {e}");
+                return null;
             }
         }
+
+        private System.Collections.Generic.List<string> _stage_material_names;
+        private string _stage_first_controller;
+        private int _cast_missed;
+
+        // true once open_core ran to completion.
+        public bool opened { get { return _open_ok; } }
+        private bool _open_ok;
+
+        public System.Collections.IEnumerator open(selection_state sel) { yield return open_core(sel); }
 
         // opens a bundle by manifest name and keeps it resident.
         private AssetBundle load_bundle_keep(string name)
@@ -220,10 +280,8 @@ namespace UV2.Live
             var instance = Instantiate(prefab);
 
             // the body ships without its head: the head prefab lives in the
-            // chr{chara}_00 head bundle (mchr for mini casts); parent its Head
-            // bone onto the body's Head bone so both share one skeleton.
-            bool mini = body.bundle.StartsWith("3d/chara/mini/");
-            int head_renderers = attach_head(instance.transform, chara_id, mini);
+            // chr{chara}_00 head bundle; it merges onto the body skeleton.
+            int head_renderers = attach_head(instance.transform, chara_id);
 
             int chara_renderers = instance.GetComponentsInChildren<Renderer>(true).Length;
             trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: {chara_renderers} renderers (head +{head_renderers})");
@@ -287,12 +345,20 @@ namespace UV2.Live
             if (!any_null) return;
 
             string tex_dir = $"3d/chara/body/{folder}/textures";
+            // the generic families use two name shapes: the plain 5-segment
+            // form and a variant-segment form (bdy0001/0003/0006/0009/0015).
+            // both go to the lookup; whichever exists wins.
             var names = new HashSet<string>
             {
                 $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_diff",
                 $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_shad_c",
                 $"{tex_dir}/tex_{folder}_00_0_{bust}_base",
                 $"{tex_dir}/tex_{folder}_00_0_{bust}_ctrl",
+                $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_00_diff",
+                $"{tex_dir}/tex_{folder}_00_{skin}_{bust}_00_shad_c",
+                $"{tex_dir}/tex_{folder}_00_0_{bust}_00_base",
+                $"{tex_dir}/tex_{folder}_00_0_{bust}_00_ctrl",
+                "3d/chara/common/textures/tex_chr_tear00",
             };
             using var meta = meta_reader.reader.open(config.meta_db_path);
             if (meta == null) return;
@@ -312,6 +378,7 @@ namespace UV2.Live
             }
             if (loaded.Count == 0) { trace_log.write($"generic body {chara_id}: textures failed to load"); return; }
 
+            var tear_tex = loaded.Values.FirstOrDefault(t => t.name.Contains("tear"));
             int assigned = 0;
             foreach (var r in body_root.GetComponentsInChildren<Renderer>(true))
             {
@@ -320,33 +387,51 @@ namespace UV2.Live
                 var mats = r.materials;
                 foreach (var m in mats)
                 {
-                    if (m == null || !m.name.Contains("bdy")) continue;
+                    if (m == null) continue;
+                    if (m.name.Contains("tear"))
+                    {
+                        // the tear materials ship a null main slot; the game
+                        // assigns the shared tear texture at runtime.
+                        Texture cur_tear = null;
+                        try { cur_tear = m.GetTexture("_MainTex"); } catch { }
+                        if (cur_tear == null && tear_tex != null)
+                        {
+                            m.SetTexture("_MainTex", tear_tex);
+                            assigned++;
+                        }
+                        continue;
+                    }
+                    if (!m.name.Contains("bdy")) continue;
                     Texture cur = null;
                     try { cur = m.GetTexture("_MainTex"); } catch { }
                     if (cur == null)
                     {
-                        var diff = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_diff")).Value;
+                        var diff = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_diff")
+                                                              || kv.Key.Contains($"_{skin}_{bust}_00_diff")).Value;
                         if (diff != null) { m.SetTexture("_MainTex", diff); assigned++; }
                     }
                     Texture toon = null;
                     try { toon = m.GetTexture("_ToonMap"); } catch { }
                     if (toon == null)
                     {
-                        var shad = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_shad_c")).Value;
+                        var shad = loaded.FirstOrDefault(kv => kv.Key.Contains($"_{skin}_{bust}_shad_c")
+                                                              || kv.Key.Contains($"_{skin}_{bust}_00_shad_c")).Value;
                         if (shad != null) { m.SetTexture("_ToonMap", shad); assigned++; }
                     }
                     Texture tri = null;
                     try { tri = m.GetTexture("_TripleMaskMap"); } catch { }
                     if (tri == null)
                     {
-                        var base_t = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_base")).Value;
+                        var base_t = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_base")
+                                                              || kv.Key.Contains($"_0_{bust}_00_base")).Value;
                         if (base_t != null) { m.SetTexture("_TripleMaskMap", base_t); assigned++; }
                     }
                     Texture opt = null;
                     try { opt = m.GetTexture("_OptionMaskMap"); } catch { }
                     if (opt == null)
                     {
-                        var ctrl = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_ctrl")).Value;
+                        var ctrl = loaded.FirstOrDefault(kv => kv.Key.Contains($"_0_{bust}_ctrl")
+                                                              || kv.Key.Contains($"_0_{bust}_00_ctrl")).Value;
                         if (ctrl != null) { m.SetTexture("_OptionMaskMap", ctrl); assigned++; }
                     }
                 }
@@ -358,11 +443,9 @@ namespace UV2.Live
         // loads the character's head prefab and parents its Head bone under the
         // body's Head bone; mini casts use the chibi head tree. returns the
         // renderers the head added (0 on failure).
-        private int attach_head(Transform body_root, int chara_id, bool mini)
+        private int attach_head(Transform body_root, int chara_id)
         {
-            string head_name = mini
-                ? $"3d/chara/mini/head/mchr{chara_id:d4}_00/pfb_mchr{chara_id:d4}_00_hair"
-                : $"3d/chara/head/chr{chara_id}_00/pfb_chr{chara_id}_00";
+            string head_name = $"3d/chara/head/chr{chara_id}_00/pfb_chr{chara_id}_00";
             var row = meta_row(head_name);
             if (row == null)
             {
@@ -385,17 +468,53 @@ namespace UV2.Live
             if (prefab == null) { trace_log.write($"chara {chara_id}: head LoadAsset null"); return 0; }
 
             var head = Instantiate(prefab);
-            var body_head_bone = body_root.GetComponentInChildren<Transform>().Find("Head")
-                ?? find_deep(body_root, "Head");
-            var head_head_bone = find_deep(head.transform, "Head");
-            if (body_head_bone == null || head_head_bone == null)
+            int head_renderers = head.GetComponentsInChildren<Renderer>(true).Length;
+
+            // the game's rig is one skeleton shared by body and head meshes;
+            // remap every head skinned mesh onto the body's bones by name so
+            // the head deforms with (and is culled with) the body skeleton.
+            var body_bones = new Dictionary<string, Transform>();
+            foreach (var smr in body_root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                foreach (var b in smr.bones)
+                    if (b != null && !body_bones.ContainsKey(b.name)) body_bones[b.name] = b;
+
+            var replaced = new List<Transform>();
+            int remapped_total = 0, kept = 0;
+            foreach (var skin in head.GetComponentsInChildren<SkinnedMeshRenderer>(true))
             {
-                trace_log.write($"chara {chara_id}: head bones not found (body {body_head_bone != null}, head {head_head_bone != null})");
-                return head.GetComponentsInChildren<Renderer>(true).Length;
+                if (skin.rootBone != null && body_bones.TryGetValue(skin.rootBone.name, out var new_root))
+                    skin.rootBone = new_root;
+                var remapped = new Transform[skin.bones.Length];
+                for (int i = 0; i < remapped.Length; i++)
+                {
+                    var src = skin.bones[i];
+                    if (src != null && body_bones.TryGetValue(src.name, out var tgt))
+                    {
+                        remapped[i] = tgt;
+                        src.position = tgt.position;
+                        while (src.childCount > 0) src.GetChild(0).SetParent(tgt);
+                        if (!replaced.Contains(src)) replaced.Add(src);
+                        remapped_total++;
+                    }
+                    else
+                    {
+                        remapped[i] = src;
+                        if (src != null) kept++;
+                    }
+                }
+                skin.bones = remapped;
             }
-            head_head_bone.SetParent(body_head_bone, false);
-            // the head prefab root stays as a sibling shell; keep it for materials.
-            return head.GetComponentsInChildren<Renderer>(true).Length;
+
+            // surviving head objects (meshes + private physics bones) live
+            // under the character root; the replaced copies are torn down.
+            while (head.transform.childCount > 0)
+                head.transform.GetChild(0).SetParent(body_root);
+            foreach (var dead in replaced)
+                if (dead != null) Destroy(dead.gameObject);
+            Destroy(head);
+
+            trace_log.write($"chara {chara_id}: head merged onto body skeleton ({remapped_total} bones remapped, {kept} private kept, body skeleton {body_bones.Count})");
+            return head_renderers;
         }
 
         // depth-first name search through a hierarchy.
@@ -589,7 +708,8 @@ namespace UV2.Live
             var waves = live_audio.parse_afs2(bank);
             if (waves.Count == 0)
             {
-                trace_log.write("music: afs2 parse found no waves");
+                UV2.UI.load_progress.report("starting music");
+            trace_log.write("music: afs2 parse found no waves");
                 return;
             }
 
