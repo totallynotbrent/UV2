@@ -13,6 +13,19 @@ namespace UV2.Live
     // deserialized by the generated stub, and maps it into the runtime model.
     public static class worksheet_reader
     {
+        // the key's authored AnimationCurve as curve_key list; empty when the
+        // game ships the curve container with no keyframes.
+        private static List<curve_key> read_curve(AnimationCurve curve)
+        {
+            var keys = new List<curve_key>();
+            if (curve == null) return keys;
+            foreach (var kf in curve.keys)
+            {
+                keys.Add(new curve_key { time = kf.time, value = kf.value, in_slope = kf.inTangent, out_slope = kf.outTangent });
+            }
+            return keys;
+        }
+
         // loads and maps the worksheet for a song id; null when absent.
         public static live_worksheet load(int music_id)
         {
@@ -125,6 +138,7 @@ namespace UV2.Live
                     attribute = k.attribute,
                     interpolate_type = k.interpolateType,
                     easing_type = k.easingType,
+                    curve = read_curve(k.curve),
                     set_type = k.setType,
                     position = k.position,
                     pos_direct = k.posDirect,
@@ -146,6 +160,7 @@ namespace UV2.Live
                     attribute = k.attribute,
                     interpolate_type = k.interpolateType,
                     easing_type = k.easingType,
+                    curve = read_curve(k.curve),
                     look_at_type = k.lookAtType,
                     position = k.position,
                     look_at_chara_pos = k.lookAtCharaPos,
@@ -160,6 +175,7 @@ namespace UV2.Live
                     frame = k.frame,
                     easing_type = k.easingType,
                     interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
                     fov_type = k.fovType,
                     fov = k.fov,
                 }).ToList();
@@ -181,6 +197,7 @@ namespace UV2.Live
                     frame = k.frame,
                     easing_type = k.easingType,
                     interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
                     degree = k.degree,
                 }).ToList();
 
