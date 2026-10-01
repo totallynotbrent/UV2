@@ -1,0 +1,219 @@
+using System.Collections.Generic;
+using UnityEngine;
+using UV2.App;
+
+namespace UV2.Live
+{
+    // publishes the decoded global shader values the game's GraphicSettings sets
+    // every frame; without them the chara/stage shaders run on unity defaults
+    // (black) on a real gpu.
+    public static class global_shade
+    {
+        private static readonly int id_lightmap_color = Shader.PropertyToID("_Global_LightmapColor");
+        private static readonly int id_lightmap_shadow = Shader.PropertyToID("_Global_LightmapShadowColor");
+        private static readonly int id_lightmap_add = Shader.PropertyToID("_Global_LightmapDensityAddColor");
+        private static readonly int id_lightmap_modulate = Shader.PropertyToID("_Global_LightmapModulateColor");
+
+        private static readonly int id_rim_color = Shader.PropertyToID("_GlobalRimColor");
+        private static readonly int id_toon_color = Shader.PropertyToID("_GlobalToonColor");
+        private static readonly int id_outline_width = Shader.PropertyToID("_GlobalOutlineWidth");
+        private static readonly int id_outline_offset = Shader.PropertyToID("_GlobalOutlineOffset");
+
+        private static readonly int id_camera_fov = Shader.PropertyToID("_GlobalCameraFov");
+        private static readonly int id_vertex_depth = Shader.PropertyToID("_GlobalVertexDepthLinear");
+        private static readonly int id_far_clip_log = Shader.PropertyToID("_GlobalFarClipLog");
+
+        // the fog block the game publishes every frame; the decoded off-state
+        // (GraphicSettings::SetDefaultFog) is the only safe default.
+        private static readonly int id_fog_color = Shader.PropertyToID("_Global_FogColor");
+        private static readonly int id_fog_min_distance = Shader.PropertyToID("_Global_FogMinDistance");
+        private static readonly int id_fog_length = Shader.PropertyToID("_Global_FogLength");
+        private static readonly int id_fog_max_density = Shader.PropertyToID("_Global_MaxDensity");
+        private static readonly int id_fog_max_height = Shader.PropertyToID("_Global_MaxHeight");
+        private static readonly int id_fog_world_origin = Shader.PropertyToID("_Global_FogWorld_Origin");
+
+        // the toon light the chara shaders consume: a direction published from
+        // the worksheet's global-light track, not a unity light object.
+        private static readonly int id_use_orig_light = Shader.PropertyToID("_UseOriginalDirectionalLight");
+        private static readonly int id_orig_light_dir = Shader.PropertyToID("_OriginalDirectionalLightDir");
+
+        // the decoded defaults: density 1.0, densityColor 0.5 gray, min 0.
+        private const float lightmap_density = 1.0f;
+        private const float lightmap_min_density = 0.0f;
+        private static readonly Color lightmap_density_color = new(0.5f, 0.5f, 0.5f, 1f);
+
+        // the latest global-light key interpolated for the current frame.
+        public static void set_light_track(global_light_key key, float blend)
+        {
+            _light_key = key;
+            _light_blend = blend;
+        }
+        private static global_light_key _light_key;
+        private static float _light_blend;
+
+        // the assembled character mpb: rebuilt when the light track moves.
+        private static MaterialPropertyBlock _chara_mpb;
+        private static Vector3 _last_light_dir = new(12345f, 0f, 0f);
+
+        // applies the toon-light + rim block onto every renderer of every
+        // character, the per-renderer publish the chara shaders consume.
+        public static void publish_chara_block(List<Transform> chara_roots)
+        {
+            if (chara_roots == null || chara_roots.Count == 0) return;
+            if (_chara_mpb == null) _chara_mpb = new MaterialPropertyBlock();
+
+            Vector3 dir = Vector3.down;
+            var k = _light_key;
+            if (k != null && k.light_dir.sqrMagnitude > 1e-06f)
+                dir = -(Quaternion.Euler(k.light_dir) * Vector3.forward).normalized;
+
+            if ((dir - _last_light_dir).sqrMagnitude < 1e-10f) return;
+            _last_light_dir = dir;
+
+            _chara_mpb.SetFloat(id_use_orig_light, 1f);
+            _chara_mpb.SetVector(id_orig_light_dir, dir);
+            if (k != null)
+            {
+                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor"), k.rim_color);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep"), k.rim_step);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather"), k.rim_feather);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate"), k.rim_spec_rate);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate"), k.rim_shadow_rate);
+                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor2"), k.rim_color2);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep2"), k.rim_step2);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather2"), k.rim_feather2);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate2"), k.rim_spec_rate2);
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate2"), k.rim_shadow_rate2);
+            }
+
+            foreach (var root in chara_roots)
+            {
+                foreach (var r in root.GetComponentsInChildren<Renderer>())
+                    r.SetPropertyBlock(_chara_mpb);
+            }
+        }
+
+        // the scene rig the game's live scenes always carry: one directional sun
+        // and one audio listener. created once; toon shaders render black
+        // without a scene light and unity emits no sound without a listener.
+        private static bool _rig_ready;
+        private static GameObject _sun;
+        private static GameObject _listener_host;
+
+        private static void ensure_scene_rig(Camera cam)
+        {
+            if (_rig_ready) return;
+
+            if (GameObject.Find("AudioListener") == null)
+            {
+                _listener_host = new GameObject("AudioListener");
+                _listener_host.AddComponent<AudioListener>();
+            }
+
+            var existing_lights = Object.FindObjectsOfType<Light>();
+            bool has_dir = false;
+            foreach (var l in existing_lights) if (l.type == LightType.Directional) has_dir = true;
+            if (!has_dir)
+            {
+                _sun = new GameObject("Directional Light");
+                var light = _sun.AddComponent<Light>();
+                light.type = LightType.Directional;
+                light.color = Color.white;
+                light.intensity = 1f;
+                light.shadows = LightShadows.Soft;
+                // the game's sun: overhead angled slightly forward.
+                _sun.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
+            }
+            RenderSettings.sun = null; // the chara mpb drives toon light, not the sun
+
+            _rig_ready = true;
+            trace_log.write("scene rig: directional sun + audio listener live");
+        }
+
+        // publishes every frame; call from the loader's update.
+        public static void publish(Camera cam)
+        {
+            ensure_scene_rig(cam);
+            publish_fog_off();
+            // lightmap block with the exact decoded folds: both colors scale by
+            // 2 first; modulate uses density directly, add clamps 1-density.
+            float density_add = Mathf.Max(1f - lightmap_density, lightmap_min_density);
+            Vector3 add_rgb = new(lightmap_density_color.r * 2f * density_add,
+                                  lightmap_density_color.g * 2f * density_add,
+                                  lightmap_density_color.b * 2f * density_add);
+            Vector3 mod_rgb = new(lightmap_density_color.r * 2f * lightmap_density,
+                                  lightmap_density_color.g * 2f * lightmap_density,
+                                  lightmap_density_color.b * 2f * lightmap_density);
+            Shader.SetGlobalColor(id_lightmap_color, Color.white);
+            Shader.SetGlobalColor(id_lightmap_shadow, new Color(0.25f, 0.25f, 0.25f, 1f));
+            Shader.SetGlobalColor(id_lightmap_add, new Color(add_rgb.x, add_rgb.y, add_rgb.z, 1f));
+            Shader.SetGlobalColor(id_lightmap_modulate, new Color(mod_rgb.x, mod_rgb.y, mod_rgb.z, 1f));
+
+            // character env: rim/toon white, outline 1.0/1.0 (the .ctor value).
+            Shader.SetGlobalColor(id_rim_color, Color.white);
+            Shader.SetGlobalVector(id_toon_color, new Vector4(1f, 1f, 1f, 1f));
+            Shader.SetGlobalFloat(id_outline_width, 1.0f);
+            Shader.SetGlobalFloat(id_outline_offset, 1.0f);
+
+            // the dirt family + ambient + array globals the game's shaders read;
+            // v1 proved these exact defaults render on a real gpu.
+            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtRimSpecularColor"), new Color(0.25f, 0.25f, 0.25f, 1f));
+            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtToonColor"), new Color(0.5f, 0.5f, 0.5f, 1f));
+            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtColor"), new Color(0.6f, 0.451f, 0.384f, 1f));
+            Shader.SetGlobalColor(Shader.PropertyToID("_AmbientColor"), new Color(0.212f, 0.227f, 0.259f, 1f));
+            Shader.SetGlobalFloat(Shader.PropertyToID("_CylinderBlend"), 0f);
+            Shader.SetGlobalFloat(Shader.PropertyToID("_RimHorizonOffset"), 0f);
+            Shader.SetGlobalFloat(Shader.PropertyToID("_UVEmissivePower"), 0f);
+            Shader.SetGlobalColor(Shader.PropertyToID("_RimColor2"), Color.black);
+            Shader.SetGlobalVectorArray(Shader.PropertyToID("_MainParam"), new Vector4[] { Vector4.zero, Vector4.zero });
+            Shader.SetGlobalVectorArray(Shader.PropertyToID("_HighParam1"), new Vector4[] { new Vector4(0, 0, 0, 1), new Vector4(0, 0, 0, 1), Vector4.zero });
+            Shader.SetGlobalVectorArray(Shader.PropertyToID("_HighParam2"), new Vector4[] { new Vector4(0, 0, 0, 1), new Vector4(0, 0, 0, 1) });
+            var color_array = new Vector4[10];
+            for (int i = 0; i < 10; i++) color_array[i] = Vector4.zero;
+            Shader.SetGlobalVectorArray(Shader.PropertyToID("_ColorArray"), color_array);
+            Shader.SetGlobalFloatArray(Shader.PropertyToID("_DirtRate"), new float[] { 0f, 0f, 0f });
+
+            // lod + depth consumers.
+            if (cam != null)
+            {
+                Shader.SetGlobalFloat(id_camera_fov, Mathf.Min(cam.fieldOfView / 30f, 1f));
+                Shader.SetGlobalFloat(id_vertex_depth, cam.farClipPlane - cam.nearClipPlane);
+                Shader.SetGlobalFloat(id_far_clip_log, Mathf.Log(cam.farClipPlane));
+            }
+
+            publish_toon_light();
+        }
+
+        // the decoded fog-off state: zero fog color, far start, full survive,
+        // so stage shaders never fade the frame to the fog color.
+        private static void publish_fog_off()
+        {
+            Shader.SetGlobalColor(id_fog_color, Color.clear);
+            Shader.SetGlobalVector(id_fog_min_distance, new Vector4(100000f, 0f, 0f, 0f));
+            Shader.SetGlobalVector(id_fog_length, new Vector4(0f, 0f, 0f, 1e-06f));
+            Shader.SetGlobalFloat(id_fog_max_density, 1f);
+            Shader.SetGlobalFloat(id_fog_max_height, 100f);
+            Shader.SetGlobalVector(id_fog_world_origin, Vector4.zero);
+        }
+
+        // the chara toon light: direction from the worksheet's global-light
+        // track, lerped between neighboring keys; identity tilt when no track.
+        private static void publish_toon_light()
+        {
+            Shader.SetGlobalFloat(id_use_orig_light, 1f);
+            var dir = Vector3.down;
+            if (_light_key != null)
+            {
+                var k = _light_key;
+                Vector3 light_dir = k.light_dir;
+                if (light_dir.sqrMagnitude < 1e-06f)
+                    light_dir = Vector3.down;
+                // the game's euler angles point the light; the shader wants the
+                // direction the light travels.
+                var rot = Quaternion.Euler(light_dir);
+                dir = -(rot * Vector3.forward).normalized;
+            }
+            Shader.SetGlobalVector(id_orig_light_dir, dir);
+        }
+    }
+}

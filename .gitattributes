@@ -1,0 +1,18 @@
+* text=auto eol=lf
+
+*.cs text diff=csharp
+*.json text
+*.unity text
+*.asset text
+*.meta text
+*.md text
+*.txt text
+*.yml text
+
+*.png binary
+*.dll binary
+*.so binary
+*.otf binary
+*.ttf binary
+*.exe binary
+*.mdb binary

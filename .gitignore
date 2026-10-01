@@ -1,0 +1,45 @@
+# build artifacts
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]serSettings/
+MemoryCaptures/
+*.unitypackage
+
+# ide
+.vs/
+.idea/
+.vscode/
+*.user
+*.booproj
+*.sln
+*.csproj
+!Tools/UmaLauncher/UmaLauncher.csproj
+
+# os
+.DS_Store
+Thumbs.db
+
+# game-derived data pack (never in the public repo; song_seconds.json IS tracked)
+Assets/StreamingAssets/data/*
+!Assets/StreamingAssets/data/song_seconds.json
+datapack/
+
+# working docs stay local for now
+docs/
+research/
+uv2/
+
+# agent scratch
+.plan.md
+WORKLOG.md
+AGENT_HANDOFF.md
+Config.json
+
+# launcher build outputs
+Tools/UmaLauncher/bin/
+Tools/UmaLauncher/obj/
+launcher_out/

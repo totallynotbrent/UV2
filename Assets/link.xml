@@ -1,0 +1,7 @@
+<linker>
+  <!-- preserve the game-type stubs: the runtime resolves bundle MonoScripts
+       against these types, so the managed stripper must never remove them. -->
+  <assembly fullname="umamusume">
+    <namespace fullname="Gallop.Live.Cutt" preserve="all"/>
+  </assembly>
+</linker>
