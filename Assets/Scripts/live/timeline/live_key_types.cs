@@ -152,6 +152,12 @@ namespace UV2.Live
         public Vector3 chara_pos;
     }
 
+    public class camera_layer_key : live_key
+    {
+        public Vector3 offset_min_position;
+        public Vector3 offset_max_position;
+    }
+
     public class live_worksheet
     {
         public string song_id;
@@ -162,6 +168,7 @@ namespace UV2.Live
         public List<camera_roll_key> camera_roll = new();
         public List<camera_switcher_key> camera_switcher = new();
         public List<camera_motion_key> camera_motion = new();
+        public List<camera_layer_key> camera_layer = new();
         public List<timescale_key> timescale = new();
         public List<List<motion_seq_key>> motion_sequences = new();
         public Dictionary<string, List<formation_key>> formation = new();

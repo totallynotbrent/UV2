@@ -129,6 +129,27 @@ namespace UV2.Live
                 }
             }
 
+            // camera-layer band: the authored track recenters the chara-relative
+            // framing; the game feeds it through the per-anchor offset term.
+            Vector3 layer_offset = Vector3.zero;
+            if (ws.camera_layer.Count > 0)
+            {
+                int li = key_eval.bracket(ws.camera_layer, t);
+                if (li >= 0)
+                {
+                    var cur_l = ws.camera_layer[li];
+                    var next_l = li + 1 < ws.camera_layer.Count ? ws.camera_layer[li + 1] : null;
+                    float k_l = key_eval.interp(cur_l, next_l, key_eval.span_t(cur_l, next_l, t));
+                    Vector3 mid = (cur_l.offset_min_position + cur_l.offset_max_position) * 0.5f;
+                    if (next_l != null)
+                    {
+                        Vector3 mid_next = (next_l.offset_min_position + next_l.offset_max_position) * 0.5f;
+                        mid = key_eval.lerp_v3(mid, mid_next, k_l);
+                    }
+                    layer_offset = mid;
+                }
+            }
+
             // look-at
             if (ws.camera_lookat.Count > 0)
             {
@@ -143,13 +164,13 @@ namespace UV2.Live
                     // only rides the const-height parts.
                     bool look_const = cur.look_at_chara_parts >= 11 && cur.look_at_chara_parts <= 14;
                     Vector3 look = cur.look_at_type == 1
-                        ? chara_parts.group_world(chara_roots, cur.look_at_chara_pos, cur.look_at_chara_parts) + cur.position + (look_const ? cur.look_at_chara_pos_offset : Vector3.zero)
+                        ? chara_parts.group_world(chara_roots, cur.look_at_chara_pos, cur.look_at_chara_parts) + layer_offset + cur.position + (look_const ? cur.look_at_chara_pos_offset : Vector3.zero)
                         : cur.position;
                     if (next != null && cur.look_at_type == next.look_at_type)
                     {
                         bool next_look_const = next.look_at_chara_parts >= 11 && next.look_at_chara_parts <= 14;
                         Vector3 look_next = next.look_at_type == 1
-                            ? chara_parts.group_world(chara_roots, next.look_at_chara_pos, next.look_at_chara_parts) + next.position + (next_look_const ? next.look_at_chara_pos_offset : Vector3.zero)
+                            ? chara_parts.group_world(chara_roots, next.look_at_chara_pos, next.look_at_chara_parts) + layer_offset + next.position + (next_look_const ? next.look_at_chara_pos_offset : Vector3.zero)
                             : next.position;
                         if (next.bezier_points != null && next.bezier_points.Count > 0)
                             look = key_eval.bezier_v3(look, look_next, next.bezier_points, k);
