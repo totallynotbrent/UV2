@@ -667,7 +667,7 @@ namespace UV2.Live
                 {
                     float span = keys[i + 1].frame - keys[i].frame;
                     float blend = span <= 0 ? 0f : (frame - keys[i].frame) / span;
-                    global_shade.set_light_track(keys[i], blend);
+                    global_shade.set_light_track(keys[i], keys[i + 1], blend);
                     return;
                 }
             }

@@ -42,14 +42,27 @@ namespace UV2.Live
         private const float lightmap_min_density = 0.0f;
         private static readonly Color lightmap_density_color = new(0.5f, 0.5f, 0.5f, 1f);
 
-        // the latest global-light key interpolated for the current frame.
+        // the latest global-light keys bracketing the current frame: the
+        // publisher blends their rim values by the game's key interpolation.
         public static void set_light_track(global_light_key key, float blend)
         {
             _light_key = key;
+            _light_next = null;
+            _light_blend = blend;
+        }
+        public static void set_light_track(global_light_key key, global_light_key next, float blend)
+        {
+            _light_key = key;
+            _light_next = next;
             _light_blend = blend;
         }
         private static global_light_key _light_key;
+        private static global_light_key _light_next;
         private static float _light_blend;
+
+        // one rim channel blended between the bracketing keys.
+        private static float lerp_f(float a, float b, float blend) => Mathf.Lerp(a, b, blend);
+        private static Color lerp_c(Color a, Color b, float blend) => Color.Lerp(a, b, blend);
 
         // the assembled character mpb: rebuilt when the light track moves.
         private static MaterialPropertyBlock _chara_mpb;
@@ -64,8 +77,14 @@ namespace UV2.Live
 
             Vector3 dir = Vector3.down;
             var k = _light_key;
+            var n = _light_next;
             if (k != null && k.light_dir.sqrMagnitude > 1e-06f)
-                dir = -(Quaternion.Euler(k.light_dir) * Vector3.forward).normalized;
+            {
+                Vector3 euler = k.light_dir;
+                if (n != null && n.light_dir.sqrMagnitude > 1e-06f)
+                    euler = Vector3.Lerp(k.light_dir, n.light_dir, _light_blend);
+                dir = -(Quaternion.Euler(euler) * Vector3.forward).normalized;
+            }
 
             if ((dir - _last_light_dir).sqrMagnitude < 1e-10f) return;
             _last_light_dir = dir;
@@ -74,16 +93,18 @@ namespace UV2.Live
             _chara_mpb.SetVector(id_orig_light_dir, dir);
             if (k != null)
             {
-                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor"), k.rim_color);
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep"), k.rim_step);
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather"), k.rim_feather);
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate"), k.rim_spec_rate);
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate"), k.rim_shadow_rate);
-                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor2"), k.rim_color2);
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep2"), k.rim_step2);
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather2"), k.rim_feather2);
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate2"), k.rim_spec_rate2);
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate2"), k.rim_shadow_rate2);
+                var nx = _light_next;
+                float b = nx != null ? _light_blend : 0f;
+                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor"), lerp_c(k.rim_color, nx.rim_color, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep"), lerp_f(k.rim_step, nx.rim_step, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather"), lerp_f(k.rim_feather, nx.rim_feather, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate"), lerp_f(k.rim_spec_rate, nx.rim_spec_rate, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate"), lerp_f(k.rim_shadow_rate, nx.rim_shadow_rate, b));
+                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor2"), lerp_c(k.rim_color2, nx.rim_color2, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep2"), lerp_f(k.rim_step2, nx.rim_step2, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather2"), lerp_f(k.rim_feather2, nx.rim_feather2, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate2"), lerp_f(k.rim_spec_rate2, nx.rim_spec_rate2, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate2"), lerp_f(k.rim_shadow_rate2, nx.rim_shadow_rate2, b));
             }
 
             foreach (var root in chara_roots)
