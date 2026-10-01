@@ -174,6 +174,7 @@ namespace UV2.Live
 
     public class live_worksheet
     {
+        public List<blink_track_container> blink_tracks = new();
         public string song_id;
         public List<global_light_key> global_light = new();
         public List<camera_pos_key> camera_pos = new();

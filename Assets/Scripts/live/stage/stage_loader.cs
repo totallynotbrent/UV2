@@ -60,6 +60,8 @@ namespace UV2.Live
                 if (!run_phase_stage_bundle(name)) yield break;
             }
 
+            blink_lights.bind(ws?.blink_tracks, null);
+
             int cast_step = 0, cast_total = sel.slots.Count(s => s.chara_id > 0);
             foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
             {
@@ -163,6 +165,10 @@ namespace UV2.Live
                                     var piece = Instantiate(go, geo_root.transform);
                                     piece.name = go.name;
                                     placed++;
+                                    // every stage child by name feeds the light
+                                    // drivers' object resolution.
+                                    foreach (var child in piece.GetComponentsInChildren<Transform>(true))
+                                        blink_lights.record_stage_child(child.name, child.gameObject);
                                 }
                             }
                             Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
@@ -749,6 +755,7 @@ namespace UV2.Live
             clock?.advance(Time.deltaTime);
             motion?.play();
             update_light_track();
+            blink_lights.update(clock?.time ?? 0f, ws?.blink_tracks);
             global_shade.publish(FindObjectOfType<Camera>());
             global_shade.publish_chara_block(chara_roots);
 

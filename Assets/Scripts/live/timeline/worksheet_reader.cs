@@ -180,6 +180,32 @@ namespace UV2.Live
                     fov = k.fov,
                 }).ToList();
 
+            ws.blink_tracks = (sheet.blinkLightList ?? new())
+                .Select(b => new blink_track_container
+                {
+                    name = b.name,
+                    keys = (b.keys?.thisList ?? new()).Select(k => new blink_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        power_array = (k.powerArray ?? new()).ToList(),
+                        color0_array = (k.color0Array ?? new()).ToList(),
+                        color1_array = (k.color1Array ?? new()).ToList(),
+                        light_blend_mode = k.LightBlendMode,
+                    }).ToList(),
+                    pattern = (b.keys?.thisList ?? new()).FirstOrDefault()?.pattern ?? 0,
+                    color_type = (b.keys?.thisList ?? new()).FirstOrDefault()?.colorType ?? 0,
+                    power_min = (b.keys?.thisList ?? new()).FirstOrDefault()?.powerMin ?? 0f,
+                    power_max = (b.keys?.thisList ?? new()).FirstOrDefault()?.powerMax ?? 1f,
+                    loop_count = (b.keys?.thisList ?? new()).FirstOrDefault()?.loopCount ?? 0,
+                    wait_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.waitTime ?? 0f,
+                    turn_on_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.turnOnTime ?? 0f,
+                    turn_off_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.turnOffTime ?? 0f,
+                    keep_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.keepTime ?? 0f,
+                    interval_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.intervalTime ?? 0f,
+                }).ToList();
+
             ws.camera_layer = (sheet.cameraLayerKeys?.thisList ?? new())
                 .Select(k => new camera_layer_key
                 {
