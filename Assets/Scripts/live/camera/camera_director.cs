@@ -2,12 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
-using UV2.Live;
 
 namespace UV2.Live
 {
     // drives the authored camera along the worksheet tracks: position, look-at,
-    // fov, roll, and the cut chain. per out/camera_motion_questions_decoded.md.
+    // fov, roll, the cut chain, and the cinematic motion override. per
+    // out/uv2_camera_layer_height_decode.md + camera_motion_questions_decoded.md.
     public class camera_director : MonoBehaviour
     {
         private live_worksheet ws;
@@ -17,6 +17,11 @@ namespace UV2.Live
         private Camera cam;
         private Vector3? trace_prev_pos;
 
+        // the game's height-band constants (GetCameraLayerOffset):
+        // rate = (avg_height - 130) / 60 over the key's flagged characters.
+        private const float LAYER_HEIGHT_MIN = 130f;
+        private const float LAYER_HEIGHT_DIFF = 60f;
+
         public void open(live_worksheet worksheet, timeline_clock timeline, List<Transform> characters, Camera target)
         {
             ws = worksheet;
@@ -25,8 +30,9 @@ namespace UV2.Live
             cam = target;
         }
 
-        // samples the authored cinematic clip onto a proxy transform and
-        // drives the camera with it, exactly v1's OnUpdateCameraMotion.
+        // samples the authored cinematic clip onto a proxy transform; the
+        // camera rides it as a LATE override, exactly the game's
+        // AlterUpdate_CameraMotion + AlterLateUpdate_CameraMotion pair.
         private Transform motion_proxy;
         private string motion_proxy_clip;
         private string loaded_clip_name;
@@ -50,6 +56,8 @@ namespace UV2.Live
             return clip;
         }
 
+        // the game's motion key eval: IsEnable + a bound clip; the proxy then
+        // carries the camera transform as a late override.
         private bool apply_camera_motion(float t)
         {
             if (ws.camera_motion.Count == 0) return false;
@@ -66,10 +74,30 @@ namespace UV2.Live
                 if (clip == null) return false;
                 motion_proxy_clip = key.clip_name;
             }
+            // the game's CrossFade normalized time: the elapsed time since the
+            // key (minus the authored head time) scaled by the play speed and
+            // divided by the clip length.
+            float length = motion_proxy_clip_data.length;
+            if (length <= 0f) return false;
             float clip_time = (t - key.time) * key.play_speed + key.motion_head_time;
+            clip_time = Mathf.Clamp01(clip_time / length) * length;
             motion_proxy_clip_data.SampleAnimation(motion_proxy.gameObject, clip_time);
-            cam.transform.SetPositionAndRotation(motion_proxy.position + key.offset, motion_proxy.rotation);
+            Vector3 offset = key.motion_type == 1
+                ? chara_parts.group_world(chara_roots, key.chara_relative_base, key.chara_relative_parts) + key.offset + key.chara_pos
+                : key.offset;
+            cam.transform.SetPositionAndRotation(motion_proxy.position + offset, motion_proxy.rotation);
             return true;
+        }
+
+        // the game's per-key layer offset (GetCameraLayerOffset): the flagged
+        // characters' average height moves the band between the authored min
+        // and max. falls back to the plain midpoint when no character resolves.
+        private Vector3 layer_offset_for(int flags, Vector3 min, Vector3 max)
+        {
+            float height = chara_parts.group_height(chara_roots, flags);
+            if (height <= 0f) return (min + max) * 0.5f;
+            float rate = Mathf.Clamp((height - LAYER_HEIGHT_MIN) / LAYER_HEIGHT_DIFF, 0f, 1f);
+            return min + rate * (max - min);
         }
 
         private void LateUpdate()
@@ -81,9 +109,6 @@ namespace UV2.Live
             // camera running (v1 only touches cameras it actually has; the
             // multi-camera composite is later scope).
 
-            // the authored cinematic clip drives the camera while it runs.
-            if (apply_camera_motion(t)) return;
-
             // position
             if (ws.camera_pos.Count > 0)
             {
@@ -94,19 +119,25 @@ namespace UV2.Live
                     var next = i + 1 < ws.camera_pos.Count ? ws.camera_pos[i + 1] : null;
                     float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
 
+                    // the layer band rides the pos key's own flags.
+                    Vector3 pos_layer = Vector3.zero;
+                    if (cur.set_type == 1)
+                        pos_layer = layer_band(t, cur.chara_relative_base);
+
                     // character keys: the flagged group's part anchor plus
                     // the key's position; chara_pos only rides the const-height
                     // parts (the game adds it inside those cases only).
                     bool const_anchor = cur.chara_relative_parts >= 11 && cur.chara_relative_parts <= 14;
                     Vector3 pos = cur.set_type == 1
-                        ? chara_parts.group_world(chara_roots, cur.chara_relative_base, cur.chara_relative_parts) + cur.position + (const_anchor ? cur.chara_pos : Vector3.zero)
+                        ? chara_parts.group_world(chara_roots, cur.chara_relative_base, cur.chara_relative_parts, pos_layer) + cur.position + (const_anchor ? cur.chara_pos : Vector3.zero)
                         : cur.position + cur.pos_direct;
                     pos += cur.offset;
                     if (next != null && cur.set_type == next.set_type)
                     {
                         bool next_const = next.chara_relative_parts >= 11 && next.chara_relative_parts <= 14;
+                        Vector3 next_layer = next.set_type == 1 ? layer_band(t, next.chara_relative_base) : Vector3.zero;
                         Vector3 pos_next = next.set_type == 1
-                            ? chara_parts.group_world(chara_roots, next.chara_relative_base, next.chara_relative_parts) + next.position + (next_const ? next.chara_pos : Vector3.zero)
+                            ? chara_parts.group_world(chara_roots, next.chara_relative_base, next.chara_relative_parts, next_layer) + next.position + (next_const ? next.chara_pos : Vector3.zero)
                             : next.position + next.pos_direct;
                         pos_next += next.offset;
                         // authored bezier control points shape the segment.
@@ -129,27 +160,6 @@ namespace UV2.Live
                 }
             }
 
-            // camera-layer band: the authored track recenters the chara-relative
-            // framing; the game feeds it through the per-anchor offset term.
-            Vector3 layer_offset = Vector3.zero;
-            if (ws.camera_layer.Count > 0)
-            {
-                int li = key_eval.bracket(ws.camera_layer, t);
-                if (li >= 0)
-                {
-                    var cur_l = ws.camera_layer[li];
-                    var next_l = li + 1 < ws.camera_layer.Count ? ws.camera_layer[li + 1] : null;
-                    float k_l = key_eval.interp(cur_l, next_l, key_eval.span_t(cur_l, next_l, t));
-                    Vector3 mid = (cur_l.offset_min_position + cur_l.offset_max_position) * 0.5f;
-                    if (next_l != null)
-                    {
-                        Vector3 mid_next = (next_l.offset_min_position + next_l.offset_max_position) * 0.5f;
-                        mid = key_eval.lerp_v3(mid, mid_next, k_l);
-                    }
-                    layer_offset = mid;
-                }
-            }
-
             // look-at
             if (ws.camera_lookat.Count > 0)
             {
@@ -160,17 +170,23 @@ namespace UV2.Live
                     var next = i + 1 < ws.camera_lookat.Count ? ws.camera_lookat[i + 1] : null;
                     float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
 
+                    // the look-at band rides the look-at key's own flags.
+                    Vector3 look_layer = Vector3.zero;
+                    if (cur.look_at_type == 1)
+                        look_layer = layer_band(t, cur.look_at_chara_pos);
+
                     // character keys mirror the position track; the offset
                     // only rides the const-height parts.
                     bool look_const = cur.look_at_chara_parts >= 11 && cur.look_at_chara_parts <= 14;
                     Vector3 look = cur.look_at_type == 1
-                        ? chara_parts.group_world(chara_roots, cur.look_at_chara_pos, cur.look_at_chara_parts) + layer_offset + cur.position + (look_const ? cur.look_at_chara_pos_offset : Vector3.zero)
+                        ? chara_parts.group_world(chara_roots, cur.look_at_chara_pos, cur.look_at_chara_parts, look_layer) + cur.position + (look_const ? cur.look_at_chara_pos_offset : Vector3.zero)
                         : cur.position;
                     if (next != null && cur.look_at_type == next.look_at_type)
                     {
                         bool next_look_const = next.look_at_chara_parts >= 11 && next.look_at_chara_parts <= 14;
+                        Vector3 next_layer = next.look_at_type == 1 ? layer_band(t, next.look_at_chara_pos) : Vector3.zero;
                         Vector3 look_next = next.look_at_type == 1
-                            ? chara_parts.group_world(chara_roots, next.look_at_chara_pos, next.look_at_chara_parts) + layer_offset + next.position + (next_look_const ? next.look_at_chara_pos_offset : Vector3.zero)
+                            ? chara_parts.group_world(chara_roots, next.look_at_chara_pos, next.look_at_chara_parts, next_layer) + next.position + (next_look_const ? next.look_at_chara_pos_offset : Vector3.zero)
                             : next.position;
                         if (next.bezier_points != null && next.bezier_points.Count > 0)
                             look = key_eval.bezier_v3(look, look_next, next.bezier_points, k);
@@ -224,6 +240,30 @@ namespace UV2.Live
                     cam.transform.Rotate(Vector3.forward, deg, Space.Self);
                 }
             }
+
+            // the authored cinematic clip overrides the camera LAST, matching
+            // the game's AlterLateUpdate_CameraMotion ordering.
+            apply_camera_motion(t);
+        }
+
+        // evaluates the camera-layer band at time t and blends it with the
+        // key's flagged-character height rate (GetCameraLayerOffset).
+        private Vector3 layer_band(float t, int flags)
+        {
+            if (ws.camera_layer.Count == 0) return Vector3.zero;
+            int li = key_eval.bracket(ws.camera_layer, t);
+            if (li < 0) return Vector3.zero;
+            var cur_l = ws.camera_layer[li];
+            var next_l = li + 1 < ws.camera_layer.Count ? ws.camera_layer[li + 1] : null;
+            float k_l = key_eval.interp(cur_l, next_l, key_eval.span_t(cur_l, next_l, t));
+            Vector3 min = cur_l.offset_min_position;
+            Vector3 max = cur_l.offset_max_position;
+            if (next_l != null)
+            {
+                min = key_eval.lerp_v3(min, next_l.offset_min_position, k_l);
+                max = key_eval.lerp_v3(max, next_l.offset_max_position, k_l);
+            }
+            return layer_offset_for(flags, min, max);
         }
     }
 }
