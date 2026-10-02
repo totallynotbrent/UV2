@@ -45,8 +45,8 @@ out/lightmap_defaults_decoded.md (base shading), mic docs (below).
 | 6 | formation position track (group keys -> slots) | formations move on key frames | landed; heartbeat shows formation groups bound |
 | 7 | mic stand IK (IKSystem=4, two-threshold hysteresis, per-chara rate) + handheld mic props | mic IK engages only on IKSystem=4 keys; prop prefab attaches | NOT implemented (ik_system parsed only) |
 | 8 | base character shading (lightmap defaults publish set + LOD) | publish set applied; LOD distance gate live | MOSTLY — global_shade publishes every frame incl. chara block (rim/lightDir); per-chara SetOutlineWidthForPower absent |
-| 9 | facial1Set parse + store, base face pose (blend consumer gated) | keys parse + hold base pose; no guessed blend | NOT implemented (stub parses 19 facial fields, nothing consumes) |
-| 10 | audio: oke + per-chara vocal mixes play, clock drives from audio time | music audible + in sync | PARTIAL — oke instrumental plays (48/51, no-bank 1093/1175/1193 = DLC-class absence), clock audio-clocked with garbage-guard; per-chara vocals absent |
+| 9 | facial1Set parse + store, base face pose (blend consumer gated) | keys parse + hold base pose; no guessed blend | MOVED TO PHASE 4 (user 10-02 'i dont care about that much'): the stub parses 19 facial fields, nothing consumes them; the facialId blend decode gates this row's consumer |
+| 10 | audio: oke instrumental + per-chara vocal mixes, clock drives from audio time | music audible + in sync | PARTIAL — oke instrumental plays (48/51, no-bank 1093/1175/1193 = DLC-class absence), clock audio-clocked with garbage-guard. per-chara vocals MOVED TO PHASE 4 (user 10-02) |
 
 phase-2 acceptance evidence: Logs/all_songs_run.json (fresh run 09-30 on
 6036a9c: 51/51 open, 48/51 music, 28 casts failed = the row-3 regression
