@@ -172,11 +172,65 @@ namespace UV2.Live
         public Vector3 offset_max_position;
     }
 
+    // one mob/cyalume control group key: the crowd rig's transform for the frame.
+    [Serializable]
+    public class mob_cyalume_key : live_key
+    {
+        public Vector3 position;
+        public Vector3 angle;
+        public Vector3 scale = Vector3.one;
+    }
+
+    // one mob/cyalume control group: name + GroupIndex + the key track.
+    [Serializable]
+    public class mob_cyalume_group
+    {
+        public string name;
+        public int group_index;
+        public List<mob_cyalume_key> keys = new();
+    }
+
+    // one audience key: transform + cyalume tint + animation selection, the
+    // decoded LiveTimelineKeyAudienceData shape.
+    [Serializable]
+    public class audience_key : live_key
+    {
+        public Vector3 position;
+        public Vector3 rotate;
+        public Vector3 scale = Vector3.one;
+        public Color cyalume_color = Color.white;
+        public Color cyalume_glow_color = Color.white;
+        public float cyalume_glow_color_power = 1f;
+        public float cyalume_mask_radius = 1f;
+        public int animation_setting;
+        public int animation_root_index;
+        public int animation_body_region;
+        public int animation_category;
+        public int animation_index = -1;
+        public int animation_wrap_mode;
+        public float animation_speed = 1f;
+        public float animation_offset_time;
+        public float animation_time;
+        public int use_animation_time;
+    }
+
+    // one audienceList entry: the crowd prefab name + the key track.
+    [Serializable]
+    public class audience_track
+    {
+        public string name;
+        public int object_index;
+        public List<audience_key> keys = new();
+    }
+
     public class live_worksheet
     {
         public List<blink_track_container> blink_tracks = new();
         public List<spot_track_container> spot_tracks = new();
         public List<laser_track_container> laser_tracks = new();
+        public List<audience_track> audience_tracks = new();
+        public List<mob_cyalume_group> mob_groups = new();
+        public List<mob_cyalume_group> cyalume_groups = new();
         public List<foot_light_key> foot_light = new();
         public List<volume_track_container> volume_tracks = new();
         public List<uv_scroll_track_container> uv_scroll_tracks = new();
