@@ -71,6 +71,12 @@ namespace UV2.Live
             foreach (var m in missing) trace_log.write($"blink light missing: {m}");
         }
 
+        // one stage child by name for the other light drivers' lookups.
+        public static GameObject find_stage_object(string name)
+        {
+            return stage_map.TryGetValue(name, out var go) ? go : null;
+        }
+
         // the game's blink root names carry the pfb prefix; the worksheet
         // names match the stage hierarchy's root objects.
         private static bool is_blink_root_name(string name) =>
