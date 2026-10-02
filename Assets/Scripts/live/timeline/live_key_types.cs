@@ -177,6 +177,11 @@ namespace UV2.Live
         public List<blink_track_container> blink_tracks = new();
         public List<spot_track_container> spot_tracks = new();
         public List<laser_track_container> laser_tracks = new();
+        public List<foot_light_key> foot_light = new();
+        public List<volume_track_container> volume_tracks = new();
+        public List<uv_scroll_track_container> uv_scroll_tracks = new();
+        public List<wash_track_container> wash_tracks = new();
+        public List<additional_track_container> additional_tracks = new();
         public string song_id;
         public List<global_light_key> global_light = new();
         public List<camera_pos_key> camera_pos = new();

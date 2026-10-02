@@ -46,6 +46,7 @@ namespace UV2.Live
         private System.Collections.IEnumerator open_core(selection_state sel)
         {
             if (!run_phase_worksheet(sel)) yield break;
+            volume_uv_scroll.reset();
             UV2.UI.load_progress.report($"binding worksheet ({ws.camera_pos.Count} cam keys)");
             trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
             yield return null;
@@ -63,6 +64,11 @@ namespace UV2.Live
             blink_lights.bind(ws?.blink_tracks, null);
             spot_lights.bind(ws?.spot_tracks);
             laser_lights.bind(ws?.laser_tracks);
+            foot_light.reset();
+            foot_light.bind(ws?.foot_light);
+            volume_uv_scroll.bind(ws?.volume_tracks, ws?.uv_scroll_tracks);
+            wash_light.bind(ws?.wash_tracks);
+            additional_light.bind(ws?.additional_tracks);
 
             int cast_step = 0, cast_total = sel.slots.Count(s => s.chara_id > 0);
             foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
@@ -155,6 +161,20 @@ namespace UV2.Live
                             Debug.Log($"[stage_loader] stage instantiated: {stage.name}, renderers {stage.GetComponentsInChildren<Renderer>(true).Length}");
                             trace_log.write($"stage controller instantiated: {stage.name}");
                             shader_manager.fix_game_shaders(stage.transform, "stage");
+                            // the controller prefab's own hierarchy feeds the
+                            // light drivers too (the fixtures the game keeps
+                            // outside _stageObjects live here).
+                            foreach (var child in stage.GetComponentsInChildren<Transform>(true))
+                                blink_lights.record_stage_child(child.name, child.gameObject);
+                            volume_uv_scroll.record_stage_materials(stage.transform);
+                            var ctrl_fixtures = new System.Collections.Generic.List<string>();
+                            foreach (var child in stage.GetComponentsInChildren<Transform>(true))
+                            {
+                                var lower = child.name.ToLowerInvariant();
+                                if ((lower.Contains("spotlight") || lower.Contains("laser")) && ctrl_fixtures.Count < 24)
+                                    ctrl_fixtures.Add(child.name);
+                            }
+                            trace_log.write($"controller fixtures: {string.Join(", ", ctrl_fixtures)}");
 
                             var ctrl = stage.GetComponent<Gallop.Live.StageController>();
                             var geo_root = new GameObject("stage_geometry");
@@ -186,6 +206,7 @@ namespace UV2.Live
 
                             Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
                             trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
+                            volume_uv_scroll.record_stage_materials(geo_root.transform);
                             shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
                             shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
                         }
@@ -771,8 +792,16 @@ namespace UV2.Live
             blink_lights.update(clock?.time ?? 0f, ws?.blink_tracks);
             spot_lights.update(clock?.time ?? 0f, ws?.spot_tracks, chara_roots);
             laser_lights.update(clock?.time ?? 0f, ws?.laser_tracks, chara_roots);
+            volume_uv_scroll.update_volume(clock?.time ?? 0f, ws?.volume_tracks);
+            volume_uv_scroll.update_uv_scroll(clock?.time ?? 0f, ws?.uv_scroll_tracks);
+            wash_light.update(clock?.time ?? 0f, ws?.wash_tracks);
+            additional_light.update(clock?.time ?? 0f, ws?.additional_tracks);
             global_shade.publish(FindObjectOfType<Camera>());
             global_shade.publish_chara_block(chara_roots);
+
+            // the foot lights run in the game's LATE pass: the characters are
+            // already posed for this frame so the lights track them exactly.
+            foot_light.update(clock?.time ?? 0f, ws?.foot_light, chara_roots);
 
             // heartbeat: camera state + what is actually visible, once per second.
             if (Time.time - _last_beat >= 1f)
