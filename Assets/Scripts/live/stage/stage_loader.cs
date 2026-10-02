@@ -47,6 +47,10 @@ namespace UV2.Live
         {
             if (!run_phase_worksheet(sel)) yield break;
             volume_uv_scroll.reset();
+            mob_control.reset();
+            cyalume.reset_pen_meshes();
+            crowd_rig.reset();
+            audience_keys.reset();
             UV2.UI.load_progress.report($"binding worksheet ({ws.camera_pos.Count} cam keys)");
             trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
             yield return null;
@@ -61,6 +65,11 @@ namespace UV2.Live
                 if (!run_phase_stage_bundle(name)) yield break;
             }
 
+            // the laser + spotlight fixtures come from the controller's
+            // loose-object lists and the common spotlight3d bundle.
+            yield return instantiate_laser_fixtures();
+            yield return instantiate_spotlight_fixtures();
+
             blink_lights.bind(ws?.blink_tracks, null);
             spot_lights.bind(ws?.spot_tracks);
             laser_lights.bind(ws?.laser_tracks);
@@ -69,6 +78,13 @@ namespace UV2.Live
             volume_uv_scroll.bind(ws?.volume_tracks, ws?.uv_scroll_tracks);
             wash_light.bind(ws?.wash_tracks);
             additional_light.bind(ws?.additional_tracks);
+
+            // the crowd rows: the rig instantiates the audience prefabs, the
+            // cyalume textures resolve from the install, the mob/cyalume group
+            // tracks drive the crowd rig per the decoded consumers.
+            UV2.UI.load_progress.report("binding crowd");
+            yield return null;
+            bind_crowd(sel);
 
             int cast_step = 0, cast_total = sel.slots.Count(s => s.chara_id > 0);
             foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
@@ -140,6 +156,78 @@ namespace UV2.Live
             }
         }
 
+        // the laser fixtures live in the stage controller bundle as loose
+        // GameObjects bound into _laserObjects (never carried by
+        // Instantiate(stagePrefab)); instantiate them like the stage objects.
+        private System.Collections.IEnumerator instantiate_laser_fixtures()
+        {
+            var ctrl = _stage_controller;
+            if (ctrl == null || ctrl._laserObjects == null) yield break;
+            var geo = GameObject.Find("stage_geometry");
+            var parent = geo != null ? geo.transform : null;
+            int placed = 0;
+            foreach (var go in ctrl._laserObjects)
+            {
+                if (go == null) continue;
+                var piece = Instantiate(go, parent);
+                piece.name = go.name;
+                placed++;
+                foreach (var child in piece.GetComponentsInChildren<Transform>(true))
+                    blink_lights.record_stage_child(child.name, child.gameObject);
+            }
+            trace_log.write($"laser fixtures instantiated: {placed}");
+        }
+
+        // the common spotlight3d bundle carries the fixture prefabs; the
+        // worksheet's containers bind by the asset names (spotlight3d000..).
+        private System.Collections.IEnumerator instantiate_spotlight_fixtures()
+        {
+            var row = meta_row("3d/env/live/common/spotlight3d/pfb_env_live_cmn_spotlight3d_controller000");
+            if (row == null) { trace_log.write("spotlight fixtures: NO META ROW for the common bundle"); yield break; }
+            if (!string.IsNullOrEmpty(row.prereq))
+            {
+                foreach (var pre in row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var pre_row = meta_row(pre.Trim());
+                    if (pre_row != null) game_assets.open(pre_row, config.data_root);
+                }
+            }
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) { trace_log.write("spotlight fixtures: bundle FAILED to open"); yield break; }
+            // one-shot probe: what the bundle exposes as asset names (the
+            // game's container paths + short names differ).
+            trace_log.write($"spotlight bundle assets: {string.Join(", ", bundle.GetAllAssetNames().Take(8))}");
+
+            var geo = GameObject.Find("stage_geometry");
+            var parent = geo != null ? geo.transform : null;
+            // the 3 fixture prefabs are separate root objects in the same
+            // serialized file, addressable only through the controller's
+            // AssetHolder table (spotlight3dNNN -> the prefab PPtr binds at
+            // deserialization); instantiate from that table.
+            int placed = 0;
+            var controller = bundle.LoadAsset<GameObject>("pfb_env_live_cmn_spotlight3d_controller000");
+            var holder = controller != null ? controller.GetComponent<Gallop.AssetHolder>() : null;
+            if (holder != null)
+            {
+                foreach (var entry in holder._assetTable.list)
+                {
+                    if (entry?.Value == null) { trace_log.write("spotlight fixture: a table entry did not bind"); continue; }
+                    var piece = Instantiate(entry.Value, parent);
+                    piece.name = entry.Value.name;
+                    placed++;
+                    foreach (var child in piece.GetComponentsInChildren<Transform>(true))
+                        blink_lights.record_stage_child(child.name, child.gameObject);
+                    blink_lights.record_stage_child(entry.Key, piece);
+                    trace_log.write($"spotlight fixture '{entry.Key}' -> '{entry.Value.name}' placed");
+                }
+            }
+            else
+            {
+                trace_log.write("spotlight fixtures: no AssetHolder on the controller");
+            }
+            trace_log.write($"spotlight fixtures instantiated: {placed}");
+        }
+
         private bool run_phase_stage(selection_state sel) => true;
 
         private bool run_phase_stage_bundle(string name)
@@ -150,6 +238,10 @@ namespace UV2.Live
                 Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
                 if (b != null && name.Contains("controller"))
                 {
+                    // the controller's externals (crowd rig, audience prefab,
+                    // sky, fixtures) live in its prereq bundles: open them
+                    // first so the prefab's external refs resolve.
+                    load_controller_prereqs(name);
                     string[] all = b.GetAllAssetNames();
                     string prefab_name = all.FirstOrDefault(n => n.EndsWith(".prefab"));
                     if (prefab_name != null)
@@ -177,7 +269,14 @@ namespace UV2.Live
                             trace_log.write($"controller fixtures: {string.Join(", ", ctrl_fixtures)}");
 
                             var ctrl = stage.GetComponent<Gallop.Live.StageController>();
+                            _stage_controller = ctrl;
                             var geo_root = new GameObject("stage_geometry");
+                            // the crowd rows read the stage controller's own
+                            // audience table + the mob/cyalume rig roots.
+                            crowd_rig.record_stage_audience_table(ctrl);
+                            mob_control.record_rig(stage.transform);
+                            cyalume.record_pen_meshes(stage.transform);
+                            crowd_rig.start_stage_animations(stage.transform);
                             int placed = 0;
                             if (ctrl != null && ctrl._stageObjects != null)
                             {
@@ -203,10 +302,40 @@ namespace UV2.Live
                                     fixture_names.Add(child.name);
                             }
                             trace_log.write($"stage light fixtures: {string.Join(", ", fixture_names)}");
+                            // one-shot probe: the crowd rig children the stage
+                            // carries (mob/cyalume/audience object names).
+                            var crowd_names = new System.Collections.Generic.List<string>();
+                            foreach (var child in geo_root.GetComponentsInChildren<Transform>(true))
+                            {
+                                var lower = child.name.ToLowerInvariant();
+                                if ((lower.Contains("mob") || lower.Contains("cyalume") || lower.Contains("audience")) && crowd_names.Count < 32)
+                                    crowd_names.Add(child.name);
+                            }
+                            trace_log.write($"stage crowd children: {string.Join(", ", crowd_names)}");
+                            // one-shot probe: the direct children of the
+                            // cyalume controller object (the mob/pen-light
+                            // group roots + leaf meshes).
+                            var ctrl_probe = geo_root.GetComponentsInChildren<Transform>(true)
+                                .FirstOrDefault(t => t.name.Contains("cyalume_controller"));
+                            if (ctrl_probe != null)
+                            {
+                                var kid_names = new System.Collections.Generic.List<string>();
+                                foreach (var kid in ctrl_probe.GetComponentsInChildren<Transform>(true))
+                                    if (kid_names.Count < 20) kid_names.Add(kid.name);
+                                trace_log.write($"cyalume controller '{ctrl_probe.name}' children: {string.Join(", ", kid_names)}");
+                            }
 
                             Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
                             trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
                             volume_uv_scroll.record_stage_materials(geo_root.transform);
+                            // the geometry pass instantiates more of the
+                            // stage's authored Animation objects + crowd meshes;
+                            // the cyalume controllers spawn their pen-light
+                            // tables before the crowd rig records.
+                            crowd_rig.start_stage_animations(geo_root.transform);
+                            crowd_rig.spawn_cyalume_rig(geo_root.transform);
+                            mob_control.record_rig(geo_root.transform);
+                            cyalume.record_pen_meshes(geo_root.transform);
                             shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
                             shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
                         }
@@ -219,6 +348,56 @@ namespace UV2.Live
                 last_error = $"{e.GetType().Name}: {e.Message}";
                 Debug.LogError($"[stage_loader] stage bundle phase failed: {e}");
                 return false;
+            }
+        }
+
+        // opens every prereq bundle the stage controller names (crowd rig,
+        // audience prefab, sky, fixtures + the material sources), so the
+        // controller prefab's external object refs resolve on load.
+        private void load_controller_prereqs(string controller_name)
+        {
+            var row = meta_row(controller_name);
+            if (row == null || string.IsNullOrEmpty(row.prereq)) return;
+            int opened = 0;
+            foreach (var pre in row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
+            {
+                var pre_name = pre.Trim();
+                if (string.IsNullOrEmpty(pre_name)) continue;
+                var pre_row = meta_row(pre_name);
+                if (pre_row == null) continue;
+                if (game_assets.open(pre_row, config.data_root) != null) opened++;
+                // one level of transitive prereqs (materials reference the
+                // shader bundle + their textures' bundles).
+                if (!string.IsNullOrEmpty(pre_row.prereq))
+                {
+                    foreach (var pre2 in pre_row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var pre2_row = meta_row(pre2.Trim());
+                        if (pre2_row != null) game_assets.open(pre2_row, config.data_root);
+                    }
+                }
+            }
+            trace_log.write($"stage controller prereqs: {opened} opened for {controller_name}");
+        }
+
+        // the crowd bind: one phase that wires every crowd row. failures land
+        // in the trace, never abort the concert (a song without crowd tracks
+        // authored is off by authoring, not an error).
+        private void bind_crowd(selection_state sel)
+        {
+            try
+            {
+                var crowd_root = new GameObject("crowd").transform;
+                crowd_rig.bind_song_clips(sel.music_id);
+                crowd_rig.bind(ws?.audience_tracks, crowd_root, sel.music_id);
+                audience_keys.bind(ws?.audience_tracks);
+                cyalume.bind(sel.music_id);
+                trace_log.write($"crowd bound: {crowd_rig.instance_count} instances, {cyalume.texture_count} cyalume textures, mob groups {(ws?.mob_groups?.Count ?? 0)}, cyalume groups {(ws?.cyalume_groups?.Count ?? 0)}");
+            }
+            catch (Exception e)
+            {
+                trace_log.write($"crowd bind failed: {e.GetType().Name}: {e.Message}");
+                Debug.LogError($"[stage_loader] crowd bind failed: {e}");
             }
         }
 
@@ -257,6 +436,7 @@ namespace UV2.Live
         private System.Collections.Generic.List<string> _stage_material_names;
         private string _stage_first_controller;
         private int _cast_missed;
+        private Gallop.Live.StageController _stage_controller;
 
         // true once open_core ran to completion.
         public bool opened { get { return _open_ok; } }
@@ -796,6 +976,12 @@ namespace UV2.Live
             volume_uv_scroll.update_uv_scroll(clock?.time ?? 0f, ws?.uv_scroll_tracks);
             wash_light.update(clock?.time ?? 0f, ws?.wash_tracks);
             additional_light.update(clock?.time ?? 0f, ws?.additional_tracks);
+            // the crowd rows: audience transforms + clips, the mob/cyalume
+            // group matrices, the pen-light pattern + scroll.
+            crowd_rig.update(clock?.time ?? 0f, ws?.audience_tracks);
+            audience_keys.update(clock?.time ?? 0f, ws?.audience_tracks);
+            mob_control.update(clock?.time ?? 0f, ws?.mob_groups, ws?.cyalume_groups);
+            cyalume.update(clock?.time ?? 0f);
             global_shade.publish(FindObjectOfType<Camera>());
             global_shade.publish_chara_block(chara_roots);
 

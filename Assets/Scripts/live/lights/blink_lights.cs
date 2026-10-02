@@ -30,13 +30,23 @@ namespace UV2.Live
         }
 
         // records one instantiated stage child; call for every child the
-        // loader instantiates (safe to call repeatedly).
+        // loader instantiates (safe to call repeatedly). fixture objects
+        // also record under their short token (spotlight3d000 from
+        // pfb_env_live_cmn_spotlight3d000) — the worksheet's asset names
+        // are the short form.
         public static void record_stage_child(string name, GameObject go)
         {
             if (go == null || string.IsNullOrEmpty(name)) return;
             var clean = name.Replace("(Clone)", "");
             if (!stage_map.ContainsKey(clean)) map_version++;
             stage_map[clean] = go;
+            int idx = clean.IndexOf("spotlight3d", StringComparison.Ordinal);
+            if (idx >= 0 && idx + "spotlight3d000".Length <= clean.Length)
+            {
+                var token = "spotlight3d" + clean.Substring(idx + "spotlight3d".Length, 3);
+                if (!stage_map.ContainsKey(token)) map_version++;
+                stage_map[token] = go;
+            }
         }
 
         private static int _census_done_version = -1;
@@ -101,7 +111,7 @@ namespace UV2.Live
                 foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
                 foreach (var l in c.lights)
                 {
-                    l.intensity = power * 2f;
+                    l.intensity = power;
                     l.color = color;
                 }
             }

@@ -263,6 +263,76 @@ namespace UV2.Live
                     easing_array = (k.EasingArray ?? new()).ToList(),
                 }).ToList();
 
+            // the crowd rows: audienceList (13 songs), MobControlKeys (32),
+            // CyalumeControlKeys (33) — the stub carries all three verbatim.
+            ws.audience_tracks = (sheet.audienceList ?? new())
+                .Select(a => new audience_track
+                {
+                    name = a.name,
+                    object_index = a._objectIndex,
+                    keys = (a.keys?.thisList ?? new()).Select(k => new audience_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        curve = read_curve(k.curve),
+                        position = k.position,
+                        rotate = k.rotate,
+                        scale = k.scale,
+                        cyalume_color = k.cyalumeColor,
+                        cyalume_glow_color = k.cyalumeGlowColor,
+                        cyalume_glow_color_power = k.cyalumeGlowColorPower,
+                        cyalume_mask_radius = k.cyalumeMaskRadius,
+                        animation_setting = k.animationSetting,
+                        animation_root_index = k.animationRootIndex,
+                        animation_body_region = k.animationBodyRegion,
+                        animation_category = k.animationCategory,
+                        animation_index = k.animationIndex,
+                        animation_wrap_mode = k.animationWrapMode,
+                        animation_speed = k.animationSpeed,
+                        animation_offset_time = k.animationOffsetTime,
+                        animation_time = k.AnimationTime,
+                        use_animation_time = k.UseAnimationTime,
+                    }).ToList(),
+                }).ToList();
+
+            ws.mob_groups = (sheet.MobControlKeys ?? new())
+                .Select(g => new mob_cyalume_group
+                {
+                    name = g.name,
+                    group_index = g.GroupIndex,
+                    keys = (g.Keys?.thisList ?? new()).Select(k => new mob_cyalume_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        curve = read_curve(k.curve),
+                        position = k.Position,
+                        angle = k.Angle,
+                        scale = k.Scale,
+                    }).ToList(),
+                }).ToList();
+
+            ws.cyalume_groups = (sheet.CyalumeControlKeys ?? new())
+                .Select(g => new mob_cyalume_group
+                {
+                    name = g.name,
+                    group_index = g.GroupIndex,
+                    keys = (g.Keys?.thisList ?? new()).Select(k => new mob_cyalume_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        curve = read_curve(k.curve),
+                        position = k.Position,
+                        angle = k.Angle,
+                        scale = k.Scale,
+                    }).ToList(),
+                }).ToList();
+
             ws.volume_tracks = (sheet.volumeLightKeys ?? new())
                 .Select(v => new volume_track_container
                 {
