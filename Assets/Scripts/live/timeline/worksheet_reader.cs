@@ -206,6 +206,49 @@ namespace UV2.Live
                     interval_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.intervalTime ?? 0f,
                 }).ToList();
 
+            ws.laser_tracks = (sheet.laserList ?? new())
+                .Select(l => new laser_track_container
+                {
+                    name = l.name,
+                    object_index = l._objectIndex,
+                    material_index = l._materialIndex,
+                    blink = (l.keys?.thisList ?? new()).FirstOrDefault()?.blink ?? 0,
+                    blink_period = (l.keys?.thisList ?? new()).FirstOrDefault()?.blinkPeriod ?? 0f,
+                    keys = (l.keys?.thisList ?? new()).Select(k => new laser_key
+                    {
+                        frame = k.frame,
+                        object_position = k.objectPosition,
+                        object_rotate = k.objectRotate,
+                        object_scale = k.objectScale,
+                        formation = k.formation,
+                        rotate = k.rotate,
+                        deg_root_yaw = k.degRootYaw,
+                        deg_laser_pitch = k.degLaserPitch,
+                        pos_interval = k.posInterval,
+                        blink = k.blink,
+                        blink_period = k.blinkPeriod,
+                    }).ToList(),
+                }).ToList();
+
+            ws.spot_tracks = (sheet.spotlight3dList ?? new())
+                .Select(s => new spot_track_container
+                {
+                    name = s.name,
+                    asset_name = (s.keys?.thisList ?? new()).FirstOrDefault()?.assetName ?? "",
+                    keys = (s.keys?.thisList ?? new()).Select(k => new spot_key
+                    {
+                        frame = k.frame,
+                        is_active = k.isActive,
+                        color = k.color,
+                        color_power = k.colorPower,
+                        position = k.position,
+                        rotation = k.rotation,
+                        scale = k.scale,
+                        character_position = k.characterPosition,
+                        character_index = k.characterIndex,
+                    }).ToList(),
+                }).ToList();
+
             ws.camera_layer = (sheet.cameraLayerKeys?.thisList ?? new())
                 .Select(k => new camera_layer_key
                 {

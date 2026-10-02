@@ -61,6 +61,8 @@ namespace UV2.Live
             }
 
             blink_lights.bind(ws?.blink_tracks, null);
+            spot_lights.bind(ws?.spot_tracks);
+            laser_lights.bind(ws?.laser_tracks);
 
             int cast_step = 0, cast_total = sel.slots.Count(s => s.chara_id > 0);
             foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
@@ -171,6 +173,17 @@ namespace UV2.Live
                                         blink_lights.record_stage_child(child.name, child.gameObject);
                                 }
                             }
+                            // one-shot probe: the light fixture children the
+                            // stage carries (spotlight/laser object names).
+                            var fixture_names = new System.Collections.Generic.List<string>();
+                            foreach (var child in geo_root.GetComponentsInChildren<Transform>(true))
+                            {
+                                var lower = child.name.ToLowerInvariant();
+                                if ((lower.Contains("spotlight") || lower.Contains("laser")) && fixture_names.Count < 24)
+                                    fixture_names.Add(child.name);
+                            }
+                            trace_log.write($"stage light fixtures: {string.Join(", ", fixture_names)}");
+
                             Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
                             trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
                             shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
@@ -756,6 +769,8 @@ namespace UV2.Live
             motion?.play();
             update_light_track();
             blink_lights.update(clock?.time ?? 0f, ws?.blink_tracks);
+            spot_lights.update(clock?.time ?? 0f, ws?.spot_tracks, chara_roots);
+            laser_lights.update(clock?.time ?? 0f, ws?.laser_tracks, chara_roots);
             global_shade.publish(FindObjectOfType<Camera>());
             global_shade.publish_chara_block(chara_roots);
 
