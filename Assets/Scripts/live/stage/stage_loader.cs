@@ -65,6 +65,11 @@ namespace UV2.Live
                 if (!run_phase_stage_bundle(name)) yield break;
             }
 
+            // the laser + spotlight fixtures come from the controller's
+            // loose-object lists and the common spotlight3d bundle.
+            yield return instantiate_laser_fixtures();
+            yield return instantiate_spotlight_fixtures();
+
             blink_lights.bind(ws?.blink_tracks, null);
             spot_lights.bind(ws?.spot_tracks);
             laser_lights.bind(ws?.laser_tracks);
@@ -151,6 +156,78 @@ namespace UV2.Live
             }
         }
 
+        // the laser fixtures live in the stage controller bundle as loose
+        // GameObjects bound into _laserObjects (never carried by
+        // Instantiate(stagePrefab)); instantiate them like the stage objects.
+        private System.Collections.IEnumerator instantiate_laser_fixtures()
+        {
+            var ctrl = _stage_controller;
+            if (ctrl == null || ctrl._laserObjects == null) yield break;
+            var geo = GameObject.Find("stage_geometry");
+            var parent = geo != null ? geo.transform : null;
+            int placed = 0;
+            foreach (var go in ctrl._laserObjects)
+            {
+                if (go == null) continue;
+                var piece = Instantiate(go, parent);
+                piece.name = go.name;
+                placed++;
+                foreach (var child in piece.GetComponentsInChildren<Transform>(true))
+                    blink_lights.record_stage_child(child.name, child.gameObject);
+            }
+            trace_log.write($"laser fixtures instantiated: {placed}");
+        }
+
+        // the common spotlight3d bundle carries the fixture prefabs; the
+        // worksheet's containers bind by the asset names (spotlight3d000..).
+        private System.Collections.IEnumerator instantiate_spotlight_fixtures()
+        {
+            var row = meta_row("3d/env/live/common/spotlight3d/pfb_env_live_cmn_spotlight3d_controller000");
+            if (row == null) { trace_log.write("spotlight fixtures: NO META ROW for the common bundle"); yield break; }
+            if (!string.IsNullOrEmpty(row.prereq))
+            {
+                foreach (var pre in row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var pre_row = meta_row(pre.Trim());
+                    if (pre_row != null) game_assets.open(pre_row, config.data_root);
+                }
+            }
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) { trace_log.write("spotlight fixtures: bundle FAILED to open"); yield break; }
+            // one-shot probe: what the bundle exposes as asset names (the
+            // game's container paths + short names differ).
+            trace_log.write($"spotlight bundle assets: {string.Join(", ", bundle.GetAllAssetNames().Take(8))}");
+
+            var geo = GameObject.Find("stage_geometry");
+            var parent = geo != null ? geo.transform : null;
+            // the 3 fixture prefabs are separate root objects in the same
+            // serialized file, addressable only through the controller's
+            // AssetHolder table (spotlight3dNNN -> the prefab PPtr binds at
+            // deserialization); instantiate from that table.
+            int placed = 0;
+            var controller = bundle.LoadAsset<GameObject>("pfb_env_live_cmn_spotlight3d_controller000");
+            var holder = controller != null ? controller.GetComponent<Gallop.AssetHolder>() : null;
+            if (holder != null)
+            {
+                foreach (var entry in holder._assetTable.list)
+                {
+                    if (entry?.Value == null) { trace_log.write("spotlight fixture: a table entry did not bind"); continue; }
+                    var piece = Instantiate(entry.Value, parent);
+                    piece.name = entry.Value.name;
+                    placed++;
+                    foreach (var child in piece.GetComponentsInChildren<Transform>(true))
+                        blink_lights.record_stage_child(child.name, child.gameObject);
+                    blink_lights.record_stage_child(entry.Key, piece);
+                    trace_log.write($"spotlight fixture '{entry.Key}' -> '{entry.Value.name}' placed");
+                }
+            }
+            else
+            {
+                trace_log.write("spotlight fixtures: no AssetHolder on the controller");
+            }
+            trace_log.write($"spotlight fixtures instantiated: {placed}");
+        }
+
         private bool run_phase_stage(selection_state sel) => true;
 
         private bool run_phase_stage_bundle(string name)
@@ -192,6 +269,7 @@ namespace UV2.Live
                             trace_log.write($"controller fixtures: {string.Join(", ", ctrl_fixtures)}");
 
                             var ctrl = stage.GetComponent<Gallop.Live.StageController>();
+                            _stage_controller = ctrl;
                             var geo_root = new GameObject("stage_geometry");
                             // the crowd rows read the stage controller's own
                             // audience table + the mob/cyalume rig roots.
@@ -358,6 +436,7 @@ namespace UV2.Live
         private System.Collections.Generic.List<string> _stage_material_names;
         private string _stage_first_controller;
         private int _cast_missed;
+        private Gallop.Live.StageController _stage_controller;
 
         // true once open_core ran to completion.
         public bool opened { get { return _open_ok; } }
