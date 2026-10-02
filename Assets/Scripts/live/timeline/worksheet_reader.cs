@@ -249,6 +249,105 @@ namespace UV2.Live
                     }).ToList(),
                 }).ToList();
 
+            ws.foot_light = (sheet.charaFootLightKeys?.thisList ?? new())
+                .Select(k => new foot_light_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    position_flag = k.positionFlag,
+                    height_max_array = (k.hightMax ?? new()).ToList(),
+                    light_color_array = (k.lightColor ?? new()).ToList(),
+                    light_blend_mode_array = (k.LightBlendModeArray ?? new()).ToList(),
+                    easing_array = (k.EasingArray ?? new()).ToList(),
+                }).ToList();
+
+            ws.volume_tracks = (sheet.volumeLightKeys ?? new())
+                .Select(v => new volume_track_container
+                {
+                    name = v.name,
+                    brightness_power = (v.keys?.thisList ?? new()).FirstOrDefault()?.BlinkLightBrightnessPower ?? 1f,
+                    keys = (v.keys?.thisList ?? new()).Select(k => new volume_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        sun_position = k.sunPosition,
+                        color1 = k.color1,
+                        power = k.power,
+                        komorebi = k.komorebi,
+                        blur_radius = k.blurRadius,
+                        color_rate = k.ColorRate,
+                        enable = k.enable,
+                        is_enabled_border_clear = k.isEnabledBorderClear,
+                        brightness_power = k.BlinkLightBrightnessPower,
+                    }).ToList(),
+                }).ToList();
+
+            ws.uv_scroll_tracks = (sheet.uvScrollLightList ?? new())
+                .Select(u => new uv_scroll_track_container
+                {
+                    name = u.name,
+                    keys = (u.keys?.thisList ?? new()).Select(k => new uv_scroll_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        mul_color0 = k.mulColor0,
+                        mul_color1 = k.mulColor1,
+                        color_power = k.colorPower,
+                        scroll_offset_x = k.scrollOffsetX,
+                        scroll_offset_y = k.scrollOffsetY,
+                        scroll_speed_x = k.scrollSpeedX,
+                        scroll_speed_y = k.scrollSpeedY,
+                    }).ToList(),
+                }).ToList();
+
+            ws.wash_tracks = (sheet.WashLightList ?? new())
+                .Select(w => new wash_track_container
+                {
+                    name = w.name,
+                    is_all_settings = w._isAllSettings,
+                    keys = (w.keys?.thisList ?? new()).Select(k => new wash_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        raycast_distance = k.RaycastDistance,
+                        camera_projection_side = k.CameraProjectionSide,
+                        camera_projection_color_power = k.CameraProjectionColorPower,
+                    }).ToList(),
+                }).ToList();
+
+            ws.additional_tracks = (sheet.AdditionalLightList ?? new())
+                .Select(a => new additional_track_container
+                {
+                    name = a.name,
+                    keys = (a.keys?.thisList ?? new()).Select(k => new additional_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        position = k.Position,
+                        rotate = k.Rotate,
+                        is_enable = k.IsEnable,
+                        type = k.Type,
+                        range = k.Range,
+                        spot_angle = k.SpotAngle,
+                        indirect_multiplier = k.IndirectMultiplier,
+                        shadow_type = k.ShadowType,
+                        strength = k.Strength,
+                        bias = k.Bias,
+                        normal_bias = k.NormalBias,
+                        near_plane = k.NearPlane,
+                    }).ToList(),
+                }).ToList();
+
             ws.camera_layer = (sheet.cameraLayerKeys?.thisList ?? new())
                 .Select(k => new camera_layer_key
                 {

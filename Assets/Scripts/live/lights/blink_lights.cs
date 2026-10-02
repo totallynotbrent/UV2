@@ -77,6 +77,9 @@ namespace UV2.Live
             return stage_map.TryGetValue(name, out var go) ? go : null;
         }
 
+        // every recorded stage child; the wash driver's fixture fallback scan.
+        public static IReadOnlyDictionary<string, GameObject> all_stage_children() => stage_map;
+
         // the game's blink root names carry the pfb prefix; the worksheet
         // names match the stage hierarchy's root objects.
         private static bool is_blink_root_name(string name) =>

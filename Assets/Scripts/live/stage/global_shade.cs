@@ -93,8 +93,8 @@ namespace UV2.Live
             _chara_mpb.SetVector(id_orig_light_dir, dir);
             if (k != null)
             {
-                var nx = _light_next;
-                float b = nx != null ? _light_blend : 0f;
+                var nx = _light_next ?? k;
+                float b = _light_next != null ? _light_blend : 0f;
                 _chara_mpb.SetColor(Shader.PropertyToID("_RimColor"), lerp_c(k.rim_color, nx.rim_color, b));
                 _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep"), lerp_f(k.rim_step, nx.rim_step, b));
                 _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather"), lerp_f(k.rim_feather, nx.rim_feather, b));
@@ -109,8 +109,14 @@ namespace UV2.Live
 
             foreach (var root in chara_roots)
             {
+                // shutdown can destroy a root or renderer mid-update; the rest still publish.
+                if (root == null) continue;
                 foreach (var r in root.GetComponentsInChildren<Renderer>())
-                    r.SetPropertyBlock(_chara_mpb);
+                {
+                    if (r == null) continue;
+                    try { r.SetPropertyBlock(_chara_mpb); }
+                    catch { /* destroyed mid-shutdown */ }
+                }
             }
         }
 
