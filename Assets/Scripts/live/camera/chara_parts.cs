@@ -8,8 +8,10 @@ namespace UV2.Live
     // resolves chara-relative camera targets exactly as the game's
     // GetPositionWithCharacters does: the parts enum selects a per-character
     // anchor, the position flags select which characters contribute, and the
-    // flagged anchors are averaged. heights for the const/init parts are
-    // captured once at load from the rest pose.
+    // flagged anchors are averaged with the layer offset scaled by each
+    // character's height ratio. heights for the const/init parts are captured
+    // once at load from the rest pose; the cm height comes from the install's
+    // chara_data rows. per out/uv2_camera_layer_height_decode.md.
     public static class chara_parts
     {
         public const int FACE = 0;
@@ -29,16 +31,24 @@ namespace UV2.Live
         public const int CONST_FOOT_HEIGHT = 14;
         public const int POSITION = 15;
         public const int POSITION_WITHOUT_OFFSET = 16;
+        public const int INITIAL_HEIGHT_FACE = 17;
+        public const int INITIAL_HEIGHT_CHEST = 18;
+        public const int INITIAL_HEIGHT_WAIST = 19;
         public const int MAX = 20;
 
-        // per-character anchor cache captured at load: rest-pose bone heights
-        // and the load-time position, matching the locator's Init call.
+        // the game's base height for the per-character layer-offset ratio
+        // (UpdateCharactorLocator: ratio = liveCharaHeightValue / 158).
+        public const float BASE_HEIGHT = 158f;
+
+        // per-character anchor cache captured at load: rest-pose bone heights,
+        // the load-time position, and the cm height from the install.
         private class chara_anchor
         {
             public Vector3 initial_position;
             public float head_height;
             public float waist_height;
             public float chest_height;
+            public float height_value = BASE_HEIGHT;
         }
         private static readonly Dictionary<Transform, chara_anchor> anchors = new();
 
@@ -56,6 +66,49 @@ namespace UV2.Live
             if (waist != null) a.waist_height = position_bone.InverseTransformPoint(waist.position).y;
             if (chest != null) a.chest_height = position_bone.InverseTransformPoint(chest.position).y;
             anchors[root] = a;
+        }
+
+        // stores the character's cm height from the install's chara_data rows;
+        // falls back to the base height when the row is missing.
+        public static void record_height(Transform root, int chara_id)
+        {
+            if (root == null) return;
+            if (!anchors.TryGetValue(root, out var a)) a = null;
+            if (a == null)
+            {
+                a = new chara_anchor { initial_position = root.position };
+                anchors[root] = a;
+            }
+            float h = query_height(chara_id);
+            if (h > 0f) a.height_value = h;
+        }
+
+        // reads one character's cm height (chara_data.scale) from the master db.
+        private static float query_height(int chara_id)
+        {
+            if (chara_id <= 0) return 0f;
+            try
+            {
+                using var db = UV2.Data.master_db.reader.open(UV2.App.config.master_db_path);
+                if (db == null) return 0f;
+                foreach (var r in db.query($"SELECT scale FROM chara_data WHERE id={chara_id}"))
+                    return r.get_int(0);
+            }
+            catch (Exception) { }
+            return 0f;
+        }
+
+        // the character's cm height (liveCharaHeightValue); the base height when uncached.
+        public static float height_value(Transform root)
+        {
+            return anchors.TryGetValue(root, out var a) ? a.height_value : BASE_HEIGHT;
+        }
+
+        // liveCharaHeightRatio: the per-character scale applied to the layer
+        // offset inside the anchor accumulation.
+        public static float height_ratio(Transform root)
+        {
+            return height_value(root) / BASE_HEIGHT;
         }
 
         // world position of one character's authored part; null when the
@@ -88,16 +141,19 @@ namespace UV2.Live
                 // only the .y of its const-height locator fields).
                 case CONST_FACE_HEIGHT:
                 case INIT_FACE_HEIGHT:
+                case INITIAL_HEIGHT_FACE:
                     if (anchors.TryGetValue(root, out var a_head))
                         return new Vector3(0f, a_head.head_height, 0f);
                     return null;
                 case CONST_WAIST_HEIGHT:
                 case INIT_WAIST_HEIGHT:
+                case INITIAL_HEIGHT_WAIST:
                     if (anchors.TryGetValue(root, out var a_waist))
                         return new Vector3(0f, a_waist.waist_height, 0f);
                     return null;
                 case CONST_CHEST_HEIGHT:
                 case INIT_CHEST_HEIGHT:
+                case INITIAL_HEIGHT_CHEST:
                     if (anchors.TryGetValue(root, out var a_chest))
                         return new Vector3(0f, a_chest.chest_height, 0f);
                     return null;
@@ -115,18 +171,41 @@ namespace UV2.Live
         // game's zero-flag shortcut; otherwise the flagged anchors average.
         public static Vector3 group_world(List<Transform> chara_roots, int flags, int part)
         {
+            return group_world(chara_roots, flags, part, Vector3.zero);
+        }
+
+        // the game's GetPositionWithCharacters: each flagged anchor also adds
+        // the layer offset scaled by that character's height ratio.
+        public static Vector3 group_world(List<Transform> chara_roots, int flags, int part, Vector3 layer_offset)
+        {
             if (flags == 0) return Vector3.zero; // the stage center
             var values = new List<Vector3>();
             for (int i = 0; i < chara_roots.Count && i < MAX; i++)
             {
                 if ((flags & (1 << i)) == 0) continue;
                 var v = part_world(chara_roots[i], part);
-                if (v.HasValue) values.Add(v.Value);
+                if (v.HasValue) values.Add(v.Value + layer_offset * height_ratio(chara_roots[i]));
             }
             if (values.Count == 0) return Vector3.zero;
             Vector3 sum = Vector3.zero;
             foreach (var v in values) sum += v;
             return sum / values.Count;
+        }
+
+        // the average cm height of the flagged characters; zero flags = zero,
+        // matching GetHeightValueWithCharacters' empty-sum return.
+        public static float group_height(List<Transform> chara_roots, int flags)
+        {
+            if (flags == 0) return 0f;
+            float sum = 0f;
+            int n = 0;
+            for (int i = 0; i < chara_roots.Count && i < MAX; i++)
+            {
+                if ((flags & (1 << i)) == 0) continue;
+                sum += height_value(chara_roots[i]);
+                n++;
+            }
+            return n > 0 ? sum / n : 0f;
         }
 
         // bone lookup tolerant of naming variants in the game rigs.

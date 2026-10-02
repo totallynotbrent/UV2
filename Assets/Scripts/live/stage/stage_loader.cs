@@ -95,6 +95,7 @@ namespace UV2.Live
                 if (root == null) { _cast_missed++; continue; }
                 chara_roots.Add(root);
                 UV2.Live.chara_parts.record(root);
+                UV2.Live.chara_parts.record_height(root, slot.chara_id);
             }
             trace_log.write($"cast: {chara_roots.Count} loaded, {_cast_missed} missed, {chara_roots.Count} roots total");
 
@@ -1022,6 +1023,23 @@ namespace UV2.Live
                     if (head != null) pose = $" head {head.position} hrot {head.localEulerAngles}";
                 }
                 trace_log.write($"beat t={clock?.time ?? 0f:0.0}s cam_pos {cam.transform.position} fwd {cam.transform.forward} fov {cam.fieldOfView:0.0} renderers {visible}/{total} visible animations_playing {playing}{pose}");
+
+                // the layer band + cast heights: the flagged characters' average
+                // cm height drives the offset rate, so this line is the
+                // head-height evidence for the camera framing.
+                if (ws != null && ws.camera_lookat.Count > 0)
+                {
+                    int li = UV2.Live.key_eval.bracket(ws.camera_lookat, clock?.time ?? 0f);
+                    if (li >= 0)
+                    {
+                        var lk = ws.camera_lookat[li];
+                        if (lk.look_at_type == 1)
+                        {
+                            float avg = UV2.Live.chara_parts.group_height(chara_roots, lk.look_at_chara_pos);
+                            trace_log.write($"camera layer: lookat key f{lk.frame} flags {lk.look_at_chara_pos} parts {lk.look_at_chara_parts} avg height {avg:0.0}cm");
+                        }
+                    }
+                }
 
                 // once: the render state of chara 1 - shader, keywords, clip
                 // distances - so a black frame on a real gpu points at the
