@@ -75,7 +75,7 @@ namespace UV2.Live
                 foreach (var l in c.lights)
                 {
                     l.color = color;
-                    l.intensity = power * 2f;
+                    l.intensity = power;
                     l.enabled = active;
                 }
             }

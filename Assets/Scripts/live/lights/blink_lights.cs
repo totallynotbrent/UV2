@@ -111,7 +111,7 @@ namespace UV2.Live
                 foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
                 foreach (var l in c.lights)
                 {
-                    l.intensity = power * 2f;
+                    l.intensity = power;
                     l.color = color;
                 }
             }

@@ -61,8 +61,10 @@ namespace UV2.Live
                 c.root.position = obj_pos;
                 c.root.localScale = obj_scale;
                 // the aim: the authored rotate x-pitch + the laser machine's
-                // root yaw + pitch.
+                // root yaw, with the authored pitch swept by the blink
+                // cursor (the LaserBlink machine advances in seconds).
                 c.root.rotation = Quaternion.Euler(rotate.x, deg_root_yaw, rotate.z);
+                c.root.Rotate(Vector3.right, deg_laser_pitch * blink_sweep(t, frame), Space.Self);
                 if (c.mpb == null) c.mpb = new MaterialPropertyBlock();
                 foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
             }
