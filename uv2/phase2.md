@@ -48,12 +48,12 @@ out/lightmap_defaults_decoded.md (base shading), mic docs (below).
 | 9 | facial1Set parse + store, base face pose (blend consumer gated) | keys parse + hold base pose; no guessed blend | MOVED TO PHASE 4 (user 10-02 'i dont care about that much'): the stub parses 19 facial fields, nothing consumes them; the facialId blend decode gates this row's consumer |
 | 10 | audio: oke instrumental + per-chara vocal mixes, clock drives from audio time | music audible + in sync | PARTIAL — oke instrumental plays (48/51, no-bank 1093/1175/1193 = DLC-class absence), clock audio-clocked with garbage-guard. per-chara vocals MOVED TO PHASE 4 (user 10-02) |
 
-phase-2 acceptance evidence: Logs/all_songs_run.json (fresh run 09-30 on
-6036a9c: 51/51 open, 48/51 music, 28 casts failed = the row-3 regression
-above, FIXED since; the gate artifact needs a re-run on the current build).
-rows 7/9 and the vocal half of 10 are the remaining implementation work;
-the phase-3 light/crowd rows landed early (5a56955/2ca2577/1def6a1/04cf032/
-90a36a6/3f151cd) with the phase-2 gate still owed its re-run.
+phase-2 acceptance evidence: Logs/all_songs_run.json re-ran 10-02 on the
+fixed build: 51/51 open, 0 failed-or-missed, 48/51 music (no-bank
+1093/1175/1193 = the documented DLC-class absence) — row 3's regression
+gate is CLOSED by that artifact. rows 7/9 and the vocal half of 10 moved
+to phase 4 (user 10-02); the phase-3 light/crowd rows landed early
+(5a56955/2ca2577/1def6a1/04cf032/90a36a6/3f151cd).
 
 ## stage
 

@@ -51,6 +51,7 @@ namespace UV2.Live
             cyalume.reset_pen_meshes();
             crowd_rig.reset();
             audience_keys.reset();
+            props_system.reset();
             UV2.UI.load_progress.report($"binding worksheet ({ws.camera_pos.Count} cam keys)");
             trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
             yield return null;
@@ -98,6 +99,13 @@ namespace UV2.Live
                 UV2.Live.chara_parts.record_height(root, slot.chara_id);
             }
             trace_log.write($"cast: {chara_roots.Count} loaded, {_cast_missed} missed, {chara_roots.Count} roots total");
+
+            // the props rows resolve against the loaded cast: chara props
+            // attach to joints, stage dressing plants at the slots, the mic
+            // rig nodes spawn for the ik_system=4 characters.
+            UV2.UI.load_progress.report("binding props");
+            yield return null;
+            bind_props(sel);
 
             UV2.UI.load_progress.report("loading motion clips");
             yield return null;
@@ -160,18 +168,41 @@ namespace UV2.Live
         // the laser fixtures live in the stage controller bundle as loose
         // GameObjects bound into _laserObjects (never carried by
         // Instantiate(stagePrefab)); instantiate them like the stage objects.
+        // the worksheet's entries name runtime clones: '{fixture} - {index}'
+        // (the game clones the one loose fixture per object index), so one
+        // clone per distinct (fixture, index) the worksheet references,
+        // named exactly like the entries.
         private System.Collections.IEnumerator instantiate_laser_fixtures()
         {
             var ctrl = _stage_controller;
             if (ctrl == null || ctrl._laserObjects == null) yield break;
             var geo = GameObject.Find("stage_geometry");
             var parent = geo != null ? geo.transform : null;
+            var wanted = new SortedSet<(string fixture, int index)>();
+            if (ws?.laser_tracks != null)
+                foreach (var t in ws.laser_tracks)
+                {
+                    if (string.IsNullOrEmpty(t.name)) continue;
+                    int sep = t.name.LastIndexOf(" - ", StringComparison.Ordinal);
+                    if (sep > 0 && int.TryParse(t.name.Substring(sep + 3), out int idx))
+                        wanted.Add((t.name.Substring(0, sep), idx));
+                    else
+                        wanted.Add((t.name, -1));
+                }
             int placed = 0;
-            foreach (var go in ctrl._laserObjects)
+            foreach (var (fixture, index) in wanted)
             {
-                if (go == null) continue;
-                var piece = Instantiate(go, parent);
-                piece.name = go.name;
+                GameObject src = null;
+                foreach (var go in ctrl._laserObjects)
+                    if (go != null && (go.name == fixture || go.name.Replace("(Clone)", "") == fixture))
+                    { src = go; break; }
+                if (src == null)
+                {
+                    trace_log.write($"laser fixture: no loose object '{fixture}' in the stage bundle");
+                    continue;
+                }
+                var piece = Instantiate(src, parent);
+                piece.name = index >= 0 ? $"{fixture} - {index}" : fixture;
                 placed++;
                 foreach (var child in piece.GetComponentsInChildren<Transform>(true))
                     blink_lights.record_stage_child(child.name, child.gameObject);
@@ -399,6 +430,23 @@ namespace UV2.Live
             {
                 trace_log.write($"crowd bind failed: {e.GetType().Name}: {e.Message}");
                 Debug.LogError($"[stage_loader] crowd bind failed: {e}");
+            }
+        }
+
+        // the props bind: one phase that resolves the song's propsDataGroup
+        // against the loaded cast. failures land in the trace, never abort the
+        // concert (a song without props authored is off by authoring).
+        private void bind_props(selection_state sel)
+        {
+            try
+            {
+                var groups = worksheet_reader.load_props_groups(sel.music_id);
+                props_system.bind(groups, sel, chara_roots, ws?.formation);
+            }
+            catch (Exception e)
+            {
+                trace_log.write($"props bind failed: {e.GetType().Name}: {e.Message}");
+                Debug.LogError($"[stage_loader] props bind failed: {e}");
             }
         }
 
@@ -989,6 +1037,10 @@ namespace UV2.Live
             // the foot lights run in the game's LATE pass: the characters are
             // already posed for this frame so the lights track them exactly.
             foot_light.update(clock?.time ?? 0f, ws?.foot_light, chara_roots);
+
+            // the props rows: the mic rig nodes are clip-animated, the stand
+            // hand ik runs after the pose lands (the game's ik pass shape).
+            props_system.update(clock?.time ?? 0f, ws?.formation, chara_roots);
 
             // heartbeat: camera state + what is actually visible, once per second.
             if (Time.time - _last_beat >= 1f)

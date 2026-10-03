@@ -535,9 +535,39 @@ namespace UV2.Live
                     scale_factor = k.ScaleFactor <= 0f ? 1f : k.ScaleFactor,
                     visible = k.visible,
                     ik_system = k.IKSystem,
+                    ik_param1 = k.IKSystemParam1,
+                    ik_param2 = k.IKSystemParam2,
+                    ik_enabled_l = k.IsEnabledIKMicStandLOffset,
+                    ik_enabled_r = k.IsEnabledIKMicStandROffset,
+                    ik_l_high = k.IKMicStandLOffsetHigh,
+                    ik_l_low = k.IKMicStandLOffsetLow,
+                    ik_r_high = k.IKMicStandROffsetHigh,
+                    ik_r_low = k.IKMicStandROffsetLow,
                 });
             }
             ws.formation[name] = list;
+        }
+
+        // loads the song's propsDataGroup from the cutt data asset; null when
+        // the bundle or its propsSettings is absent.
+        public static List<Cutt.PropsDataGroup> load_props_groups(int music_id)
+        {
+            try
+            {
+                string data_name = $"cutt/cutt_son{music_id}/data";
+                var row = meta_row(data_name);
+                if (row == null) return null;
+                var bundle = game_assets.open(row, config.data_root);
+                if (bundle == null) return null;
+                var data = bundle.LoadAllAssets<Cutt.LiveTimelineData>().FirstOrDefault();
+                var groups = data?.propsSettings?.propsDataGroup;
+                return groups;
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[worksheet_reader] props groups {music_id}: {e.GetType().Name}: {e.Message}");
+                return null;
+            }
         }
     }
 }
