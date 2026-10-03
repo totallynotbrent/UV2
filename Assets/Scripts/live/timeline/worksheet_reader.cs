@@ -512,6 +512,8 @@ namespace UV2.Live
                 add_formation(ws, "place20", fos.place20Keys);
             }
 
+            add_props_tracks(ws, sheet);
+
             Debug.Log($"[worksheet_reader] {music_id}: {ws.camera_pos.Count} cam keys, " +
                       $"{ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups");
             return ws;
@@ -568,6 +570,51 @@ namespace UV2.Live
                 Debug.LogWarning($"[worksheet_reader] props groups {music_id}: {e.GetType().Name}: {e.Message}");
                 return null;
             }
+        }
+
+        // the worksheet's props tracks: propsList (render state) and
+        // propsAttachList (the attach contract). filled during parse_ws since
+        // the sheet object is already in hand there.
+        private static void add_props_tracks(live_worksheet ws, Cutt.LiveTimelineWorkSheet sheet)
+        {
+            ws.props_render = (sheet.propsList ?? new())
+                .Select(p => new props_render_track
+                {
+                    name = p.name,
+                    keys = (p.keys?.thisList ?? new()).Select(k => new props_render_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        setting_flags = k.settingFlags,
+                        props_id = k.propsID,
+                        renderer_enable = k.rendererEnable,
+                        is_visible_attached_chara_linked = k.IsVisibleAttachedCharaLinked,
+                        is_emissive = k.IsEmissive,
+                    }).ToList(),
+                }).ToList();
+
+            ws.props_attach = (sheet.propsAttachList ?? new())
+                .Select(p => new props_attach_track
+                {
+                    name = p.name,
+                    keys = (p.keys?.thisList ?? new()).Select(k => new props_attach_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        attach_joint_name = k._attachJointName,
+                        copy_position_joint_name = k._copyPositionJointName,
+                        setting_flags = k._settingFlags,
+                        props_id = k._propsId,
+                        offset_position = k._offsetPosition,
+                        offset_rotate = k.OffsetRotate,
+                        offset_scale = k.OffsetScale,
+                        is_link_attach_bone = k.IsLinkAttachBone,
+                    }).ToList(),
+                }).ToList();
         }
     }
 }

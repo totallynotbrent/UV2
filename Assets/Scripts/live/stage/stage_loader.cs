@@ -441,7 +441,7 @@ namespace UV2.Live
             try
             {
                 var groups = worksheet_reader.load_props_groups(sel.music_id);
-                props_system.bind(groups, sel, chara_roots, ws?.formation);
+                props_system.bind(groups, sel, chara_roots, ws?.formation, ws?.props_attach, ws?.props_render);
             }
             catch (Exception e)
             {
@@ -1015,32 +1015,42 @@ namespace UV2.Live
 
         private void Update()
         {
+            diag.frame_begin();
+            _diag_hook();
             clock?.advance(Time.deltaTime);
-            motion?.play();
-            update_light_track();
-            blink_lights.update(clock?.time ?? 0f, ws?.blink_tracks);
-            spot_lights.update(clock?.time ?? 0f, ws?.spot_tracks, chara_roots);
-            laser_lights.update(clock?.time ?? 0f, ws?.laser_tracks, chara_roots);
-            volume_uv_scroll.update_volume(clock?.time ?? 0f, ws?.volume_tracks);
-            volume_uv_scroll.update_uv_scroll(clock?.time ?? 0f, ws?.uv_scroll_tracks);
-            wash_light.update(clock?.time ?? 0f, ws?.wash_tracks);
-            additional_light.update(clock?.time ?? 0f, ws?.additional_tracks);
+            diag_pass("motion", () => motion?.play());
+            diag_pass("lights_track", update_light_track);
+            diag_pass("blink", () => blink_lights.update(clock?.time ?? 0f, ws?.blink_tracks));
+            diag_pass("spot", () => spot_lights.update(clock?.time ?? 0f, ws?.spot_tracks, chara_roots));
+            diag_pass("laser", () => laser_lights.update(clock?.time ?? 0f, ws?.laser_tracks, chara_roots));
+            diag_pass("volume", () => volume_uv_scroll.update_volume(clock?.time ?? 0f, ws?.volume_tracks));
+            diag_pass("uvscroll", () => volume_uv_scroll.update_uv_scroll(clock?.time ?? 0f, ws?.uv_scroll_tracks));
+            diag_pass("wash", () => wash_light.update(clock?.time ?? 0f, ws?.wash_tracks));
+            diag_pass("additional", () => additional_light.update(clock?.time ?? 0f, ws?.additional_tracks));
             // the crowd rows: audience transforms + clips, the mob/cyalume
             // group matrices, the pen-light pattern + scroll.
-            crowd_rig.update(clock?.time ?? 0f, ws?.audience_tracks);
-            audience_keys.update(clock?.time ?? 0f, ws?.audience_tracks);
-            mob_control.update(clock?.time ?? 0f, ws?.mob_groups, ws?.cyalume_groups);
-            cyalume.update(clock?.time ?? 0f);
-            global_shade.publish(FindObjectOfType<Camera>());
-            global_shade.publish_chara_block(chara_roots);
+            diag_pass("crowd", () =>
+            {
+                crowd_rig.update(clock?.time ?? 0f, ws?.audience_tracks);
+                audience_keys.update(clock?.time ?? 0f, ws?.audience_tracks);
+                mob_control.update(clock?.time ?? 0f, ws?.mob_groups, ws?.cyalume_groups);
+                cyalume.update(clock?.time ?? 0f);
+            });
+            diag_pass("shade", () =>
+            {
+                global_shade.publish(FindObjectOfType<Camera>());
+                global_shade.publish_chara_block(chara_roots);
+            });
 
             // the foot lights run in the game's LATE pass: the characters are
             // already posed for this frame so the lights track them exactly.
-            foot_light.update(clock?.time ?? 0f, ws?.foot_light, chara_roots);
+            diag_pass("foot", () => foot_light.update(clock?.time ?? 0f, ws?.foot_light, chara_roots));
 
             // the props rows: the mic rig nodes are clip-animated, the stand
             // hand ik runs after the pose lands (the game's ik pass shape).
-            props_system.update(clock?.time ?? 0f, ws?.formation, chara_roots);
+            diag_pass("props", () =>
+                props_system.update(clock?.time ?? 0f, ws?.formation, chara_roots, ws?.props_attach, ws?.props_render));
+            diag.report(Time.time);
 
             // heartbeat: camera state + what is actually visible, once per second.
             if (Time.time - _last_beat >= 1f)
@@ -1074,6 +1084,25 @@ namespace UV2.Live
                     var head = find_deep(chara_roots[0], "Head");
                     if (head != null) pose = $" head {head.position} hrot {head.localEulerAngles}";
                 }
+
+                // the props bench line: stand world position vs the chara's,
+                // plus the hand target nodes. stage-fixed = the stand holds its
+                // world spot while the chara glides under it.
+                if (diag.enabled && chara_roots.Count > 0)
+                {
+                    var stands = GameObject.FindObjectsOfType<Transform>(true)
+                        .Where(t => t.name.StartsWith("prop_stage")).Take(4);
+                    foreach (var s in stands)
+                    {
+                        int slot_digits = s.name.LastIndexOf("slot");
+                        int slot = slot_digits > 0 && int.TryParse(s.name.Substring(slot_digits + 4), out int sv) ? sv : -1;
+                        string mic_info = "";
+                        if (slot > 0 && slot - 1 < chara_roots.Count)
+                            mic_info = $" | chara {chara_roots[slot - 1].position}";
+                        trace_log.write($"props bench: {s.name} at {s.position} (parent {s.parent?.name}, active {s.gameObject.activeSelf}){mic_info}");
+                    }
+                }
+
                 trace_log.write($"beat t={clock?.time ?? 0f:0.0}s cam_pos {cam.transform.position} fwd {cam.transform.forward} fov {cam.fieldOfView:0.0} renderers {visible}/{total} visible animations_playing {playing}{pose}");
 
                 // the layer band + cast heights: the flagged characters' average
@@ -1117,5 +1146,32 @@ namespace UV2.Live
 
         private float _last_beat = -1f;
         private bool _render_state_dumped;
+
+        // the bench hook: per-subsystem timing around the update passes and
+        // the once-per-second perf report. the props timer sits at its call
+        // site (it needs the worksheet args); the rest are bracketed here.
+        private bool _diag_hooks_installed;
+        private void _diag_hook()
+        {
+            if (!diag.enabled) return;
+            if (!_diag_hooks_installed)
+            {
+                _diag_hooks_installed = true;
+                // the frame-rate target: v-sync off + the config's cap so the
+                // perf report reads true frame costs, not the panel's.
+                QualitySettings.vSyncCount = 0;
+                Application.targetFrameRate = config.target_fps;
+                trace_log.write($"perf target {config.target_fps}fps, v-sync off");
+            }
+        }
+
+        // per-subsystem wrappers: called from Update, each brackets one pass.
+        private void diag_pass(string name, System.Action pass)
+        {
+            if (!diag.enabled) { pass(); return; }
+            diag.begin(name);
+            try { pass(); }
+            finally { diag.end(name); }
+        }
     }
 }

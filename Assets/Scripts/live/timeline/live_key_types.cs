@@ -249,5 +249,53 @@ namespace UV2.Live
         public List<List<motion_seq_key>> motion_sequences = new();
         public Dictionary<string, List<formation_key>> formation = new();
         public float total_frames;
+
+        // the props rows: propsList carries per-prop render state
+        // (rendererEnable by frame), propsAttachList carries the attach
+        // contract (joint + position offset by frame, the hand-pickup switch).
+        public List<props_render_track> props_render = new();
+        public List<props_attach_track> props_attach = new();
+    }
+
+    // one propsList entry: the render/visibility key track of one prop
+    // instance. settingFlags is the 1/2/4 slot bit the group targets.
+    [Serializable]
+    public class props_render_key : live_key
+    {
+        public int setting_flags;
+        public int props_id;
+        public byte renderer_enable;
+        public byte is_visible_attached_chara_linked;
+        public byte is_emissive;
+    }
+
+    [Serializable]
+    public class props_render_track
+    {
+        public string name;
+        public List<props_render_key> keys = new();
+    }
+
+    // one propsAttachList entry: which node the prop instance rides and the
+    // authored position offset, per frame. the joint name switch mid-song is
+    // the hand pickup (the stand's mic head transfers to Mic_Attach_00).
+    [Serializable]
+    public class props_attach_key : live_key
+    {
+        public string attach_joint_name;
+        public string copy_position_joint_name;
+        public int setting_flags;
+        public int props_id;
+        public Vector3 offset_position;
+        public Vector3 offset_rotate;
+        public Vector3 offset_scale;
+        public byte is_link_attach_bone;
+    }
+
+    [Serializable]
+    public class props_attach_track
+    {
+        public string name;
+        public List<props_attach_key> keys = new();
     }
 }

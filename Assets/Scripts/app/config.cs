@@ -14,7 +14,34 @@ namespace UV2.App
         private class config_file
         {
             public string main_path;
+            public int target_fps = 120;
+            public bool diagnostics = true;
         }
+
+        // verbose trace + per-frame subsystem timing; on for experimental
+        // benches, off for the main push. the file field wins when present.
+        public static bool diagnostics
+        {
+            get
+            {
+                load_or_generate();
+                return _diagnostics;
+            }
+        }
+
+        private static bool _diagnostics = true;
+
+        // the frame cap the concert aims for; 120 by default, v-sync off.
+        public static int target_fps
+        {
+            get
+            {
+                load_or_generate();
+                return _target_fps;
+            }
+        }
+
+        private static int _target_fps = 120;
 
         private static string config_path
         {
@@ -41,6 +68,8 @@ namespace UV2.App
 
             string default_path = default_main_path();
             string main_path = default_path;
+            _diagnostics = true;
+            _target_fps = 120;
 
             if (File.Exists(config_path))
             {
@@ -49,6 +78,8 @@ namespace UV2.App
                     var cfg = JsonUtility.FromJson<config_file>(File.ReadAllText(config_path));
                     if (!string.IsNullOrEmpty(cfg.main_path))
                         main_path = cfg.main_path;
+                    if (cfg.target_fps > 0) _target_fps = cfg.target_fps;
+                    if (cfg.diagnostics) _diagnostics = true;
                 }
                 catch (Exception e)
                 {
@@ -57,7 +88,7 @@ namespace UV2.App
             }
             else
             {
-                var fresh = new config_file { main_path = default_path };
+                var fresh = new config_file { main_path = default_path, target_fps = 120, diagnostics = true };
                 try
                 {
                     File.WriteAllText(config_path, JsonUtility.ToJson(fresh, true));
@@ -68,6 +99,17 @@ namespace UV2.App
                     Debug.LogError($"[config] could not write {config_path}: {e.Message}");
                 }
             }
+
+            // the diagnostics gate reads as the inverse when the file carries
+            // diagnostics=false explicitly; json has no tri-state so the
+            // generated default writes diagnostics=true and a false in the
+            // file must turn it off.
+            try
+            {
+                if (File.Exists(config_path) && File.ReadAllText(config_path).Contains("\"diagnostics\": false"))
+                    _diagnostics = false;
+            }
+            catch { }
 
             _main_path = main_path;
         }
