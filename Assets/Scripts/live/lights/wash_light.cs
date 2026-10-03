@@ -5,13 +5,7 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // drives the worksheet's WashLightList: the wash light is a stage-wide
-    // camera-facing wash whose consumer does NOT interpolate whole keys — it
-    // hands the controller the current key raw plus two lerped floats
-    // (RaycastDistance/CameraProjectionSide/CameraProjectionColorPower), and
-    // the entry's IsAllSettings flag gates whether the controller layers its
-    // own serialized defaults on top. UV2 resolves the entry name against the
-    // stage map and drives the matched object's lights + emission wash.
+    // drives the worksheet's wash-light entries over the stage's wash fixtures.
     public static class wash_light
     {
         private class wash_container
@@ -23,10 +17,7 @@ namespace UV2.Live
         }
         private static readonly Dictionary<string, wash_container> containers = new();
 
-        // binds the wash entries against the recorded stage children; the
-        // game resolves the controller by the keys list's name hash, but the
-        // shipped entry names are display names ('WashLight Object'), so the
-        // fixtures that carry the wash resolve by their own washlight naming.
+        // binds the wash entries, with display-name entries falling back to washlight-named fixtures.
         public static void bind(List<wash_track_container> tracks)
         {
             containers.Clear();
@@ -82,9 +73,7 @@ namespace UV2.Live
             foreach (var m in missing) trace_log.write($"wash light unresolved: {m}");
         }
 
-        // samples every authored entry per frame: the raw-key handoff + the
-        // three lerped floats; the color power scales the wash emission. the
-        // display-name entries fan out over every fixture they bound.
+        // samples every entry per frame and scales the wash light + emission by the color power.
         public static void update(float time_sec, List<wash_track_container> tracks)
         {
             if (tracks == null || containers.Count == 0) return;
@@ -95,13 +84,10 @@ namespace UV2.Live
                 if (string.IsNullOrEmpty(t.name)) continue;
                 var (raycast, side, color_power) = t.sample(frame);
 
-                // the game's controller fades the wash by the camera-side
-                // projection; UV2 scales the light + emission by it.
                 float wash = Mathf.Clamp01(color_power);
                 foreach (var kv in containers)
                 {
-                    // one entry drives its exact-name container plus the
-                    // display-name fan-out keys ('entry:fixture').
+                    // one entry drives its exact-name container plus its 'entry:fixture' fan-out keys.
                     if (kv.Key != t.name && !kv.Key.StartsWith(t.name + ":")) continue;
                     var c = kv.Value;
                     if (c == null) continue;
@@ -125,8 +111,7 @@ namespace UV2.Live
         public int is_all_settings;
         public List<wash_key> keys = new();
 
-        // the current key's raw values plus the three lerped floats; the
-        // decoded consumer lerps only the RaycastDistance/Side/ColorPower.
+        // returns the lerped raycast distance, camera side, and color power.
         public (float, float, float) sample(float frame)
         {
             if (keys == null || keys.Count == 0) return (0f, 0f, 0f);

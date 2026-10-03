@@ -6,10 +6,7 @@ using UV2.Live;
 
 namespace UV2.Live
 {
-    // plays the authored dance clips the way the game does: the timeline
-    // evaluates the active key, computes the clip time from the key's start
-    // frame plus elapsed (timescale-applied) time, sets state.time directly and
-    // samples the pose — no Play()/isPlaying bookkeeping.
+    // poses characters by setting state.time from the timeline key and sampling directly.
     public class motion_player : MonoBehaviour
     {
         private live_worksheet ws;
@@ -34,7 +31,6 @@ namespace UV2.Live
             }
         }
 
-        // registers a loaded clip against one character's slot.
         public void bind_clip(int slot, AnimationClip clip)
         {
             if (!animators.TryGetValue(slot, out var anim)) return;
@@ -42,7 +38,7 @@ namespace UV2.Live
             if (!anim.GetClip(clip.name)) anim.AddClip(clip, clip.name);
         }
 
-        // registers a clip on every character (all slots may use any sequence).
+        // all slots may use any sequence, so bind the clip everywhere.
         public void bind_clip_all(AnimationClip clip)
         {
             foreach (var kv in animators) bind_clip(kv.Key, clip);
@@ -63,7 +59,6 @@ namespace UV2.Live
 
                 if (!animators.TryGetValue(slot, out var anim)) continue;
 
-                // the active motion key at this time
                 int i = key_eval.bracket(seq_keys, t);
                 if (i < 0) continue;
                 var key = seq_keys[i];
@@ -75,8 +70,7 @@ namespace UV2.Live
                 var state = anim[short_name];
                 if (state == null) continue;
 
-                // per-character start frame: the all-share flag picks the common
-                // head frame, else the separates table, else the common frame.
+                // the head frame: the all-share flag or the per-character separates table.
                 float head_frames;
                 if (key.is_motion_head_frame_all != 0 || key.motion_head_frame_separates == null || slot - 1 >= key.motion_head_frame_separates.Length)
                     head_frames = key.motion_head_frame;
@@ -84,8 +78,7 @@ namespace UV2.Live
                     head_frames = key.motion_head_frame_separates[slot - 1];
                 float start = head_frames / 60f;
 
-                // elapsed since the key, at the key's play speed; the timescale
-                // track rescales time when present.
+                // elapsed since the key at its play speed, rescaled by the timescale track when present.
                 float rate = key.play_speed <= 0f ? 1f : key.play_speed;
                 float interval = (t - key.time) * rate;
                 if (ws.timescale.Count > 0)

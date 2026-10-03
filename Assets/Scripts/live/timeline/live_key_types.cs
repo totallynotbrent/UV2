@@ -24,8 +24,7 @@ namespace UV2.Live
         public int interpolate_type;
         public int easing_type;
 
-        // the key's authored AnimationCurve keyframes; the game evaluates the
-        // NEXT key's curve between keys, so the blend reads this list.
+        // the curve keyframes; the NEXT key's curve drives the blend toward it.
         public List<curve_key> curve = new();
 
         // seconds position of this key on the clock.
@@ -150,8 +149,7 @@ namespace UV2.Live
         public float rim_shadow_rate2;
     }
 
-    // cinematic animation-clip camera move (the cameraMotionKeys track):
-    // an authored clip samples onto a proxy transform and the camera rides it.
+    // cinematic camera move: an authored clip samples a proxy transform the camera rides.
     [Serializable]
     public class camera_motion_key : live_key
     {
@@ -190,8 +188,7 @@ namespace UV2.Live
         public List<mob_cyalume_key> keys = new();
     }
 
-    // one audience key: transform + cyalume tint + animation selection, the
-    // decoded LiveTimelineKeyAudienceData shape.
+    // one audience key: transform + cyalume tint + animation selection.
     [Serializable]
     public class audience_key : live_key
     {
@@ -250,15 +247,12 @@ namespace UV2.Live
         public Dictionary<string, List<formation_key>> formation = new();
         public float total_frames;
 
-        // the props rows: propsList carries per-prop render state
-        // (rendererEnable by frame), propsAttachList carries the attach
-        // contract (joint + position offset by frame, the hand-pickup switch).
+        // propsList = per-prop render state; propsAttachList = joint attach + offset per frame.
         public List<props_render_track> props_render = new();
         public List<props_attach_track> props_attach = new();
     }
 
-    // one propsList entry: the render/visibility key track of one prop
-    // instance. settingFlags is the 1/2/4 slot bit the group targets.
+    // one prop's render/visibility track; settingFlags is the slot bit (1/2/4).
     [Serializable]
     public class props_render_key : live_key
     {
@@ -276,9 +270,7 @@ namespace UV2.Live
         public List<props_render_key> keys = new();
     }
 
-    // one propsAttachList entry: which node the prop instance rides and the
-    // authored position offset, per frame. the joint name switch mid-song is
-    // the hand pickup (the stand's mic head transfers to Mic_Attach_00).
+    // one prop's attach track: the joint it rides plus per-frame offsets.
     [Serializable]
     public class props_attach_key : live_key
     {

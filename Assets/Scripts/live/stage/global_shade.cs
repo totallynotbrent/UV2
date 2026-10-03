@@ -4,9 +4,7 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // publishes the decoded global shader values the game's GraphicSettings sets
-    // every frame; without them the chara/stage shaders run on unity defaults
-    // (black) on a real gpu.
+    // publishes the global shader values the chara/stage shaders need every frame.
     public static class global_shade
     {
         private static readonly int id_lightmap_color = Shader.PropertyToID("_Global_LightmapColor");
@@ -23,8 +21,7 @@ namespace UV2.Live
         private static readonly int id_vertex_depth = Shader.PropertyToID("_GlobalVertexDepthLinear");
         private static readonly int id_far_clip_log = Shader.PropertyToID("_GlobalFarClipLog");
 
-        // the fog block the game publishes every frame; the decoded off-state
-        // (GraphicSettings::SetDefaultFog) is the only safe default.
+        // the fog globals, published in their off state.
         private static readonly int id_fog_color = Shader.PropertyToID("_Global_FogColor");
         private static readonly int id_fog_min_distance = Shader.PropertyToID("_Global_FogMinDistance");
         private static readonly int id_fog_length = Shader.PropertyToID("_Global_FogLength");
@@ -32,18 +29,15 @@ namespace UV2.Live
         private static readonly int id_fog_max_height = Shader.PropertyToID("_Global_MaxHeight");
         private static readonly int id_fog_world_origin = Shader.PropertyToID("_Global_FogWorld_Origin");
 
-        // the toon light the chara shaders consume: a direction published from
-        // the worksheet's global-light track, not a unity light object.
+        // the toon light direction comes from the worksheet, not a unity light object.
         private static readonly int id_use_orig_light = Shader.PropertyToID("_UseOriginalDirectionalLight");
         private static readonly int id_orig_light_dir = Shader.PropertyToID("_OriginalDirectionalLightDir");
 
-        // the decoded defaults: density 1.0, densityColor 0.5 gray, min 0.
         private const float lightmap_density = 1.0f;
         private const float lightmap_min_density = 0.0f;
         private static readonly Color lightmap_density_color = new(0.5f, 0.5f, 0.5f, 1f);
 
-        // the latest global-light keys bracketing the current frame: the
-        // publisher blends their rim values by the game's key interpolation.
+        // stores the global-light keys bracketing the current frame for the blend.
         public static void set_light_track(global_light_key key, float blend)
         {
             _light_key = key;
@@ -60,7 +54,6 @@ namespace UV2.Live
         private static global_light_key _light_next;
         private static float _light_blend;
 
-        // one rim channel blended between the bracketing keys.
         private static float lerp_f(float a, float b, float blend) => Mathf.Lerp(a, b, blend);
         private static Color lerp_c(Color a, Color b, float blend) => Color.Lerp(a, b, blend);
 
@@ -68,8 +61,7 @@ namespace UV2.Live
         private static MaterialPropertyBlock _chara_mpb;
         private static Vector3 _last_light_dir = new(12345f, 0f, 0f);
 
-        // applies the toon-light + rim block onto every renderer of every
-        // character, the per-renderer publish the chara shaders consume.
+        // applies the toon-light + rim block onto every character renderer.
         public static void publish_chara_block(List<Transform> chara_roots)
         {
             if (chara_roots == null || chara_roots.Count == 0) return;
@@ -120,9 +112,7 @@ namespace UV2.Live
             }
         }
 
-        // the scene rig the game's live scenes always carry: one directional sun
-        // and one audio listener. created once; toon shaders render black
-        // without a scene light and unity emits no sound without a listener.
+        // the scene rig: one directional sun + one audio listener, created once.
         private static bool _rig_ready;
         private static GameObject _sun;
         private static GameObject _listener_host;
@@ -148,7 +138,6 @@ namespace UV2.Live
                 light.color = Color.white;
                 light.intensity = 1f;
                 light.shadows = LightShadows.Soft;
-                // the game's sun: overhead angled slightly forward.
                 _sun.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
             }
             RenderSettings.sun = null; // the chara mpb drives toon light, not the sun
@@ -162,8 +151,7 @@ namespace UV2.Live
         {
             ensure_scene_rig(cam);
             publish_fog_off();
-            // lightmap block with the exact decoded folds: both colors scale by
-            // 2 first; modulate uses density directly, add clamps 1-density.
+            // lightmap block: both colors scale by 2; modulate uses density, add clamps 1-density.
             float density_add = Mathf.Max(1f - lightmap_density, lightmap_min_density);
             Vector3 add_rgb = new(lightmap_density_color.r * 2f * density_add,
                                   lightmap_density_color.g * 2f * density_add,
@@ -176,14 +164,12 @@ namespace UV2.Live
             Shader.SetGlobalColor(id_lightmap_add, new Color(add_rgb.x, add_rgb.y, add_rgb.z, 1f));
             Shader.SetGlobalColor(id_lightmap_modulate, new Color(mod_rgb.x, mod_rgb.y, mod_rgb.z, 1f));
 
-            // character env: rim/toon white, outline 1.0/1.0 (the .ctor value).
             Shader.SetGlobalColor(id_rim_color, Color.white);
             Shader.SetGlobalVector(id_toon_color, new Vector4(1f, 1f, 1f, 1f));
             Shader.SetGlobalFloat(id_outline_width, 1.0f);
             Shader.SetGlobalFloat(id_outline_offset, 1.0f);
 
-            // the dirt family + ambient + array globals the game's shaders read;
-            // v1 proved these exact defaults render on a real gpu.
+            // the dirt + ambient + array globals.
             Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtRimSpecularColor"), new Color(0.25f, 0.25f, 0.25f, 1f));
             Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtToonColor"), new Color(0.5f, 0.5f, 0.5f, 1f));
             Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtColor"), new Color(0.6f, 0.451f, 0.384f, 1f));
@@ -200,7 +186,6 @@ namespace UV2.Live
             Shader.SetGlobalVectorArray(Shader.PropertyToID("_ColorArray"), color_array);
             Shader.SetGlobalFloatArray(Shader.PropertyToID("_DirtRate"), new float[] { 0f, 0f, 0f });
 
-            // lod + depth consumers.
             if (cam != null)
             {
                 Shader.SetGlobalFloat(id_camera_fov, Mathf.Min(cam.fieldOfView / 30f, 1f));
@@ -211,8 +196,7 @@ namespace UV2.Live
             publish_toon_light();
         }
 
-        // the decoded fog-off state: zero fog color, far start, full survive,
-        // so stage shaders never fade the frame to the fog color.
+        // publishes the fog-off state so stage shaders never fade the frame.
         private static void publish_fog_off()
         {
             Shader.SetGlobalColor(id_fog_color, Color.clear);
@@ -223,8 +207,7 @@ namespace UV2.Live
             Shader.SetGlobalVector(id_fog_world_origin, Vector4.zero);
         }
 
-        // the chara toon light: direction from the worksheet's global-light
-        // track, lerped between neighboring keys; identity tilt when no track.
+        // the toon light direction from the global-light track; straight down when no track.
         private static void publish_toon_light()
         {
             Shader.SetGlobalFloat(id_use_orig_light, 1f);
@@ -235,8 +218,7 @@ namespace UV2.Live
                 Vector3 light_dir = k.light_dir;
                 if (light_dir.sqrMagnitude < 1e-06f)
                     light_dir = Vector3.down;
-                // the game's euler angles point the light; the shader wants the
-                // direction the light travels.
+                // the euler angles point the light; the shader wants the travel direction.
                 var rot = Quaternion.Euler(light_dir);
                 dir = -(rot * Vector3.forward).normalized;
             }

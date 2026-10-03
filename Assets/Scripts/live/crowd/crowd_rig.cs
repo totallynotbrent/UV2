@@ -7,14 +7,7 @@ using UV2.Data;
 
 namespace UV2.Live
 {
-    // the crowd rig: resolves the song's audience prefabs from the stage's own
-    // controller table (StageController._audienceObjects, the game's
-    // SetupAudienceObject index) or the common bundle, instantiates one
-    // instance per audienceList entry, and plays the authored crowd clips —
-    // the livesettings type=10 rows are the clip list, the key's
-    // animationIndex selects from it, speed and offset phase the instance.
-    // also plays every stage-embedded Animation once (the game's first
-    // LateUpdate pass) so static stage props animate.
+    // instantiates the song's audience prefabs and plays their crowd clips.
     public static class crowd_rig
     {
         // one instance per worksheet entry: the resolved root + its animator.
@@ -34,14 +27,12 @@ namespace UV2.Live
 
         public static int instance_count => instances.Count;
 
-        // the entry-indexed root for the key-track driver.
         public static Transform instance_root(int entry_index) =>
             entry_index >= 0 && entry_index < instances.Count && instances[entry_index] != null
                 ? instances[entry_index].root.transform
                 : null;
 
-        // the stage phase records the controller's audience table; call with
-        // the deserialized StageController before the crowd binds.
+        // records the stage controller's audience prefab table.
         public static void record_stage_audience_table(Gallop.Live.StageController ctrl)
         {
             stage_audience_table.Clear();
@@ -51,11 +42,7 @@ namespace UV2.Live
             trace_log.write($"crowd rig: stage audience table {stage_audience_table.Count} prefab(s)");
         }
 
-        // spawns the pen-light rig under every stage cyalume controller: the
-        // game's CyalumeController3D reads the controller's AssetHolder table
-        // (default/random/mob keys) and instantiates those prefabs as children
-        // — the controller prefab itself ships as an empty root spawner.
-        // returns how many crowd objects the pass spawned.
+        // spawns the pen-light prefabs under every stage cyalume controller.
         public static int spawn_cyalume_rig(Transform stage_root)
         {
             if (stage_root == null) return 0;
@@ -78,8 +65,7 @@ namespace UV2.Live
             return spawned;
         }
 
-        // loads the song's crowd clips from the livesettings type=10 rows; the
-        // runtime clip list is ordered exactly like the game reads the rows.
+        // loads the song's crowd clips from the livesettings type=10 rows.
         public static void bind_song_clips(int music_id)
         {
             song_clip_list.Clear();
@@ -96,9 +82,7 @@ namespace UV2.Live
             trace_log.write($"crowd rig: {clip_rows} livesettings clip rows -> {song_clip_list.Count} crowd clips loaded (song {music_id})");
         }
 
-        // resolves + instantiates one instance per audienceList entry; the
-        // entry's list position is the instance key (the game resolves the
-        // prefab through the stage audience table's _objectIndex first).
+        // instantiates one crowd instance per audienceList entry keyed by list position.
         public static void bind(List<audience_track> tracks, Transform parent, int music_id)
         {
             instances.Clear();
@@ -122,8 +106,7 @@ namespace UV2.Live
             foreach (var m in missing) trace_log.write($"crowd rig unresolved: {m}");
         }
 
-        // the per-entry instance: the stage table first (the game's
-        // _objectIndex), a name match second, the common bundle third.
+        // resolves the entry's prefab: stage table first, then a name match, then the common bundle.
         private static crowd_instance resolve_instance(audience_track track, Transform parent)
         {
             GameObject prefab = null;
@@ -145,8 +128,7 @@ namespace UV2.Live
                 root = root,
                 anim = root.GetComponent<Animation>() ?? root.GetComponentInChildren<Animation>(true),
             };
-            // the crowd bodies carry colliders for the game's raycasts; a
-            // viewer has no use for them and they cost physics ticks.
+            // the crowd colliders only serve gameplay raycasts; a viewer does not need them.
             foreach (var col in root.GetComponentsInChildren<Collider>(true))
                 UnityEngine.Object.Destroy(col);
             shader_manager.fix_game_shaders(root.transform, "crowd");
@@ -212,10 +194,7 @@ namespace UV2.Live
             }
         }
 
-        // plays every stage-embedded Animation once, the game's first
-        // LateUpdate pass: static stage props (neon flicker, billboard motion)
-        // animate via their own authored clips with no worksheet keys. safe to
-        // call for every stage root; each root starts exactly once per concert.
+        // plays every stage-embedded Animation once per stage root.
         public static void start_stage_animations(Transform stage_root)
         {
             if (stage_root == null || !anim_started_roots.Add(stage_root)) return;
@@ -229,7 +208,6 @@ namespace UV2.Live
             trace_log.write($"crowd rig: {started} stage animations started on '{stage_root.name}'");
         }
 
-        // resets the per-concert state (a new song).
         public static void reset()
         {
             anim_started_roots.Clear();
@@ -240,10 +218,7 @@ namespace UV2.Live
             song_clip_list.Clear();
         }
 
-        // the crowd clip machine: brackets each entry's keys, plays the
-        // current key's animationIndex-th clip from the type=10 list at the
-        // key's speed; -1 stops the crowd. transform + tint live in
-        // audience_keys (one owner per field).
+        // plays each entry's authored crowd clip for the frame's key.
         public static void update(float time_sec, List<audience_track> tracks)
         {
             if (tracks == null || tracks.Count == 0 || instances.Count == 0) return;
@@ -279,10 +254,7 @@ namespace UV2.Live
             }
         }
 
-        // the game plays the animationIndex-th clip from the type=10 list at
-        // the key's speed; -1 holds the crowd still. the wrap mode follows the
-        // authored value (the game's own Unity WrapMode ints), the offset
-        // phases the instances so the crowd does not move in lockstep.
+        // plays the key's selected crowd clip at its speed, stopping on a negative index.
         private static void play_clip(crowd_instance c, audience_key key)
         {
             if (c.anim == null) return;
@@ -317,13 +289,11 @@ namespace UV2.Live
                 st.speed = key.animation_speed > 0f ? key.animation_speed : 1f;
                 if (key.use_animation_time != 0)
                 {
-                    // the authored pose time pins the crowd exactly.
                     st.time = key.animation_time;
                 }
                 else if (!float.IsNaN(st.time) && key.animation_offset_time != 0f && st.time == 0f)
                 {
-                    // the offset is the start-phase: the instance begins partway
-                    // through the clip so instances phase apart.
+                    // the offset is a start-phase into the clip, not a duration.
                     st.time = Mathf.Repeat(key.animation_offset_time, st.length > 0f ? st.length : 1f);
                 }
                 if (st.length > 0f) st.time = Mathf.Repeat(st.time, st.length);

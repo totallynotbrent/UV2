@@ -7,17 +7,7 @@ using UV2.Data;
 
 namespace UV2.Live
 {
-    // the cyalume (pen-light) driver: resolves the song's pen-light textures
-    // from the install (live/cyalume/m{song}/tex_live_cyalume_m{song}_{000..})
-    // and publishes them onto the crowd rig's pen-light meshes per the song's
-    // choreography csv (live/musicscores/m{song}/m{song}_cyalume): each row
-    // defines a pattern (move_type + color_pattern signature), the playback
-    // clock walks the rows, and the active pattern's texture applies to the
-    // cyalume materials with the authored scroll offset (the 32-frame
-    // _animationFrameCount machine, y scroll from the pattern start + bpm).
-    // the 1084-only per-character override: livesettings type=16 rows name a
-    // chara id (param4) + texture suffix (param2); the slots holding that
-    // character keep the override texture instead of the pattern texture.
+    // drives the pen-light textures and scroll from the song's choreography.
     public static class cyalume
     {
         // one choreography row: the pattern signature + its timing.
@@ -40,9 +30,7 @@ namespace UV2.Live
         private static readonly List<Renderer> pen_renderers = new();
         private static readonly Dictionary<Renderer, MaterialPropertyBlock> pen_blocks = new();
 
-        // resolves the song's textures + choreography; the census traces the
-        // texture resolution so a silent miss is visible. the pen meshes stay
-        // as the stage phase recorded them.
+        // resolves the song's pen-light textures and choreography rows.
         public static void bind(int music_id)
         {
             textures.Clear();
@@ -90,9 +78,7 @@ namespace UV2.Live
             }
         }
 
-        // the 1084-only per-character override: livesettings type=16 rows name
-        // the chara id (param4) + the texture suffix (param2); the texture
-        // resolves by suffix from the song's own cyalume folder.
+        // loads per-character override textures from the livesettings type=16 rows.
         private static void load_overrides(int music_id)
         {
             var rows_l = read_livesettings(music_id);
@@ -132,8 +118,7 @@ namespace UV2.Live
             }
         }
 
-        // the choreography csv: one row per pattern change, the pattern id is
-        // the unique (move_type, color_pattern, colors, widths) signature.
+        // parses the choreography csv, one row per pattern change keyed by move_type + color_pattern.
         private static void load_choreography(int music_id)
         {
             var row = meta_row($"live/musicscores/m{music_id}/m{music_id}_cyalume");
@@ -157,7 +142,7 @@ namespace UV2.Live
                 var cells = line.Split(',');
                 if (cells.Length < 4) continue;
                 if (!float.TryParse(cells[0], out float time_ms)) continue;
-                // the game's csv stores milliseconds past 1000.
+                // csv times above 1000 are milliseconds, below are seconds.
                 float start = time_ms > 1000f ? time_ms / 1000f : time_ms;
                 string move_type = cells[1];
                 string color_pattern = cells[3];
@@ -193,8 +178,7 @@ namespace UV2.Live
             }
         }
 
-        // records the pen-light renderers from the stage hierarchy (the
-        // cyalume_r/d meshes of the controller rig); accumulates per stage root.
+        // records the pen-light renderers (cyalume_r/d meshes) found under a stage root.
         public static void record_pen_meshes(Transform stage_root)
         {
             if (stage_root == null) return;
@@ -211,7 +195,6 @@ namespace UV2.Live
             trace_log.write($"cyalume: {pen_renderers.Count} pen-light renderers recorded");
         }
 
-        // resets the recorded meshes (a new concert).
         public static void reset_pen_meshes()
         {
             pen_renderers.Clear();
@@ -221,8 +204,7 @@ namespace UV2.Live
 
         private static readonly HashSet<Transform> _pen_recorded_roots = new();
 
-        // per-frame: the current pattern row at the clock, its texture onto
-        // the pen meshes, and the scroll offset from the pattern machine.
+        // per-frame: applies the current pattern's texture and scroll offset to the pen meshes.
         public static void update(float time_sec)
         {
             if (!loaded || pen_renderers.Count == 0 || rows.Count == 0) return;
@@ -250,8 +232,7 @@ namespace UV2.Live
                 }
             }
 
-            // the scroll: the game's ComputeRecoveredYOffset — the frame
-            // counter advances with play speed over the authored frame count.
+            // the y scroll steps through the pattern's frames at play speed.
             float offset;
             if (current.pause_like)
             {
@@ -271,8 +252,7 @@ namespace UV2.Live
                     var r = kv.Key;
                     var mpb = kv.Value;
                     r.GetPropertyBlock(mpb);
-                    // the game's _MainTex_ST scroll: scale from the shared
-                    // material, y offset from the pattern machine.
+                    // keeps the shared material's texture scale, overriding only the y offset.
                     var scale = r.sharedMaterial != null ? r.sharedMaterial.mainTextureScale : Vector2.one;
                     mpb.SetVector(id_main_tex_st, new Vector4(scale.x, scale.y, 0f, offset));
                     r.SetPropertyBlock(mpb);
@@ -292,8 +272,7 @@ namespace UV2.Live
             return current;
         }
 
-        // the per-character override texture for a slot's chara id, when the
-        // song authors one (1084); null otherwise.
+        // the per-character override texture for a chara id, or null when none is authored.
         public static Texture2D override_for_chara(int chara_id) =>
             overrides.TryGetValue(chara_id, out var tex) ? tex : null;
 

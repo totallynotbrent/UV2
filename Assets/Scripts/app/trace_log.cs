@@ -5,8 +5,7 @@ using UnityEngine;
 
 namespace UV2.App
 {
-    // writes the whole concert boot trace to uv2_trace.log beside the exe so the
-    // load chain is auditable on any machine, gpu or not.
+    // writes the concert boot trace to uv2_trace.log beside the exe.
     public static class trace_log
     {
         private static string _path;
@@ -43,8 +42,7 @@ namespace UV2.App
             catch { }
         }
 
-        // a batch of trace lines in one file append (the diagnostics
-        // per-second flush path: one syscall per window, not per line).
+        // a batch of trace lines in one file append.
         public static void write(List<string> messages)
         {
             if (messages == null || messages.Count == 0) return;

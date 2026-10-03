@@ -5,24 +5,16 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // drives the worksheet's mob/cyalume group tracks over the crowd rig: the
-    // game's AlterUpdate_MobControl / AlterUpdate_CyalumeControl bracket the
-    // key pair per group, lerp Position/Angle/Scale when the NEXT key
-    // interpolates, and publish into the rig-wide group matrix arrays the
-    // MobShadow / CyalumeDefault shaders read (_MobGroupMatrix /
-    // _CyalumeGroupMatrix, 11 slots each). the same arrays carry the mob
-    // repositioning, so one module serves both tracks.
+    // drives the mob/cyalume group tracks into the shader group matrix arrays.
     public static class mob_control
     {
-        // the game's MobShadowController + CyalumeControllerBase both keep 11.
+        // the mob and cyalume controllers both carry 11 group slots.
         public const int group_slots = 11;
 
         private static readonly Matrix4x4[] mob_matrix = new Matrix4x4[group_slots];
         private static readonly Matrix4x4[] cyalume_matrix = new Matrix4x4[group_slots];
 
-        // the crowd rig roots found in the instantiated stage hierarchy; the
-        // meshes move with the shader matrices, but the transforms let the
-        // CPU-side culling + raycasts follow.
+        // rig roots tracked so CPU-side culling and raycasts can follow the shader-driven meshes.
         private static readonly List<Transform> mob_roots = new();
         private static readonly List<Transform> cyalume_roots = new();
         private static bool bound;
@@ -30,9 +22,7 @@ namespace UV2.Live
         private static readonly int id_mob_matrix = Shader.PropertyToID("_MobGroupMatrix");
         private static readonly int id_cyalume_matrix = Shader.PropertyToID("_CyalumeGroupMatrix");
 
-        // records the crowd rig roots from the stage hierarchy: the mob walls
-        // (pfb_env_live_cmn_mob*) and the pen-light meshes (cyalume_r/d*).
-        // called per instantiated stage root; the lists accumulate.
+        // records the mob-wall and pen-light roots found under a stage root.
         public static void record_rig(Transform stage_root)
         {
             if (stage_root == null) return;
@@ -52,7 +42,6 @@ namespace UV2.Live
             bound = false;
         }
 
-        // resets the recorded rig (a new concert).
         public static void reset()
         {
             mob_roots.Clear();
@@ -63,8 +52,7 @@ namespace UV2.Live
 
         private static readonly HashSet<Transform> _recorded_roots = new();
 
-        // samples both group tracks for the frame and publishes the matrix
-        // arrays; call from the loader's update after the crowd rig binds.
+        // samples both group tracks and publishes the matrix arrays.
         public static void update(float time_sec, List<mob_cyalume_group> mob_tracks,
             List<mob_cyalume_group> cyalume_tracks)
         {
@@ -91,8 +79,7 @@ namespace UV2.Live
             if (cyalume_driven > 0) Shader.SetGlobalMatrixArray(id_cyalume_matrix, cyalume_matrix);
         }
 
-        // one group track: brackets each group's keys, lerps the TRS, writes
-        // the group slot. returns how many groups published this frame.
+        // lerps each group's keys into its matrix slot; returns how many groups published.
         private static int drive_track(List<mob_cyalume_group> tracks, float time_sec, Matrix4x4[] matrix)
         {
             float frame = time_sec * 60f;

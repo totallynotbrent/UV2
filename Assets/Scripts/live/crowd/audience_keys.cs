@@ -5,13 +5,7 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // drives the worksheet's audienceList key track over the crowd rig: the
-    // game's AlterUpdate_Audience brackets each entry's key pair, lerps
-    // position/rotate/scale when the NEXT key interpolates, and writes the
-    // entry's local TRS. UV2's crowd_rig owns the instances + the clip
-    // playback; this module owns the per-key transform and the cyalume tint
-    // (cyalumeColor on the crowd body renderers, cyalumeGlowColor * power on
-    // the glow children) — one owner per field, no double-drive.
+    // drives the audienceList key track: per-entry transform + cyalume tint.
     public static class audience_keys
     {
         // one entry's shading state, resolved at bind.
@@ -24,15 +18,12 @@ namespace UV2.Live
             public MaterialPropertyBlock glow_block;
         }
 
-        // entry-indexed: the audienceList list position, exactly the order the
-        // crowd rig instantiates (1001 has 12 entries with the same name).
+        // entry-indexed to match the crowd rig's instantiation order.
         private static readonly List<entry_state> entries = new();
 
-        // resets the bound entries (a new concert).
         public static void reset() => entries.Clear();
 
-        // binds the audienceList entries against the crowd rig's instances;
-        // every authored entry reports even when its rig is missing.
+        // binds one shading state per audienceList entry, null when the rig instance is missing.
         public static void bind(List<audience_track> tracks)
         {
             entries.Clear();
@@ -80,9 +71,7 @@ namespace UV2.Live
             return state;
         }
 
-        // samples every entry's key track for the frame and publishes the
-        // transform + tint; call from the loader's update after the crowd
-        // binds.
+        // samples every entry's key track and publishes the transform + tint.
         public static void update(float time_sec, List<audience_track> tracks)
         {
             if (tracks == null || tracks.Count == 0 || entries.Count == 0) return;
@@ -113,13 +102,11 @@ namespace UV2.Live
                     }
                 }
 
-                // the game writes the local TRS per frame.
                 state.root.localPosition = Vector3.Lerp(a.position, b.position, blend);
                 state.root.localRotation = Quaternion.Euler(Vector3.Lerp(a.rotate, b.rotate, blend));
                 state.root.localScale = Vector3.Lerp(a.scale, b.scale, blend);
 
-                // the cyalume tint: the crowd body tint + the glow color *
-                // power on the additive children.
+                // the body tint plus glow color * power on the additive children.
                 if (state.body_renderers.Count > 0)
                 {
                     state.body_block.SetColor(id_color, Color.Lerp(a.cyalume_color, b.cyalume_color, blend));

@@ -5,13 +5,7 @@ using UnityEngine;
 
 namespace UV2.Live
 {
-    // resolves chara-relative camera targets exactly as the game's
-    // GetPositionWithCharacters does: the parts enum selects a per-character
-    // anchor, the position flags select which characters contribute, and the
-    // flagged anchors are averaged with the layer offset scaled by each
-    // character's height ratio. heights for the const/init parts are captured
-    // once at load from the rest pose; the cm height comes from the install's
-    // chara_data rows. per out/uv2_camera_layer_height_decode.md.
+    // resolves chara-relative camera targets: the parts enum picks a per-character anchor and the flagged anchors average with height-scaled layer offsets.
     public static class chara_parts
     {
         public const int FACE = 0;
@@ -36,12 +30,10 @@ namespace UV2.Live
         public const int INITIAL_HEIGHT_WAIST = 19;
         public const int MAX = 20;
 
-        // the game's base height for the per-character layer-offset ratio
-        // (UpdateCharactorLocator: ratio = liveCharaHeightValue / 158).
+        // base height for the layer-offset ratio (height_value / 158).
         public const float BASE_HEIGHT = 158f;
 
-        // per-character anchor cache captured at load: rest-pose bone heights,
-        // the load-time position, and the cm height from the install.
+        // per-character anchor cache: rest-pose heights, load-time position, cm height.
         private class chara_anchor
         {
             public Vector3 initial_position;
@@ -52,8 +44,7 @@ namespace UV2.Live
         }
         private static readonly Dictionary<Transform, chara_anchor> anchors = new();
 
-        // captures the rest-pose heights once per character; safe to call
-        // repeatedly during load.
+        // captures rest-pose heights once per character; safe to call repeatedly.
         public static void record(Transform root)
         {
             if (root == null || anchors.ContainsKey(root)) return;
@@ -68,8 +59,7 @@ namespace UV2.Live
             anchors[root] = a;
         }
 
-        // stores the character's cm height from the install's chara_data rows;
-        // falls back to the base height when the row is missing.
+        // stores the character's cm height; falls back to the base height when missing.
         public static void record_height(Transform root, int chara_id)
         {
             if (root == null) return;
@@ -104,15 +94,13 @@ namespace UV2.Live
             return anchors.TryGetValue(root, out var a) ? a.height_value : BASE_HEIGHT;
         }
 
-        // liveCharaHeightRatio: the per-character scale applied to the layer
-        // offset inside the anchor accumulation.
+        // the per-character scale applied to the layer offset.
         public static float height_ratio(Transform root)
         {
             return height_value(root) / BASE_HEIGHT;
         }
 
-        // world position of one character's authored part; null when the
-        // character does not expose the bone.
+        // world position of one character's authored part; null when the bone is missing.
         public static Vector3? part_world(Transform root, int part)
         {
             if (root == null) return null;
@@ -136,9 +124,7 @@ namespace UV2.Live
                 case FOOT:
                     var chest = find_bone(root, "Chest");
                     return chest == null ? null : new Vector3(chest.position.x, 0f, chest.position.z);
-                // the const-height anchors contribute only their rest-pose
-                // height; the key's chara_pos supplies x/z (the game reads
-                // only the .y of its const-height locator fields).
+                // const-height anchors supply only the y; the key's chara_pos supplies x/z.
                 case CONST_FACE_HEIGHT:
                 case INIT_FACE_HEIGHT:
                 case INITIAL_HEIGHT_FACE:
@@ -167,15 +153,13 @@ namespace UV2.Live
             }
         }
 
-        // group resolution: flags==0 means the stage center, matching the
-        // game's zero-flag shortcut; otherwise the flagged anchors average.
+        // flags==0 means the stage center; otherwise the flagged anchors average.
         public static Vector3 group_world(List<Transform> chara_roots, int flags, int part)
         {
             return group_world(chara_roots, flags, part, Vector3.zero);
         }
 
-        // the game's GetPositionWithCharacters: each flagged anchor also adds
-        // the layer offset scaled by that character's height ratio.
+        // averages the flagged anchors plus the layer offset scaled by each character's height ratio.
         public static Vector3 group_world(List<Transform> chara_roots, int flags, int part, Vector3 layer_offset)
         {
             if (flags == 0) return Vector3.zero; // the stage center
@@ -192,8 +176,7 @@ namespace UV2.Live
             return sum / values.Count;
         }
 
-        // the average cm height of the flagged characters; zero flags = zero,
-        // matching GetHeightValueWithCharacters' empty-sum return.
+        // the average cm height of the flagged characters; zero flags means zero.
         public static float group_height(List<Transform> chara_roots, int flags)
         {
             if (flags == 0) return 0f;

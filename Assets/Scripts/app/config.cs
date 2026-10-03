@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace UV2.App
 {
-    // runtime configuration: game data root path and the selection file location.
+    // runtime configuration: game data root path, frame cap, and diagnostics.
     public static class config
     {
         private static string _main_path;
@@ -18,8 +18,7 @@ namespace UV2.App
             public bool diagnostics = true;
         }
 
-        // verbose trace + per-frame subsystem timing; on for experimental
-        // benches, off for the main push. the file field wins when present.
+        // enables the verbose trace and per-frame subsystem timing.
         public static bool diagnostics
         {
             get
@@ -31,7 +30,7 @@ namespace UV2.App
 
         private static bool _diagnostics = true;
 
-        // the frame cap the concert aims for; 120 by default, v-sync off.
+        // v-sync is off, so this cap sets the real frame rate.
         public static int target_fps
         {
             get
@@ -52,13 +51,13 @@ namespace UV2.App
             }
         }
 
-        // first run writes Config.json with the default path so the user has a file to edit.
+        // loads config.json, generating a default one on first run.
         private static void load_or_generate()
         {
             if (_loaded) return;
             _loaded = true;
 
-            // env override beats the config file; used by tooling and container runs.
+            // the UV2_MAIN_PATH env var overrides the config file.
             string env_path = System.Environment.GetEnvironmentVariable("UV2_MAIN_PATH");
             if (!string.IsNullOrEmpty(env_path) && System.IO.Directory.Exists(env_path))
             {
@@ -100,10 +99,7 @@ namespace UV2.App
                 }
             }
 
-            // the diagnostics gate reads as the inverse when the file carries
-            // diagnostics=false explicitly; json has no tri-state so the
-            // generated default writes diagnostics=true and a false in the
-            // file must turn it off.
+            // the parse above only turns diagnostics on, so scan the file text for an explicit "diagnostics": false.
             try
             {
                 if (File.Exists(config_path) && File.ReadAllText(config_path).Contains("\"diagnostics\": false"))
@@ -114,7 +110,7 @@ namespace UV2.App
             _main_path = main_path;
         }
 
-        // the game's default install layout under the user profile, same default as viewer v1.
+        // default data install location under the user profile.
         private static string default_main_path()
         {
             return Path.Combine(

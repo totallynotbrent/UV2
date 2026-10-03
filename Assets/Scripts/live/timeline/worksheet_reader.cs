@@ -9,12 +9,10 @@ using Cutt = Gallop.Live.Cutt;
 
 namespace UV2.Live
 {
-    // loads one song's LiveTimelineWorkSheet from the game's cutt camera bundle,
-    // deserialized by the generated stub, and maps it into the runtime model.
+    // loads a song's worksheet from the cutt camera bundle and maps it into the runtime model.
     public static class worksheet_reader
     {
-        // the key's authored AnimationCurve as curve_key list; empty when the
-        // game ships the curve container with no keyframes.
+        // converts an AnimationCurve into a curve_key list; empty when the curve carries none.
         private static List<curve_key> read_curve(AnimationCurve curve)
         {
             var keys = new List<curve_key>();
@@ -35,9 +33,7 @@ namespace UV2.Live
                 if (sheet == null) return null;
                 var ws = map(sheet, music_id);
 
-                // the data asset's timeLength (seconds) is the authoritative
-                // duration; the sheet's TotalTimeLength serializes 0 on disk
-                // for main sheets, so it only overrides when valid.
+                // prefers the data asset's timeLength; the sheet's TotalTimeLength serializes 0 for main sheets.
                 int time_length = load_data_time_length(music_id);
                 if (time_length > 0)
                 {
@@ -263,8 +259,7 @@ namespace UV2.Live
                     easing_array = (k.EasingArray ?? new()).ToList(),
                 }).ToList();
 
-            // the crowd rows: audienceList (13 songs), MobControlKeys (32),
-            // CyalumeControlKeys (33) — the stub carries all three verbatim.
+            // maps the three crowd row lists into their tracks.
             ws.audience_tracks = (sheet.audienceList ?? new())
                 .Select(a => new audience_track
                 {
@@ -486,7 +481,7 @@ namespace UV2.Live
                 ws.motion_sequences.Add(keys);
             }
 
-            // formation: each slot group in the set shares one entry type.
+            // formation: one keys list per slot group in the offset set.
             var fos = sheet.formationOffsetSet;
             if (fos != null)
             {
@@ -550,8 +545,7 @@ namespace UV2.Live
             ws.formation[name] = list;
         }
 
-        // loads the song's propsDataGroup from the cutt data asset; null when
-        // the bundle or its propsSettings is absent.
+        // loads the song's propsDataGroup; null when the bundle or propsSettings is absent.
         public static List<Cutt.PropsDataGroup> load_props_groups(int music_id)
         {
             try
@@ -572,9 +566,7 @@ namespace UV2.Live
             }
         }
 
-        // the worksheet's props tracks: propsList (render state) and
-        // propsAttachList (the attach contract). filled during parse_ws since
-        // the sheet object is already in hand there.
+        // maps the props tracks: propsList (render state) and propsAttachList (attach).
         private static void add_props_tracks(live_worksheet ws, Cutt.LiveTimelineWorkSheet sheet)
         {
             ws.props_render = (sheet.propsList ?? new())

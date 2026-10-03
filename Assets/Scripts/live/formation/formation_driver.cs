@@ -6,8 +6,7 @@ using UV2.Live;
 
 namespace UV2.Live
 {
-    // moves characters between formation keys: stage placement per group
-    // (center/left1/right1/.../place20), the position track is the phase-2 consumer.
+    // moves characters between formation keys: stage placement per group (center/left1/right1/.../place20).
     public class formation_driver : MonoBehaviour
     {
         private live_worksheet ws;
@@ -41,7 +40,6 @@ namespace UV2.Live
 
                 foreach (var skv in slots)
                 {
-                    // group name -> slot index: center=1, left1=2, right1=3, left2=4...
                     int slot = group_index(group, skv.Key);
                     if (slot < 0) continue;
                     var tr = skv.Value;
@@ -64,8 +62,7 @@ namespace UV2.Live
             }
         }
 
-        // worksheet group names map to selection slots: center->1, left1->2,
-        // right1->3, left2->4, right2->5, place06..20 -> 6..20.
+        // maps worksheet group names to selection slots: center=1, left1=2, right1=3, left2=4, right2=5, place06..20 -> 6..20.
         private int group_index(string group, int slot)
         {
             switch (group)

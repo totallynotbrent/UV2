@@ -6,7 +6,7 @@ using Debug = UnityEngine.Debug;
 
 namespace UV2.Data
 {
-    // reads the game's sqlcipher meta db for the asset rows phase 1 needs.
+    // reads the encrypted meta db to resolve asset names to bundle rows.
     public static class meta_reader
     {
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN

@@ -8,8 +8,7 @@ using UV2.Data;
 
 namespace UV2.Live
 {
-    // resolves a song's stage + a cast member's body bundle at runtime from the
-    // game's own master db and meta db: no prebuilt manifest, no sidecar files.
+    // resolves stage and body bundle names at runtime from the master db and meta db.
     public static class manifest_reader
     {
         // stage bundle names for a song's stage id (controller variants 000-009).
@@ -35,8 +34,7 @@ namespace UV2.Live
                 .ToList();
         }
 
-        // body bundle + prefab for (chara, dress), computed from the phase-1
-        // naming rules against the live master db.
+        // body bundle + prefab for (chara, dress), computed from the master db naming rules.
         public static (string bundle, string prefab)? chara_body(int chara_id, int dress_id)
         {
             using var db = master_db.reader.open(config.master_db_path);
@@ -54,8 +52,7 @@ namespace UV2.Live
 
             if (dress_chara != 0)
             {
-                // character-specific: one folder, one prefab, both from the
-                // ids; the meta row keys on the full folder/prefab path.
+                // character-specific: one folder and one prefab, both from the ids.
                 string folder = $"3d/chara/body/bdy{dress_chara}_{body_sub:d2}";
                 string prefab = $"pfb_bdy{dress_chara}_{body_sub:d2}";
                 return ($"{folder}/{prefab}", prefab);
@@ -70,8 +67,7 @@ namespace UV2.Live
             int shape = (int)chara.get_int(1);
             int bust = (int)chara.get_int(2);
 
-            // the variant slot is a per-dress disk fact, not a db column: probe
-            // the meta db for the real prefab name (00 first, then 01..).
+            // the variant slot is a disk fact, not a db column, so probe the meta db for the real prefab name.
             using var meta = meta_reader.reader.open(config.meta_db_path);
             if (meta == null) return null;
             for (int variant = 0; variant < 4; variant++)
@@ -87,8 +83,7 @@ namespace UV2.Live
         }
     }
 
-    // loads the slot->sequence map from the game's cutt data bundle, deserialized
-    // by the LiveTimelineData stub (characterSettings.motionSequenceIndices).
+    // loads the slot->sequence map from the song's cutt data bundle.
     public static class slot_sequences
     {
         // returns the per-song motionSequenceIndices; null when the data is absent.

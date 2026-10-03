@@ -3,11 +3,7 @@ using UnityEngine;
 
 namespace UV2.App
 {
-    // the experimental-branch bench harness: cheap per-subsystem timing, an
-    // averaged fps readout, and a buffered verbose trace (one file append
-    // per second instead of per line). everything is a no-op when
-    // config.diagnostics is off, so the main push just flips the Config.json
-    // field and the per-frame cost is a branch.
+    // bench harness: per-subsystem timing, an fps readout, and a buffered trace; a no-op unless config.diagnostics is on.
     public static class diag
     {
         private class sample
@@ -41,7 +37,6 @@ namespace UV2.App
             if (_window_start <= 0f) _window_start = Time.unscaledTime;
         }
 
-        // begins timing one subsystem pass.
         public static void begin(string name)
         {
             if (!enabled) return;
@@ -61,7 +56,6 @@ namespace UV2.App
 
         private static void flush_current()
         {
-            // a begin() without end() would eat the next pass's window.
             _current = null;
         }
 
@@ -110,9 +104,7 @@ namespace UV2.App
             _lines.Add(message);
         }
 
-        // a verbose line that goes to the trace immediately (rare events:
-        // transfers, engages, bind summaries). when diagnostics is off this
-        // still passes through to trace_log so boot lines never vanish.
+        // writes a verbose line straight to the trace, bypassing the diagnostics gate so boot lines always land.
         public static void event_line(string message)
         {
             trace_log.write(message);
