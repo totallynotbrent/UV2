@@ -8,36 +8,35 @@ using Cutt = Gallop.Live.Cutt;
 
 namespace UV2.Live
 {
-    // the props system: the cutt data asset's propsSettings.propsDataGroup names
-    // every prop instance the song can activate (chara props by major/minor id,
-    // stage dressing by the common bundle code), the formation track's
-    // ik_system=4 keys mark the stand-mic characters, and the motion clips
-    // animate the mic rig nodes (Mic_Attach_00, Mic_Attach_00_loc/Mic_Node_L/R)
-    // the live system spawns under the character's Position root.
+    // spawns and drives the song's chara props, stage dressing, and stand-mic hand ik.
     public static class props_system
     {
-        // one resolved chara prop instance: the prefab copy + its attach bone.
+        // one chara prop attached to a joint (handheld mic etc).
         private class chara_prop
         {
             public GameObject instance;
             public Transform joint;
             public string joint_name;
+            public Gallop.Live.Props data;
         }
 
-        // one planted stage-dressing instance (stand mic, taiko, light rig).
+        // one stage-dressing instance (the stand) riding an attach track.
         private class stage_prop
         {
             public GameObject instance;
             public int slot;
+            public int flag_bit;
+            public Gallop.Live.Props data;
         }
 
-        // per-character mic rig state: the spawned nodes + the last ik targets.
+
+        // per-character mic rig nodes and ik hysteresis state.
         private class mic_rig
         {
-            public Transform attach_00;        // Mic_Attach_00 under Position
-            public Transform attach_loc;       // Position/Mic_Attach_00_loc
-            public Transform node_l;           // Mic_Node_L
-            public Transform node_r;           // Mic_Node_R
+            public Transform attach_00;        // root-level, sibling of Position
+            public Transform attach_loc;        // Position/Mic_Attach_00_loc
+            public Transform node_l;           // _loc/Mic_Node_L
+            public Transform node_r;           // _loc/Mic_Node_R
             public readonly Dictionary<string, Vector3> last_target = new();
             public readonly Dictionary<string, float> last_weight = new();
             public readonly HashSet<string> engaged = new();
@@ -61,13 +60,10 @@ namespace UV2.Live
             bound = false;
         }
 
-        // resolves the song's propsDataGroup against the loaded cast, loads the
-        // prefabs, attaches chara props to the named joints, plants stage
-        // dressing at the targeted slots, and spawns the mic rig nodes for the
-        // characters the formation track marks with ik_system=4. call once after
-        // the cast phase; never throws into the caller.
+        // binds the song's props: loads prefabs, spawns mic rigs, attaches chara and stage props.
         public static void bind(List<Cutt.PropsDataGroup> groups, selection_state sel,
-            List<Transform> chara_roots, Dictionary<string, List<formation_key>> formation)
+            List<Transform> chara_roots, Dictionary<string, List<formation_key>> formation,
+            List<props_attach_track> attach_tracks, List<props_render_track> render_tracks)
         {
             reset();
             bound = true;
@@ -79,9 +75,10 @@ namespace UV2.Live
 
             int resolved = 0, unresolved = 0, attached = 0, planted = 0;
             var unresolved_names = new List<string>();
+            // settingFlags bits 1/2/4/8... address instances 0/1/2/3 in creation order.
+            int instance_index = 0;
 
-            // the characters the formation track runs mic-stand IK on: their rig
-            // nodes must exist before the clip's mic curves can bind.
+            // spawn mic rigs first so stage props can attach to their nodes.
             var mic_slots = mic_stand_slots(formation, sel.slots.Count);
             foreach (var kv in mic_slots)
             {
@@ -94,7 +91,6 @@ namespace UV2.Live
                 var g = groups[gi];
                 if (g == null) { unresolved++; unresolved_names.Add($"group {gi}: null"); continue; }
 
-                // gender-diff groups swap the major/minor by the target's sex row.
                 int major = g.charaPropsMajorId;
                 int minor = g.charaPropsMinorId;
 
@@ -140,21 +136,19 @@ namespace UV2.Live
                     }
                     else
                     {
-                        if (plant_stage_prop(prefab, g, root, slot))
-                        { planted++; resolved++; }
+                        if (attach_stage_prop(prefab, g, slot, instance_index, root))
+                        { planted++; resolved++; instance_index++; }
                         else
-                        { unresolved++; unresolved_names.Add($"group {gi} '{g.propsName}' slot {slot}: plant failed"); }
+                        { unresolved++; unresolved_names.Add($"group {gi} '{g.propsName}' slot {slot}: attach failed"); }
                     }
                 }
             }
 
-            trace_log.write($"props: {groups.Count} groups -> {resolved} resolved, {unresolved} unresolved, {attached} chara props attached, {planted} stage props planted, {rigs.Count} mic rigs");
+            trace_log.write($"props: {groups.Count} groups -> {resolved} resolved, {unresolved} unresolved, {attached} chara props attached, {planted} stage props attached, {rigs.Count} mic rigs");
             foreach (var n in unresolved_names) trace_log.write($"props unresolved: {n}");
         }
 
-        // the slots the formation track runs ik_system=4 (mic stand) on, with
-        // the count of mic keys each carries; the worksheet's group name maps to
-        // the selection slot the same way the formation driver does.
+        // slots running ik_system=4 (mic stand) with their mic key counts.
         private static Dictionary<int, int> mic_stand_slots(Dictionary<string, List<formation_key>> formation, int slot_total)
         {
             var found = new Dictionary<int, int>();
@@ -171,8 +165,7 @@ namespace UV2.Live
             return found;
         }
 
-        // worksheet group name -> 1-based selection slot (center=1, left1=2,
-        // right1=3, left2=4, right2=5, place06..20 -> 6..20).
+        // worksheet group name -> 1-based slot (center=1, left1=2, right1=3, left2=4, right2=5, place06..20 -> 6..20).
         private static int formation_slot(string group)
         {
             switch (group)
@@ -189,9 +182,7 @@ namespace UV2.Live
             }
         }
 
-        // the slots a group targets: the condition list names positions (the
-        // any-of semantics the census shows), chara/dress ids pin a member, no
-        // conditions means slot 1 (the game's default-attach path).
+        // the slots a group targets; empty conditions default to the first member.
         private static List<int> target_slots(Cutt.PropsDataGroup g, selection_state sel, int major)
         {
             var slots = new List<int>();
@@ -204,9 +195,6 @@ namespace UV2.Live
             {
                 if (cg == null) continue;
                 bool all = cg.satisfiesAllConditions != 0;
-                // satisfiesAll rows AND their conditions; any-of rows OR them.
-                // position/chara/dress each match a slot; a row with no match
-                // under AND semantics disqualifies the whole group row.
                 var row_slots = new List<int>();
                 foreach (var c in cg.propsConditionData)
                 {
@@ -216,8 +204,6 @@ namespace UV2.Live
                 }
                 if (all)
                 {
-                    // every condition must name the same member: rows that pin
-                    // several different members match none.
                     if (row_slots.Count == cg.propsConditionData.Count)
                         foreach (var s in row_slots) if (!slots.Contains(s)) slots.Add(s);
                 }
@@ -247,8 +233,7 @@ namespace UV2.Live
             }
         }
 
-        // the gender-diff swap: the chara_data row's sex picks the id pair the
-        // game stores (sex 1 = female, 2 = male in the db's coding).
+        // picks the male/female prop id pair from the character's sex (1 = female, 2 = male).
         private static (int major, int minor) gender_ids(Cutt.PropsDataGroup g, selection_state sel, int slot)
         {
             int sex = chara_sex(sel, slot);
@@ -271,9 +256,7 @@ namespace UV2.Live
             catch { return 0; }
         }
 
-        // loads a chara prop prefab by kind + major/minor id from the game's
-        // 3d/chara/<kind> tree; falls back down the minor series (the game's
-        // own fallback shape) when the exact minor is absent.
+        // loads a chara prop prefab from the 3d/chara tree, falling back down the minor series.
         private static GameObject load_chara_prop(bool toon, bool rich, int major, int minor)
         {
             string kind = rich ? "richprop" : toon ? "toonprop" : "prop";
@@ -303,8 +286,7 @@ namespace UV2.Live
             return null;
         }
 
-        // loads a stage-dressing prefab from the common prop bundle tree by
-        // the propsName code the cutt data carries (001 -> prop001).
+        // loads a stage prop prefab by propsName code (001 -> prop001) from the common bundle tree.
         private static GameObject load_stage_prop(string props_name)
         {
             if (string.IsNullOrEmpty(props_name)) return null;
@@ -326,20 +308,57 @@ namespace UV2.Live
             return bundle.LoadAsset<GameObject>(asset);
         }
 
-        // the attach order the game's authored joint lists show: the mic anchor
-        // first (a handheld mic rides Mic_Attach_00, never the _loc locator),
-        // then the locators, then the hands.
+        // joint attach priority: mic anchor first, then hands.
         private static readonly string[] joint_priority =
         {
             "Mic_Attach_00", "Hand_Attach_R", "Hand_Attach_L", "Elbow_R", "Elbow_L",
             "Waist", "Position", "Head",
         };
 
-        // attaches one chara prop copy to the best joint the group names on
-        // this character; the mic anchor wins when the group lists it, with a
-        // hand fallback (the game's handheld mic rides the hand when the rig
-        // carries no mic anchor: the attach node list is advisory candidate
-        // anchors, v1's resolution order).
+        // the stand-mic pole telescope: the game's Props::SetScale, decoded from the dump
+        // (uv2_props_adjustment_decoded.md). runs once at prop spawn, never per-frame.
+        private static void apply_telescope(Gallop.Live.Props props, Transform chara_root, string prop_name, int slot)
+        {
+            if (props == null || props._adjustmentDataArray == null || props._adjustmentDataArray.Length == 0) return;
+
+            Transform head = find_bone(chara_root, "Head");
+            Transform position_node = find_bone(chara_root, "Position");
+            if (head == null || position_node == null)
+            {
+                trace_log.write($"props: telescope '{prop_name}' slot {slot}: no Head/Position on the character, skipping");
+                return;
+            }
+
+            // D = 2*(hipOffsetY*bodyScale) + headY - positionNodeY; the live path has no hip
+            // offset source (master.mdb carries only story/homestory tables), so hip term = 0.
+            float head_y = head.position.y;
+            float position_y = position_node.position.y;
+            float d = head_y - position_y;
+            if (props._isInfluenceOfCharaHeight != 0)
+            {
+                float body_scale = chara_root.localScale.y;
+                if (body_scale > 0f) d /= body_scale;
+            }
+
+            foreach (var adj in props._adjustmentDataArray)
+            {
+                if (adj == null || adj.Transform == null) continue;
+                Vector3 rate = adj.TransformRate;
+                if (rate.x == 0f) rate.x = 1f;
+                if (rate.y == 0f) rate.y = 1f;
+                if (rate.z == 0f) rate.z = 1f;
+                Vector3 target = adj.TargetOffset;
+                Vector3 range = adj.OffsetRange;
+                // only Y telescopes; X and Z add zero, matching the game's VECTOR3_ZERO lanes.
+                adj.Transform.localPosition = new Vector3(
+                    (target.x - range.x) * rate.x,
+                    (target.y + d - range.y) * rate.y,
+                    (target.z - range.z) * rate.z);
+            }
+            trace_log.write($"props: telescope '{prop_name}' slot {slot}: headY={head_y:0.000} posNodeY={position_y:0.000} D={d:0.000} ({props._adjustmentDataArray.Length} element(s) adjusted)");
+        }
+
+        // attaches a chara prop to the best available joint on the character.
         private static bool attach_chara_prop(GameObject prefab, Cutt.PropsDataGroup g, Transform root, int slot)
         {
             var names = g.attachJointNames;
@@ -361,8 +380,6 @@ namespace UV2.Live
             }
             if (best == null)
             {
-                // the rig carries no named anchor: fall back to the hands the
-                // joints list implies (Hand_Attach_R then L), never drop.
                 foreach (var n in joint_priority)
                 {
                     if (n.StartsWith("Mic_")) continue;
@@ -381,52 +398,54 @@ namespace UV2.Live
             instance.transform.localRotation = Quaternion.identity;
             instance.transform.localScale = Vector3.one;
             shader_manager.fix_game_shaders(instance.transform, "props");
-            chara_props.Add(new chara_prop { instance = instance, joint = best, joint_name = best_name });
+            var props_data = instance.GetComponentInChildren<Gallop.Live.Props>(true);
+            apply_telescope(props_data, root, instance.name, slot);
+            chara_props.Add(new chara_prop { instance = instance, joint = best, joint_name = best_name, data = props_data });
+
             trace_log.write($"props: chara prop {g.charaPropsMajorId}_{g.charaPropsMinorId:00} -> slot {slot} joint '{best_name}' ({instance.GetComponentsInChildren<Renderer>(true).Length} renderers)");
             return true;
         }
 
-        // plants one stage-dressing copy at the performer's feet: the stand
-        // mic prefab roots at its base so position zero lands base-down, and
-        // parenting under the character node inherits the formation glide.
-        private static bool plant_stage_prop(GameObject prefab, Cutt.PropsDataGroup g, Transform root, int slot)
+        // attaches a stage prop to the slot's mic rig _loc node so it rides the rig.
+        private static bool attach_stage_prop(GameObject prefab, Cutt.PropsDataGroup g, int slot, int instance_index, Transform chara_root)
         {
-            var instance = UnityEngine.Object.Instantiate(prefab, root);
+            var rig = rigs.TryGetValue(slot, out var r) ? r : null;
+            if (rig == null || rig.attach_loc == null)
+            {
+                trace_log.write($"props: stage prop '{g.propsName}' slot {slot}: no mic rig on this slot, skipping");
+                return false;
+            }
+
+            var instance = UnityEngine.Object.Instantiate(prefab);
             instance.name = $"prop_stage_{g.propsName}_slot{slot}";
+            shader_manager.fix_game_shaders(instance.transform, "props");
+            var props_data = instance.GetComponentInChildren<Gallop.Live.Props>(true);
+            apply_telescope(props_data, chara_root, g.propsName, slot);
+            instance.transform.SetParent(rig.attach_loc, false);
             instance.transform.localPosition = Vector3.zero;
             instance.transform.localRotation = Quaternion.identity;
             instance.transform.localScale = Vector3.one;
-            shader_manager.fix_game_shaders(instance.transform, "props");
-            stage_props.Add(new stage_prop { instance = instance, slot = slot });
-            // the character node origin is the performer's feet; the stand
-            // prefab's own origin sits mid-pole (the mesh bounds span both
-            // sides of zero), so lift the root by its bounds bottom so the
-            // base lands on the floor instead of sinking under it.
-            var renderers = instance.GetComponentsInChildren<Renderer>(true);
-            if (renderers.Length > 0)
+
+            var sp = new stage_prop
             {
-                var b = renderers[0].bounds;
-                for (int i = 1; i < renderers.Length; i++) b.Encapsulate(renderers[i].bounds);
-                float lift = root.position.y - b.min.y;
-                var lp = instance.transform.localPosition;
-                instance.transform.localPosition = new Vector3(lp.x, lp.y + lift, lp.z);
-                var after = renderers[0].bounds;
-                for (int i = 1; i < renderers.Length; i++) after.Encapsulate(renderers[i].bounds);
-                trace_log.write($"props: stage prop '{g.propsName}' bounds y [{b.min.y:0.000}..{b.max.y:0.000}] lifted {lift:0.000} -> [{after.min.y:0.000}..{after.max.y:0.000}] vs chara root y {root.position.y:0.000}");
-            }
-            trace_log.write($"props: stage prop '{g.propsName}' planted at slot {slot} ({renderers.Length} renderers)");
+                instance = instance,
+                slot = slot,
+                flag_bit = 1 << instance_index, // 1/2/4: the instance the tracks address
+                data = props_data,
+            };
+
+            stage_props.Add(sp);
+            trace_log.write($"props: stage prop '{g.propsName}' attached to slot {slot}'s Mic_Attach_00_loc (flag bit {sp.flag_bit}, {instance.GetComponentsInChildren<Renderer>(true).Length} renderers)");
             return true;
         }
 
-        // spawns the runtime mic rig nodes under the character's Position root:
-        // the motion clip animates Position/Mic_Attach_00_loc/Mic_Node_L/R, so
-        // the nodes must exist with exactly those names under that parent or
-        // the clip's mic curves silently no-op.
+        // spawns the mic rig nodes at the paths the motion clips animate.
         private static void spawn_mic_rig(int slot, Transform chara_root)
         {
-            var position = find_bone(chara_root, "Position");
+            Transform position = find_bone(chara_root, "Position");
             if (position == null) { trace_log.write($"props: mic rig slot {slot}: no Position root on the character"); return; }
 
+            // _loc under Position: the clip animates Position/Mic_Attach_00_loc.
             var attach_loc = find_bone(position, "Mic_Attach_00_loc");
             if (attach_loc == null)
             {
@@ -434,12 +453,17 @@ namespace UV2.Live
                 attach_loc = go.transform;
                 attach_loc.SetParent(position, false);
             }
-            Transform attach_00 = find_bone(position, "Mic_Attach_00");
+            Transform attach_00 = null;
+            for (int i = 0; i < chara_root.childCount; i++)
+            {
+                var ch = chara_root.GetChild(i);
+                if (ch.name == "Mic_Attach_00") { attach_00 = ch; break; }
+            }
             if (attach_00 == null)
             {
                 var go = new GameObject("Mic_Attach_00");
                 attach_00 = go.transform;
-                attach_00.SetParent(position, false);
+                attach_00.SetParent(chara_root, false);
             }
             var node_l = find_bone(attach_loc, "Mic_Node_L");
             if (node_l == null)
@@ -462,7 +486,7 @@ namespace UV2.Live
                 node_l = node_l,
                 node_r = node_r,
             };
-            trace_log.write($"props: mic rig spawned for slot {slot} (Mic_Attach_00 + Mic_Attach_00_loc/Mic_Node_L/R under Position)");
+            trace_log.write($"props: mic rig spawned for slot {slot} (Mic_Attach_00 at chara root + Position/Mic_Attach_00_loc/Mic_Node_L/R)");
         }
 
         // depth-first transform search with a per-character cache.
@@ -485,17 +509,67 @@ namespace UV2.Live
             return found;
         }
 
-        // per-frame: drives the stand-mic hand IK for every rigged slot. the
-        // formation track's current key selects the mic system and carries the
-        // L/R enable gates + High/Low offset pairs (lerped between keys the way
-        // the game's formation consumer does); the stand-node update's decoded
-        // height band picks the target + weight: at/above high -> full pull,
-        // between high and low -> the per-character height rate, below -> the
-        // last target keeps tracking (state 4).
-        public static void update(float time_sec, Dictionary<string, List<formation_key>> formation, List<Transform> chara_roots)
+        // drives the attach and render tracks and the stand-mic hand ik each frame.
+        public static void update(float time_sec, Dictionary<string, List<formation_key>> formation,
+            List<Transform> chara_roots, List<props_attach_track> attach_tracks,
+            List<props_render_track> render_tracks)
         {
-            if (!bound || rigs.Count == 0 || formation == null) return;
+            if (!bound) return;
 
+            float frame = time_sec * 60f;
+
+            // each stage prop pairs with track entries matching its settingFlags bit.
+            if (stage_props.Count > 0)
+            {
+                foreach (var sp in stage_props)
+                {
+                    bool visible = true;
+                    foreach (var t in render_tracks)
+                    {
+                        if (t.keys.Count == 0) continue;
+                        if (key_frame_bracket(t.keys, frame, out var rcur, out var rnext) < 0) continue;
+                        if ((rcur.setting_flags & sp.flag_bit) == 0) continue;
+                        // rendererEnable is a step value per key.
+                        visible = rcur.renderer_enable != 0;
+                        break;
+                    }
+                    if (sp.instance != null && sp.instance.activeSelf != visible)
+                        sp.instance.SetActive(visible);
+
+                    if (!rigs.TryGetValue(sp.slot, out var rig) || sp.instance == null) continue;
+                    foreach (var t in attach_tracks)
+                    {
+                        if (t.keys.Count == 0) continue;
+                        if (key_frame_bracket(t.keys, frame, out var cur, out var next) < 0) continue;
+                        if ((cur.setting_flags & sp.flag_bit) == 0) continue;
+
+                        // the joint switch: stand _loc vs the picked-up Mic_Attach_00.
+                        Transform parent = cur.attach_joint_name == "Mic_Attach_00" && rig.attach_00 != null
+                            ? rig.attach_00
+                            : rig.attach_loc;
+                        if (sp.instance.transform.parent != parent)
+                        {
+                            sp.instance.transform.SetParent(parent, false);
+                            trace_log.write($"props: slot {sp.slot} stand transferred to {cur.attach_joint_name} at f{cur.frame} (t={time_sec:0.0}s)");
+                        }
+                        Vector3 off = cur.offset_position;
+                        if (next != null && (next.setting_flags & sp.flag_bit) != 0)
+                        {
+                            float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, time_sec));
+                            off = key_eval.lerp_v3(cur.offset_position, next.offset_position, k);
+                        }
+                        sp.instance.transform.localPosition = off;
+                        sp.instance.transform.localRotation = Quaternion.Euler(cur.offset_rotate);
+                        Vector3 sc = cur.offset_scale;
+                        if (sc.x > 0f || sc.y > 0f || sc.z > 0f) sp.instance.transform.localScale = sc;
+                        break;
+                    }
+                }
+            }
+
+            if (rigs.Count == 0 || formation == null) return;
+
+            // stand-mic hand ik for the mic-keyed slots.
             foreach (var kv in formation)
             {
                 int slot = formation_slot(kv.Key);
@@ -510,8 +584,6 @@ namespace UV2.Live
 
                 if (cur.ik_system != 4)
                 {
-                    // off the mic section: release both hands so a finished
-                    // stand pass never leaves a hand pinned.
                     clear_hand(rig, "L");
                     clear_hand(rig, "R");
                     continue;
@@ -522,8 +594,6 @@ namespace UV2.Live
 
                 float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, time_sec));
 
-                // the offsets interpolate between keys like the game's
-                // CalculateInterpolationValue formation consumer.
                 Vector3 l_high = cur.ik_l_high, l_low = cur.ik_l_low;
                 Vector3 r_high = cur.ik_r_high, r_low = cur.ik_r_low;
                 if (next != null && next.ik_system == 4)
@@ -542,7 +612,26 @@ namespace UV2.Live
             }
         }
 
-        // clears one side's tracking state when its gate is off.
+        // brackets a props key list by frame; returns the index, current + next key.
+        private static int key_frame_bracket<T>(List<T> keys, float frame, out T cur, out T next) where T : live_key
+        {
+            cur = null; next = null;
+            if (keys == null || keys.Count == 0) return -1;
+            if (frame <= keys[0].frame) { cur = keys[0]; next = keys.Count > 1 ? keys[1] : null; return 0; }
+            int last = keys.Count - 1;
+            if (frame >= keys[last].frame) { cur = keys[last]; next = null; return last; }
+            for (int i = 0; i < last; i++)
+            {
+                if (frame >= keys[i].frame && frame < keys[i + 1].frame)
+                {
+                    cur = keys[i];
+                    next = keys[i + 1];
+                    return i;
+                }
+            }
+            return -1;
+        }
+
         private static void clear_hand(mic_rig rig, string side)
         {
             rig.last_target.Remove(side);
@@ -550,7 +639,6 @@ namespace UV2.Live
             rig.engaged.Remove(side);
         }
 
-        // the character's arm bone names per side (the body rig's chain).
         private static string arm_bone(string side, int index) => index switch
         {
             0 => side == "L" ? "Arm_L" : "Arm_R",
@@ -558,13 +646,7 @@ namespace UV2.Live
             _ => side == "L" ? "Wrist_L" : "Wrist_R",
         };
 
-        // one hand's pull toward its mic node: the decoded stand-node band
-        // picks the target + ik strength (height >= high -> full weight on the
-        // high target, >= low -> the per-character height rate on the low
-        // target, below -> keep tracking the last target), then an analytic
-        // two-bone solve (the game's IKSolverLimb path) bends the shoulder ->
-        // elbow -> wrist chain toward it. the offset applies in the
-        // character's local space (TransformVector) like the component write.
+        // aims one hand at its mic node and solves the arm chain toward it.
         private static void aim_hand(Transform chara, Transform node, Vector3 low_off, Vector3 high_off, int slot, string side)
         {
             if (node == null) return;
@@ -587,15 +669,11 @@ namespace UV2.Live
             }
             else if (hand_y >= low_target.y)
             {
-                // between the thresholds the game applies the character's
-                // height rate (ModelController::GetHeightRate) as ik strength.
                 weight = height_rate(chara);
                 target = rig.last_target.TryGetValue(side, out var last) ? last : low_target;
             }
             else
             {
-                // below the low threshold the stand-node keeps tracking (state 4):
-                // persist the previous target + strength rather than forcing low.
                 weight = rig.last_weight.TryGetValue(side, out var w) ? w : 0.6f;
                 target = rig.last_target.TryGetValue(side, out var t) ? t : low_target;
             }
@@ -605,20 +683,14 @@ namespace UV2.Live
             if (!rig.engaged.Contains(side))
             {
                 rig.engaged.Add(side);
-                trace_log.write($"props: mic ik engaged slot {slot} {side} hand (target {target}, weight {weight:0.00})");
+                trace_log.write($"props: mic ik engaged slot {slot} {side} hand (node {node.position}, target {target}, weight {weight:0.00})");
             }
 
-            // the band weight scales the pull: the solve runs toward the
-            // current-pose-to-target lerp point, not the raw target.
             Vector3 pull = Vector3.Lerp(wrist.position, target, Mathf.Clamp01(weight));
             solve_two_bone(shoulder, elbow, wrist, pull);
         }
 
-        // analytic two-bone ik in world space: keeps the elbow's bend plane,
-        // clamps the target to the chain's reach, and writes the shoulder then
-        // elbow rotations with world FromToRotation (each write updates the
-        // child chain's world pose before the next read, like the game's
-        // limb solver passes).
+        // analytic two-bone ik in world space, keeping the elbow's bend plane.
         private static void solve_two_bone(Transform shoulder, Transform elbow, Transform wrist, Vector3 target)
         {
             Vector3 root = shoulder.position;
@@ -629,12 +701,9 @@ namespace UV2.Live
             float b = Vector3.Distance(mid, end);
             if (a <= 0f || b <= 0f) return;
 
-            // clamp into the reachable annulus so degenerate poses never fold.
             float d = Vector3.Distance(root, target);
             d = Mathf.Clamp(d, Mathf.Abs(a - b) + 0.0001f, a + b - 0.0001f);
 
-            // the bend plane: the elbow's current offset from the root-target
-            // line keeps the arm's authored bend direction.
             Vector3 root_to_target = target - root;
             float line_len = root_to_target.magnitude;
             Vector3 line_dir = line_len > 0.0001f ? root_to_target / line_len : Vector3.up;
@@ -645,19 +714,16 @@ namespace UV2.Live
                     ? Vector3.Cross(line_dir, Vector3.up).normalized
                     : Vector3.Cross(line_dir, Vector3.right).normalized;
 
-            // the law of cosines places the elbow on the bend plane.
             float cos_root = Mathf.Clamp((a * a + d * d - b * b) / (2f * a * d), -1f, 1f);
             float along = a * cos_root;
             float out_len = a * Mathf.Sqrt(Mathf.Max(0f, 1f - cos_root * cos_root));
             Vector3 new_mid = root + line_dir * along + perp.normalized * out_len;
 
-            // rotate the shoulder to the new elbow, then the elbow to the target.
             apply_world_rotation(shoulder, mid - root, new_mid - root);
             apply_world_rotation(elbow, target - new_mid, target - elbow.position);
         }
 
-        // rotates one bone so its world-space direction vector turns from the
-        // current heading to the desired heading (post-animation ik pass).
+        // rotates a bone from one world-space heading to another (post-animation pass).
         private static void apply_world_rotation(Transform bone, Vector3 from, Vector3 to)
         {
             float from_mag = from.magnitude;
@@ -671,9 +737,7 @@ namespace UV2.Live
             bone.rotation = turn * bone.rotation;
         }
 
-        // the character's height rate from the local scale product (the
-        // decoded GetHeightRate transform; the viewer applies no parent scale
-        // so lossyScale carries the product).
+        // the character's height rate from its lossy y scale.
         private static float height_rate(Transform chara)
         {
             float total_scale = Mathf.Max(0.01f, chara.lossyScale.y);

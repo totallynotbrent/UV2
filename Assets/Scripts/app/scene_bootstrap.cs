@@ -20,8 +20,7 @@ namespace UV2.App
                 stage_loader.force_free_clock = free_clock;
                 var cam_go = new GameObject("main_camera", typeof(Camera));
                 var cam = cam_go.GetComponent<Camera>();
-                // the game's live camera: perspective, near 1/far 100, skybox
-                // clear; the fov/position come from the worksheet camera keys.
+                // live camera defaults; the fov/position come from the worksheet camera keys.
                 cam.clearFlags = CameraClearFlags.Skybox;
                 cam.orthographic = false;
                 cam.fieldOfView = 60f;
@@ -38,7 +37,7 @@ namespace UV2.App
             }
         }
 
-        // writes song jackets and character icons beside the exe as pngs, for the desktop launcher.
+        // writes song jackets and character icons beside the exe as pngs.
         public static void dump_icons()
         {
             try
@@ -97,7 +96,7 @@ namespace UV2.App
             }
         }
 
-        // writes the shader bundle's pathID -> name map beside the exe, for offline decoding.
+        // writes the shader bundle's pathID -> name map beside the exe.
         public static void dump_shader_map()
         {
             try
@@ -131,8 +130,7 @@ namespace UV2.App
             }
         }
 
-        // diagnostic: loads a cutt camera bundle and reports how the worksheet MB
-        // binds against our stub types, isolating container-vs-type resolution.
+        // diagnostic: loads a cutt camera bundle and reports how the worksheet binds against the stub types.
         public static void probe_cutt_binding()
         {
             try
@@ -147,7 +145,6 @@ namespace UV2.App
                 foreach (var n in bundle.GetAllAssetNames())
                     Debug.Log($"[probecutt] container: {n}");
 
-                // try the concrete stub type
                 var typed = bundle.LoadAllAssets<Gallop.Live.Cutt.LiveTimelineWorkSheet>();
                 Debug.Log($"[probecutt] LoadAllAssets<LiveTimelineWorkSheet>: {typed.Length}");
                 foreach (var t in typed)
@@ -162,24 +159,19 @@ namespace UV2.App
                     Debug.Log($"[probecutt]   formation groups: center={t.formationOffsetSet?.centerKeys?.thisList?.Count ?? -1}");
                 }
 
-                // try plain MonoBehaviour: what does unity hand back unbound?
                 var mbs = bundle.LoadAllAssets<MonoBehaviour>();
                 Debug.Log($"[probecutt] LoadAllAssets<MonoBehaviour>: {mbs.Length}");
                 foreach (var mb in mbs)
                     Debug.Log($"[probecutt]   mb: {(mb == null ? "NULL" : mb.name + " type=" + mb.GetType().Name)}");
 
-                // try ScriptableObject-typed load
                 var sos = bundle.LoadAllAssets<ScriptableObject>();
                 Debug.Log($"[probecutt] LoadAllAssets<ScriptableObject>: {sos.Length}");
 
-                // try LoadAsset by full container path with the stub type
                 var by_path = bundle.LoadAsset<Gallop.Live.Cutt.LiveTimelineWorkSheet>(
                     "assets/_gallopresources/bundle/resources/cutt/cutt_son1004/son1004_camera.asset");
                 Debug.Log($"[probecutt] LoadAsset by path: {(by_path == null ? "NULL" : by_path.name + " len=" + by_path.TotalTimeLength)}");
 
-                // probe the data prefab bundle AND the data SO bundle: the control
-                // component lives on the prefab, the SO it references lives in
-                // cutt/cutt_son1004/data and must be loaded for the PPtr to resolve.
+                // probe the data prefab bundle plus the SO bundle it references, so the control's PPtr resolves.
                 var rows2 = meta.lookup(new HashSet<string> { "cutt/cutt_son1004/cutt_son1004", "cutt/cutt_son1004/data" });
                 var row2 = rows2.GetValueOrDefault("cutt/cutt_son1004/cutt_son1004");
                 var row_so = rows2.GetValueOrDefault("cutt/cutt_son1004/data");
@@ -204,12 +196,10 @@ namespace UV2.App
                         var go = UnityEngine.Object.Instantiate(main[0]);
                         foreach (var c in go.GetComponentsInChildren<UnityEngine.Component>(true))
                             Debug.Log($"[probecutt]   comp: {(c == null ? "MISSING SCRIPT" : c.GetType().Name + " on " + c.gameObject.name)}");
-                        // the control component binds, then its data field resolves the SO
                         var ctrl = go.GetComponentInChildren<Gallop.Live.Cutt.LiveTimelineControl>(true);
                         var td = ctrl != null ? ctrl.data : null;
                         Debug.Log($"[probecutt]   LiveTimelineControl: {(ctrl == null ? "NO" : "bound")}");
                         Debug.Log($"[probecutt]   LiveTimelineData: {(td == null ? "NO" : "YES timeLength=" + td.timeLength + " msi=" + (td.characterSettings != null ? td.characterSettings.motionSequenceIndices.Count : -1) + " worksheets=" + (td.worksheetList != null ? td.worksheetList.Count : -1))}");
-                        // the data SO directly from this bundle
                         var dso = b2.LoadAllAssets<Gallop.Live.Cutt.LiveTimelineData>();
                         Debug.Log($"[probecutt] data LoadAllAssets<LiveTimelineData>: {dso.Length}");
                         foreach (var s in dso)

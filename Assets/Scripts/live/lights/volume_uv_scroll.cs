@@ -5,20 +5,14 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // drives the worksheet's volumeLightKeys (the sun-shafts shaft light: the
-    // first enabled entry's power/color feed a bloom lift + tint on the
-    // game's post effect) and uvScrollLightList (per-material stage uv
-    // scroll: the entry name names the stage material, the keys lerp both
-    // mul colors + power + the scroll offsets/speeds the game's controller
-    // scrolls the material UVs by).
+    // drives the worksheet's volume light (bloom lift + tint) and uv material scroll tracks.
     public static class volume_uv_scroll
     {
         // the volume side: the resolved entry count + whether any key is enabled.
         private static int _volume_entries;
         private static int _volume_enabled;
 
-        // the uvScroll side: every material the loaded stage carries, by the
-        // asset name the worksheet's entry names.
+        // every stage material by asset name, for the uv scroll entries.
         private static readonly Dictionary<string, List<Material>> stage_materials = new();
         private static readonly Dictionary<string, uv_target> uv_targets = new();
 
@@ -27,8 +21,7 @@ namespace UV2.Live
             public List<Material> materials = new();
         }
 
-        // records one loaded stage hierarchy's materials; call for every root
-        // the stage phase instantiates (safe to call repeatedly).
+        // records one loaded stage hierarchy's materials, safe to call repeatedly.
         public static void record_stage_materials(Transform root)
         {
             if (root == null) return;
@@ -47,8 +40,7 @@ namespace UV2.Live
             }
         }
 
-        // clears the recorded stage materials; call at open, before the stage
-        // phase (a new song must not inherit the previous stage's materials).
+        // clears the recorded stage materials so a new song inherits nothing.
         public static void reset()
         {
             stage_materials.Clear();
@@ -57,10 +49,7 @@ namespace UV2.Live
             _volume_enabled = 0;
         }
 
-        // resolves the uvScroll entries against the recorded stage materials
-        // (the entry name is the material asset name, e.g.
-        // mtl_env_live10117_uv_light000); the game's own controller resolves
-        // by TimelineNameHash over the stage hierarchy.
+        // counts the volume entries and resolves the uv scroll entries against the stage materials by name.
         public static void bind(List<volume_track_container> volume_tracks,
                                 List<uv_scroll_track_container> uv_tracks)
         {
@@ -102,9 +91,7 @@ namespace UV2.Live
             foreach (var m in missing) trace_log.write($"uv scroll light unresolved: {m}");
         }
 
-        // the volume side: publishes the first enabled entry's lerped
-        // power/color as a shader-global bloom lift + tint the way the
-        // game's GallopImageEffect consumes them.
+        // publishes the first enabled entry's lerped power/color as shader-global bloom lift + tint.
         public static void update_volume(float time_sec, List<volume_track_container> tracks)
         {
             if (tracks == null || tracks.Count == 0) return;
@@ -116,20 +103,17 @@ namespace UV2.Live
                 var (power, color, ok) = t.sample(frame);
                 if (!ok) continue;
 
-                // the decoded fold: BlinkLightBrightnessPower folds into color1
-                // when the sync-blinklight attribute rides the key.
+                // the entry's brightness power multiplies into the tint color.
                 color *= t.brightness_power;
 
-                // the game's image effect: lift = min(power*0.02, 1.2), tint = color.
+                // lift = min(power * 0.02, 1.2); tint = color.
                 Shader.SetGlobalFloat(id_volume_lift, Mathf.Min(power * 0.02f, 1.2f));
                 Shader.SetGlobalColor(id_volume_tint, color);
                 return;
             }
         }
 
-        // the uvScroll side: publishes every resolved material's lerped
-        // colors/power/offset/speed each frame; the game's controller writes
-        // only onto materials that carry the properties and scrolls _MainTex.
+        // publishes the lerped colors, power, and scroll offset onto every resolved material each frame.
         public static void update_uv_scroll(float time_sec, List<uv_scroll_track_container> tracks)
         {
             if (tracks == null || uv_targets.Count == 0) return;
@@ -141,8 +125,7 @@ namespace UV2.Live
                 if (!uv_targets.TryGetValue(t.name, out var target)) continue;
                 var (color0, color1, power, offset, speed) = t.sample(frame);
 
-                // the scroll offset advances by speed * elapsed seconds since
-                // the current key (the game's UVScrollLightController).
+                // the scroll offset advances by speed * seconds since the current key.
                 float elapsed = t.elapsed_seconds(frame);
                 Vector2 scrolled = offset + speed * elapsed;
 
@@ -202,7 +185,7 @@ namespace UV2.Live
         }
     }
 
-    // one volumeLight key (the schema's sunPosition rides the effect too).
+    // one volumeLight key.
     [Serializable]
     public class volume_key
     {
@@ -263,7 +246,7 @@ namespace UV2.Live
             return (c0, c1, power, offset, speed);
         }
 
-        // seconds elapsed since the current key (the game's progressTime).
+        // seconds elapsed since the current key.
         public float elapsed_seconds(float frame)
         {
             if (keys == null || keys.Count == 0) return 0f;

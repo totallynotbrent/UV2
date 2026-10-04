@@ -5,10 +5,7 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // drives the worksheet's spotlight3d containers over the stage
-    // hierarchy: the container name maps to the stage object, the keys
-    // drive the transform + color per frame, position += the character
-    // anchor the way the game's consumer does.
+    // drives the worksheet's spotlight3d containers over the stage hierarchy.
     public static class spot_lights
     {
         private class spot_container
@@ -20,8 +17,7 @@ namespace UV2.Live
         }
         private static readonly Dictionary<string, spot_container> containers = new();
 
-        // binds the containers from the worksheet's spotlight3d list against
-        // the recorded stage children; call once after the stage phase.
+        // binds the containers from the spotlight tracks against the recorded stage children.
         public static void bind(List<spot_track_container> tracks)
         {
             containers.Clear();
@@ -47,8 +43,7 @@ namespace UV2.Live
             foreach (var m in missing) trace_log.write($"spot light unresolved: {m}");
         }
 
-        // the spotlight asset name resolves against the stage hierarchy's
-        // named children (the blink_lights map) or a live search.
+        // resolves the asset name against the stage map, falling back to a live scene search.
         private static GameObject stage_object(string asset_name)
         {
             var go = blink_lights.find_stage_object(asset_name);
@@ -123,7 +118,7 @@ namespace UV2.Live
             Color color = Color.Lerp(a.color, b.color, blend);
             float power = Mathf.Lerp(a.color_power, b.color_power, blend);
             bool active = (blend < 0.5f ? a.is_active : b.is_active) != 0;
-            // position += the character anchor (the game's characterPosition).
+            // offset the position by the key's character anchor.
             Vector3 anchor = chara_anchor(blend < 0.5f ? a : b, chara_roots);
             pos += anchor;
             return (pos, rot, scale, color, power, active);

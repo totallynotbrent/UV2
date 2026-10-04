@@ -5,12 +5,7 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // drives the worksheet's AdditionalLightList: the game spawns one Unity
-    // Light per entry and the consumer lerps position/rotate/range/angle/
-    // strength/bias/near-plane between keys each frame (IsEnable + Type copy
-    // raw), with the ShadowType remap the decoded consumer applies
-    // ({0->1, 1->0, 2->2} — stored Soft->Hard publish per the game's enum
-    // order swap). UV2 keeps one Light per entry index alive.
+    // drives the worksheet's additional-light entries, one Unity light per entry.
     public static class additional_light
     {
         // one light per worksheet entry index.
@@ -54,7 +49,7 @@ namespace UV2.Live
                 light.spotAngle = info.spot_angle;
                 light.bounceIntensity = info.indirect_multiplier;
                 light.intensity = info.strength;
-                // the decoded remap: stored 0->1, 1->0, 2->2.
+                // remap the stored shadow type: 0 -> soft, 1 -> hard, else soft.
                 light.shadows = info.shadow_type switch
                 {
                     0 => LightShadows.Soft,

@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace UV2.App
 {
-    // runtime configuration: game data root path and the selection file location.
+    // runtime configuration: game data root path, frame cap, and diagnostics.
     public static class config
     {
         private static string _main_path;
@@ -14,7 +14,33 @@ namespace UV2.App
         private class config_file
         {
             public string main_path;
+            public int target_fps = 120;
+            public bool diagnostics = true;
         }
+
+        // enables the verbose trace and per-frame subsystem timing.
+        public static bool diagnostics
+        {
+            get
+            {
+                load_or_generate();
+                return _diagnostics;
+            }
+        }
+
+        private static bool _diagnostics = true;
+
+        // v-sync is off, so this cap sets the real frame rate.
+        public static int target_fps
+        {
+            get
+            {
+                load_or_generate();
+                return _target_fps;
+            }
+        }
+
+        private static int _target_fps = 120;
 
         private static string config_path
         {
@@ -25,13 +51,13 @@ namespace UV2.App
             }
         }
 
-        // first run writes Config.json with the default path so the user has a file to edit.
+        // loads config.json, generating a default one on first run.
         private static void load_or_generate()
         {
             if (_loaded) return;
             _loaded = true;
 
-            // env override beats the config file; used by tooling and container runs.
+            // the UV2_MAIN_PATH env var overrides the config file.
             string env_path = System.Environment.GetEnvironmentVariable("UV2_MAIN_PATH");
             if (!string.IsNullOrEmpty(env_path) && System.IO.Directory.Exists(env_path))
             {
@@ -41,6 +67,8 @@ namespace UV2.App
 
             string default_path = default_main_path();
             string main_path = default_path;
+            _diagnostics = true;
+            _target_fps = 120;
 
             if (File.Exists(config_path))
             {
@@ -49,6 +77,8 @@ namespace UV2.App
                     var cfg = JsonUtility.FromJson<config_file>(File.ReadAllText(config_path));
                     if (!string.IsNullOrEmpty(cfg.main_path))
                         main_path = cfg.main_path;
+                    if (cfg.target_fps > 0) _target_fps = cfg.target_fps;
+                    if (cfg.diagnostics) _diagnostics = true;
                 }
                 catch (Exception e)
                 {
@@ -57,7 +87,7 @@ namespace UV2.App
             }
             else
             {
-                var fresh = new config_file { main_path = default_path };
+                var fresh = new config_file { main_path = default_path, target_fps = 120, diagnostics = true };
                 try
                 {
                     File.WriteAllText(config_path, JsonUtility.ToJson(fresh, true));
@@ -69,10 +99,18 @@ namespace UV2.App
                 }
             }
 
+            // the parse above only turns diagnostics on, so scan the file text for an explicit "diagnostics": false.
+            try
+            {
+                if (File.Exists(config_path) && File.ReadAllText(config_path).Contains("\"diagnostics\": false"))
+                    _diagnostics = false;
+            }
+            catch { }
+
             _main_path = main_path;
         }
 
-        // the game's default install layout under the user profile, same default as viewer v1.
+        // default data install location under the user profile.
         private static string default_main_path()
         {
             return Path.Combine(

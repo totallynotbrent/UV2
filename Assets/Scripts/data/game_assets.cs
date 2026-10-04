@@ -4,8 +4,7 @@ using UnityEngine;
 
 namespace UV2.Data
 {
-    // stream wrapper that xors bytes at position >= 256 with the per-file key, so
-    // AssetBundle.LoadFromStream reads the game's encrypted bundles directly.
+    // stream wrapper that xors bytes at position >= 256 with the per-file key so AssetBundle.LoadFromStream reads encrypted bundles directly.
     public class decrypt_stream : FileStream
     {
         private readonly byte[] _fkey;
@@ -45,11 +44,10 @@ namespace UV2.Data
         }
     }
 
-    // loads named assets out of the game's own install: meta row -> decrypt stream -> AssetBundle.
+    // loads named assets from the installed game data: meta row -> decrypt stream -> AssetBundle.
     public static class game_assets
     {
-        // already-loaded bundles by hash: unity refuses to load the same bundle file
-        // twice, and shared prereqs (materials, ikcols) load repeatedly across a cast.
+        // caches loaded bundles by hash; unity refuses to load the same bundle file twice.
         private static readonly Dictionary<string, AssetBundle> loaded = new();
 
         // opens the bundle for one manifest row, reusing an already-loaded instance.
@@ -117,7 +115,6 @@ namespace UV2.Data
                 bundle.Unload(true);
                 return null;
             }
-            // kept loaded: unloading the bundle would destroy the texture handed to the ui.
             return tex;
         }
     }

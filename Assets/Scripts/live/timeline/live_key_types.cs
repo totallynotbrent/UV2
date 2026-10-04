@@ -24,8 +24,7 @@ namespace UV2.Live
         public int interpolate_type;
         public int easing_type;
 
-        // the key's authored AnimationCurve keyframes; the game evaluates the
-        // NEXT key's curve between keys, so the blend reads this list.
+        // the curve keyframes; the NEXT key's curve drives the blend toward it.
         public List<curve_key> curve = new();
 
         // seconds position of this key on the clock.
@@ -150,8 +149,7 @@ namespace UV2.Live
         public float rim_shadow_rate2;
     }
 
-    // cinematic animation-clip camera move (the cameraMotionKeys track):
-    // an authored clip samples onto a proxy transform and the camera rides it.
+    // cinematic camera move: an authored clip samples a proxy transform the camera rides.
     [Serializable]
     public class camera_motion_key : live_key
     {
@@ -190,8 +188,7 @@ namespace UV2.Live
         public List<mob_cyalume_key> keys = new();
     }
 
-    // one audience key: transform + cyalume tint + animation selection, the
-    // decoded LiveTimelineKeyAudienceData shape.
+    // one audience key: transform + cyalume tint + animation selection.
     [Serializable]
     public class audience_key : live_key
     {
@@ -249,5 +246,48 @@ namespace UV2.Live
         public List<List<motion_seq_key>> motion_sequences = new();
         public Dictionary<string, List<formation_key>> formation = new();
         public float total_frames;
+
+        // propsList = per-prop render state; propsAttachList = joint attach + offset per frame.
+        public List<props_render_track> props_render = new();
+        public List<props_attach_track> props_attach = new();
+    }
+
+    // one prop's render/visibility track; settingFlags is the slot bit (1/2/4).
+    [Serializable]
+    public class props_render_key : live_key
+    {
+        public int setting_flags;
+        public int props_id;
+        public byte renderer_enable;
+        public byte is_visible_attached_chara_linked;
+        public byte is_emissive;
+    }
+
+    [Serializable]
+    public class props_render_track
+    {
+        public string name;
+        public List<props_render_key> keys = new();
+    }
+
+    // one prop's attach track: the joint it rides plus per-frame offsets.
+    [Serializable]
+    public class props_attach_key : live_key
+    {
+        public string attach_joint_name;
+        public string copy_position_joint_name;
+        public int setting_flags;
+        public int props_id;
+        public Vector3 offset_position;
+        public Vector3 offset_rotate;
+        public Vector3 offset_scale;
+        public byte is_link_attach_bone;
+    }
+
+    [Serializable]
+    public class props_attach_track
+    {
+        public string name;
+        public List<props_attach_key> keys = new();
     }
 }

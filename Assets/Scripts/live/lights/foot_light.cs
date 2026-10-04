@@ -5,14 +5,7 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // drives the worksheet's charaFootLightKeys track over the cast: the
-    // consumer runs in the game's LATE pass (AlterLateUpdate) because the
-    // foot lights follow the per-frame character transforms. the decoded
-    // consumer walks a fixed 20-position loop, one slot per LiveCharaPosition
-    // bit: positionFlag gates the slot, hightMax/lightColor lerp between the
-    // bracketing keys, LightBlendMode/Easing copy raw from the current key.
-    // the light itself: a small spotlight at the character's feet pointed up,
-    // scaled by the lerped height and colored by the lerped color.
+    // drives the worksheet's chara foot light track: one upward spot light at each authored character's feet.
     public static class foot_light
     {
         public const int slot_count = 20;
@@ -33,7 +26,7 @@ namespace UV2.Live
             var host = new GameObject($"foot_light_{index}");
             host.transform.SetParent(chara_roots[index], false);
             host.transform.localPosition = Vector3.zero;
-            // the game's foot light washes up from the floor onto the character.
+            // aim the spot straight up from the floor.
             host.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
             var light = host.AddComponent<Light>();
             light.type = LightType.Spot;
@@ -44,16 +37,12 @@ namespace UV2.Live
             return light;
         }
 
-        // samples the track's single key list (the stub carries one
-        // LiveTimelineKeyCharaFootLightDataList, not per-slot entries) and
-        // publishes every authored slot; call from the loader's LATE update
-        // so the transforms are already posed for this frame.
+        // samples the shared key list and publishes every authored slot once the transforms are posed.
         public static void update(float time_sec, List<foot_light_key> keys, List<Transform> chara_roots)
         {
             if (keys == null || keys.Count == 0) return;
             float frame = time_sec * 60f;
 
-            // the standard bracket + blend.
             foot_light_key a, b;
             float blend;
             if (frame <= keys[0].frame) { a = b = keys[0]; blend = 0f; }
@@ -73,7 +62,7 @@ namespace UV2.Live
                 }
             }
 
-            // the decoded consumer's fixed 20-slot loop.
+            // walk the 20 position slots, gated by the key's positionFlag bits.
             for (int i = 0; i < slot_count; i++)
             {
                 if ((a.position_flag & (1 << i)) == 0) continue;
@@ -139,7 +128,7 @@ namespace UV2.Live
         public List<int> light_blend_mode_array = new();
         public List<int> easing_array = new();
 
-        // the per-slot values with the game's fallbacks when the arrays ship short.
+        // per-slot accessors with fixed fallbacks when the arrays ship short.
         public float height(int slot) =>
             height_max_array != null && slot < height_max_array.Count ? height_max_array[slot] : 1f;
         public Color color(int slot) =>

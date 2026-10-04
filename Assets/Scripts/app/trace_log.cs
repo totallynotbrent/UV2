@@ -1,11 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
 namespace UV2.App
 {
-    // writes the whole concert boot trace to uv2_trace.log beside the exe so the
-    // load chain is auditable on any machine, gpu or not.
+    // writes the concert boot trace to uv2_trace.log beside the exe.
     public static class trace_log
     {
         private static string _path;
@@ -24,6 +24,7 @@ namespace UV2.App
                 if (File.Exists(build))
                     write($"commit {File.ReadAllText(build).Trim()}");
                 write($"unity {Application.unityVersion}, gpu={SystemInfo.graphicsDeviceName}, {SystemInfo.graphicsMemorySize}mb");
+                write($"diagnostics {config.diagnostics}, target fps {config.target_fps}");
                 write($"main_path '{config.data_root}'");
             }
             catch { _path = null; }
@@ -37,6 +38,26 @@ namespace UV2.App
             try
             {
                 File.AppendAllText(_path, $"[{Time.realtimeSinceStartup - _t0,7:0.00}s] {message}\n");
+            }
+            catch { }
+        }
+
+        // a batch of trace lines in one file append.
+        public static void write(List<string> messages)
+        {
+            if (messages == null || messages.Count == 0) return;
+            if (_path == null)
+            {
+                foreach (var m in messages) Debug.Log($"[trace] {m}");
+                return;
+            }
+            try
+            {
+                var sb = new System.Text.StringBuilder();
+                float t = Time.realtimeSinceStartup - _t0;
+                foreach (var m in messages)
+                    sb.Append($"[{t,7:0.00}s] {m}\n");
+                File.AppendAllText(_path, sb.ToString());
             }
             catch { }
         }

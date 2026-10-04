@@ -5,15 +5,10 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // drives the worksheet's blink-light containers over the stage
-    // hierarchy: every instantiated stage child's name maps to its object,
-    // the driver matches the worksheet's root name against that map and
-    // publishes the per-frame power*color to the container's renderers.
-    // the trapezoid FSM (pattern/turnOn/keep/turnOff/interval) staggers
-    // per container when authored; the key track alone drives otherwise.
+    // drives the worksheet's blink-light containers over the stage hierarchy.
     public static class blink_lights
     {
-        // every instantiated stage child by name (the game's StageObjectMap).
+        // every instantiated stage child by name.
         private static readonly Dictionary<string, GameObject> stage_map = new();
         private static int map_version;
         public static int version => map_version;
@@ -29,11 +24,7 @@ namespace UV2.Live
             public MaterialPropertyBlock mpb;
         }
 
-        // records one instantiated stage child; call for every child the
-        // loader instantiates (safe to call repeatedly). fixture objects
-        // also record under their short token (spotlight3d000 from
-        // pfb_env_live_cmn_spotlight3d000) — the worksheet's asset names
-        // are the short form.
+        // records a stage child by name and aliases spotlight3d fixtures under their short token.
         public static void record_stage_child(string name, GameObject go)
         {
             if (go == null || string.IsNullOrEmpty(name)) return;
@@ -51,8 +42,7 @@ namespace UV2.Live
 
         private static int _census_done_version = -1;
 
-        // builds the container set from the worksheet's blinkLightList;
-        // re-runs when the stage map version moves.
+        // builds the container set from the blink tracks and re-runs when the stage map changes.
         public static void bind(List<blink_track_container> blink_tracks, Transform stage_root)
         {
             if (blink_tracks == null) return;
@@ -90,13 +80,11 @@ namespace UV2.Live
         // every recorded stage child; the wash driver's fixture fallback scan.
         public static IReadOnlyDictionary<string, GameObject> all_stage_children() => stage_map;
 
-        // the game's blink root names carry the pfb prefix; the worksheet
-        // names match the stage hierarchy's root objects.
+        // blink root names start with pfb_env_live and contain blinklight.
         private static bool is_blink_root_name(string name) =>
             name.StartsWith("pfb_env_live") && name.Contains("blinklight");
 
-        // samples every container's key track for the current frame and
-        // publishes power*color; call from the loader's update.
+        // samples every container's key track and publishes power*color per frame.
         public static void update(float time_sec, List<blink_track_container> blink_tracks)
         {
             if (blink_tracks == null || containers.Count == 0) return;
@@ -138,9 +126,7 @@ namespace UV2.Live
         public float keep_time;
         public float interval_time;
 
-        // the power*color at the frame: the key track brackets + lerps the
-        // per-slot arrays (slot 0 = the container's own power/color when the
-        // game addresses slots); the FSM staggers when pattern != 0.
+        // returns the lerped power*color for the frame, staggered by the pattern FSM when authored.
         public (float, Color) sample(float frame)
         {
             var (power, color) = sample_track(frame);
@@ -170,8 +156,7 @@ namespace UV2.Live
             return (0f, Color.white);
         }
 
-        // the trapezoid FSM per doc §3.2: rise -> hold -> fall -> gap;
-        // first loop rises from 0, later loops from powerMin, final falls to 0.
+        // trapezoid rise/hold/fall/gap envelope per cycle, the first loop rising from 0.
         private float fsm_factor(float frame)
         {
             float cycle = turn_on_time + keep_time + turn_off_time + interval_time;
@@ -193,8 +178,7 @@ namespace UV2.Live
             return power_min;
         }
 
-        // the pattern stagger: Ascend = idx*interval, Descend = (n-1-idx),
-        // Random = rand*interval; the container index rides the loader.
+        // pattern stagger offset, currently always zero.
         private float pattern_offset() => 0f;
     }
 

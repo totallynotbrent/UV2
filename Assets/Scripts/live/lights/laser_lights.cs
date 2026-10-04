@@ -5,12 +5,7 @@ using UV2.App;
 
 namespace UV2.Live
 {
-    // drives the worksheet's laser entries over the stage hierarchy: the
-    // entry name maps to the laser object, the keys drive the aim
-    // (degRootYaw + degLaserPitch + the authored rotate) and the blink
-    // cursor (LaserBlink 0..6, blinkPeriod SECONDS) per the decoded
-    // consumer. the fixture geometry question is the spotlight's: the
-    // worksheet side binds regardless; 0 fixtures resolve on UV2's stage.
+    // drives the worksheet's laser entries over the stage hierarchy, aiming each from its key track.
     public static class laser_lights
     {
         private class laser_container
@@ -21,9 +16,7 @@ namespace UV2.Live
         }
         private static readonly Dictionary<string, laser_container> containers = new();
 
-        // binds the containers from the worksheet's laserList; call once
-        // after the stage phase. the entry name carries the fixture name +
-        // ' - ' + object index suffix.
+        // binds the laser containers by entry name, which carries a ' - ' object index suffix.
         public static void bind(List<laser_track_container> tracks)
         {
             containers.Clear();
@@ -60,9 +53,7 @@ namespace UV2.Live
                 if (c.root == null) continue;
                 c.root.position = obj_pos;
                 c.root.localScale = obj_scale;
-                // the aim: the authored rotate x-pitch + the laser machine's
-                // root yaw, with the authored pitch swept by the blink
-                // cursor (the LaserBlink machine advances in seconds).
+                // aim from the authored rotate and root yaw, sweeping the pitch by the blink cursor.
                 c.root.rotation = Quaternion.Euler(rotate.x, deg_root_yaw, rotate.z);
                 c.root.Rotate(Vector3.right, deg_laser_pitch * blink_sweep(t, frame), Space.Self);
                 if (c.mpb == null) c.mpb = new MaterialPropertyBlock();
@@ -70,9 +61,7 @@ namespace UV2.Live
             }
         }
 
-        // the blink cursor sweep: LaserBlink 0=None steady; the period
-        // advances the cursor in SECONDS (lerped); Asc/Desc cycles swing the
-        // pitch between the authored range. the decoded doc's cursor machine.
+        // blink cursor sweep: 0 = steady, the period advances the cursor in seconds.
         private static float blink_sweep(laser_track_container t, float frame)
         {
             if (t.blink == 0 || t.blink_period <= 0f) return 1f;
