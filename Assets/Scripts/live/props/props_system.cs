@@ -674,7 +674,9 @@ namespace UV2.Live
             Transform lock_node = rig.stand_mic != null ? rig.stand_mic : node;
             Vector3 low_target = lock_node.position + chara.TransformVector(low_off);
             Vector3 high_target = lock_node.position + chara.TransformVector(high_off);
-            Vector3 target = high_target;
+            // the authored High/Low pair is a vertical band around the node (song 1004:
+            // +0.07 / -0.07); the game picks by the animated hand height.
+            Vector3 target = wrist.position.y >= (low_target.y + high_target.y) * 0.5f ? high_target : low_target;
             float weight;
 
             // binary lock with hysteresis: the game snaps at full weight in the high
@@ -702,15 +704,24 @@ namespace UV2.Live
             if (!rig.engaged.Contains(side))
             {
                 rig.engaged.Add(side);
-                trace_log.write($"props: mic ik locked slot {slot} {side} hand (reach {reach:0.00}m, target {target})");
+                trace_log.write($"props: mic ik locked slot {slot} {side} hand (reach {reach:0.00}m, band {(target == high_target ? "high" : "low")} target {target})");
+            }
+            else if (trace_lock_ticks++ % trace_lock_every == 0)
+            {
+                trace_log.write($"props: mic ik hold slot {slot} {side} hand (reach {reach:0.00}m, band {(target == high_target ? "high" : "low")})");
             }
 
             solve_two_bone(shoulder, elbow, wrist, target);
         }
 
         // wrist-to-mic distances where the hand locks and releases (hysteresis band).
-        private const float lock_snap_dist = 0.50f;
-        private const float lock_release_dist = 0.65f;
+        // the authored choreo reach oscillates ~0.45-0.68m; the band must swallow it.
+        private const float lock_snap_dist = 0.42f;
+        private const float lock_release_dist = 0.80f;
+
+        // heartbeat trace for held locks: one line per hand every ~2s of song time.
+        private static int trace_lock_ticks;
+        private const int trace_lock_every = 120;
 
         // analytic two-bone ik in world space, keeping the elbow's bend plane.
         private static void solve_two_bone(Transform shoulder, Transform elbow, Transform wrist, Vector3 target)

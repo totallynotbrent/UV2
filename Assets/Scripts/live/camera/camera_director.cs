@@ -116,7 +116,9 @@ namespace UV2.Live
                         ? chara_parts.group_world(chara_roots, cur.chara_relative_base, cur.chara_relative_parts, pos_layer) + cur.position + (const_anchor ? cur.chara_pos : Vector3.zero)
                         : cur.position + cur.pos_direct;
                     pos += cur.offset;
-                    if (next != null && cur.set_type == next.set_type)
+                    // the game blends between consecutive pos keys regardless of set type;
+                    // the type only picks how each endpoint resolves.
+                    if (next != null && next.interpolate_type != 0)
                     {
                         bool next_const = next.chara_relative_parts >= 11 && next.chara_relative_parts <= 14;
                         Vector3 next_layer = next.set_type == 1 ? layer_band(t, next.chara_relative_base) : Vector3.zero;
@@ -163,7 +165,7 @@ namespace UV2.Live
                     Vector3 look = cur.look_at_type == 1
                         ? chara_parts.group_world(chara_roots, cur.look_at_chara_pos, cur.look_at_chara_parts, look_layer) + cur.position + (look_const ? cur.look_at_chara_pos_offset : Vector3.zero)
                         : cur.position;
-                    if (next != null && cur.look_at_type == next.look_at_type)
+                    if (next != null && next.interpolate_type != 0)
                     {
                         bool next_look_const = next.look_at_chara_parts >= 11 && next.look_at_chara_parts <= 14;
                         Vector3 next_layer = next.look_at_type == 1 ? layer_band(t, next.look_at_chara_pos) : Vector3.zero;
