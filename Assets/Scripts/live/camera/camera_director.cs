@@ -14,6 +14,8 @@ namespace UV2.Live
 
         private Camera cam;
         private Vector3? trace_prev_pos;
+        // the clock frame of the previous update, for the camera-delay window.
+        private float prev_frame;
 
         // height-band constants: rate = (avg_height - 130) / 60 over the flagged characters.
         private const float LAYER_HEIGHT_MIN = 130f;
@@ -94,6 +96,11 @@ namespace UV2.Live
             if (ws == null || clock == null || cam == null) return;
             float t = clock.time;
 
+            // the delay window compares the clock frame before this update.
+            float clock_frame = t * 60f;
+            float prev_frame_this = prev_frame;
+            prev_frame = clock_frame;
+
 
             // position
             if (ws.camera_pos.Count > 0)
@@ -103,7 +110,7 @@ namespace UV2.Live
                 {
                     var cur = ws.camera_pos[i];
                     var next = i + 1 < ws.camera_pos.Count ? ws.camera_pos[i + 1] : null;
-                    float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
+                    float k = key_eval.interp(cur, next, t);
 
                     // the layer band rides the pos key's own flags.
                     Vector3 pos_layer = Vector3.zero;
@@ -133,8 +140,12 @@ namespace UV2.Live
                             pos = key_eval.lerp_v3(pos, pos_next, k);
                     }
 
-                    // the trace flag slerps toward the target instead of snapping.
-                    if ((cur.attribute & 4) != 0 && trace_prev_pos.HasValue)
+                    // the trace flag slerps toward the target instead of snapping:
+                    // bit 2 enables the chase, bit 4 inherits it across keys, and
+                    // it also applies before the key's own frame (the approach-in).
+                    bool delay = (cur.attribute & 2) != 0
+                        && ((prev_frame_this >= cur.frame) || (t < cur.time) || ((cur.attribute & 4) != 0));
+                    if (delay && trace_prev_pos.HasValue)
                         pos = Vector3.Slerp(trace_prev_pos.Value, pos, Mathf.Clamp01(cur.trace_speed * Time.deltaTime * 60f));
 
                     cam.transform.position = pos;
@@ -153,7 +164,7 @@ namespace UV2.Live
                 {
                     var cur = ws.camera_lookat[i];
                     var next = i + 1 < ws.camera_lookat.Count ? ws.camera_lookat[i + 1] : null;
-                    float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
+                    float k = key_eval.interp(cur, next, t);
 
                     // the look-at band rides the look-at key's own flags.
                     Vector3 look_layer = Vector3.zero;
@@ -178,6 +189,22 @@ namespace UV2.Live
                             look = key_eval.lerp_v3(look, look_next, k);
                     }
                     cam.transform.LookAt(look, Vector3.up);
+
+                    // the look-at chase slerps the forward vector toward the
+                    // target direction, scaled back to the original distance.
+                    if ((cur.attribute & 2) != 0
+                        && ((prev_frame_this >= cur.frame) || (t < cur.time) || ((cur.attribute & 4) != 0)))
+                    {
+                        Vector3 to_target = look - cam.transform.position;
+                        float mag = to_target.magnitude;
+                        if (mag > float.Epsilon)
+                        {
+                            Vector3 dir = to_target / mag;
+                            float chase = Mathf.Clamp01(cur.trace_speed * Time.deltaTime * 60f);
+                            Vector3 fwd = Vector3.Slerp(cam.transform.forward, dir, chase);
+                            cam.transform.rotation = Quaternion.LookRotation(fwd, Vector3.up);
+                        }
+                    }
                 }
             }
 
@@ -192,7 +219,7 @@ namespace UV2.Live
                     float fov = cur.fov;
                     if (next != null)
                     {
-                        float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
+                        float k = key_eval.interp(cur, next, t);
                         fov = key_eval.lerp_f(cur.fov, next.fov, k);
                     }
                     if (fov > 0f)
@@ -218,10 +245,35 @@ namespace UV2.Live
                     float deg = cur.degree;
                     if (next != null)
                     {
-                        float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
+                        float k = key_eval.interp(cur, next, t);
                         deg = key_eval.lerp_f(cur.degree, next.degree, k);
                     }
                     cam.transform.Rotate(Vector3.forward, deg, Space.Self);
+                }
+            }
+
+            // the authored handshake rides on top: smooth noise displaced along
+            // the camera's own axes, amplitude = power, speed = rate, and the
+            // frequency sets the spatial wavelength of the noise sample.
+            if (ws.handshake.Count > 0)
+            {
+                int i = key_eval.bracket(ws.handshake, t);
+                if (i >= 0)
+                {
+                    var cur = ws.handshake[i];
+                    if (cur.power > 0f)
+                    {
+                        float speed = cur.rate > 0f ? cur.rate : 1f;
+                        float scale = cur.frequency > 0f ? cur.frequency : 1f;
+                        Vector3 noise = new Vector3(
+                            Mathf.PerlinNoise(t * speed, 0f) - 0.5f,
+                            Mathf.PerlinNoise(0f, t * speed) - 0.5f,
+                            Mathf.PerlinNoise(t * speed * scale, t * speed * scale) - 0.5f);
+                        cam.transform.position += cam.transform.right * (noise.x * cur.power)
+                                                 + cam.transform.up * (noise.y * cur.power);
+                        float roll_noise = (Mathf.PerlinNoise(t * speed * scale, 7.3f) - 0.5f) * cur.power * 10f;
+                        cam.transform.Rotate(Vector3.forward, roll_noise, Space.Self);
+                    }
                 }
             }
 
@@ -237,7 +289,7 @@ namespace UV2.Live
             if (li < 0) return Vector3.zero;
             var cur_l = ws.camera_layer[li];
             var next_l = li + 1 < ws.camera_layer.Count ? ws.camera_layer[li + 1] : null;
-            float k_l = key_eval.interp(cur_l, next_l, key_eval.span_t(cur_l, next_l, t));
+            float k_l = key_eval.interp(cur_l, next_l, t);
             Vector3 min = cur_l.offset_min_position;
             Vector3 max = cur_l.offset_max_position;
             if (next_l != null)

@@ -567,7 +567,7 @@ namespace UV2.Live
                         Vector3 off = cur.offset_position;
                         if (next != null && (next.setting_flags & sp.flag_bit) != 0)
                         {
-                            float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, time_sec));
+                            float k = key_eval.interp(cur, next, time_sec);
                             off = key_eval.lerp_v3(cur.offset_position, next.offset_position, k);
                         }
                         sp.instance.transform.localPosition = off;
@@ -604,7 +604,7 @@ namespace UV2.Live
                 var chara = chara_roots[slot - 1];
                 if (chara == null) continue;
 
-                float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, time_sec));
+                float k = key_eval.interp(cur, next, time_sec);
 
                 Vector3 l_high = cur.ik_l_high, l_low = cur.ik_l_low;
                 Vector3 r_high = cur.ik_r_high, r_low = cur.ik_r_low;
@@ -658,8 +658,10 @@ namespace UV2.Live
             _ => side == "L" ? "Wrist_L" : "Wrist_R",
         };
 
-        // aims one hand at the slot's lock target with the game's band semantics:
-        // full snap when the authored pose brings the wrist near the mic, release beyond.
+        // aims one hand at the slot's lock target with the game's semantics: the
+        // authored formation key enables the pull (no reach-distance gate), the
+        // strength is the per-character height rate, and the target band comes
+        // from the authored high/low offsets around the mic shaft.
         private static void aim_hand(Transform chara, Transform node, Vector3 low_off, Vector3 high_off, int slot, string side)
         {
             if (node == null) return;
@@ -669,34 +671,24 @@ namespace UV2.Live
             var wrist = find_bone(chara, arm_bone(side, 2));
             if (shoulder == null || elbow == null || wrist == null) return;
 
-            // the lock target: the planted stand's real mic_node when the slot has one,
-            // else the body-side node (handheld-mic songs).
+            // the lock target: the planted stand's mic shaft (the head sits
+            // above the authored grip band), else the body-side node.
             Transform lock_node = rig.stand_mic != null ? rig.stand_mic : node;
+            // the shaft point: the authored high/low band is a vertical range
+            // around the grip point; aim below the head so the hand wraps the shaft.
+            Vector3 band_mid = (high_off + low_off) * 0.5f;
+            Vector3 shaft = lock_node.position + chara.TransformVector(band_mid)
+                          - lock_node.up * shaft_below_head;
             Vector3 low_target = lock_node.position + chara.TransformVector(low_off);
             Vector3 high_target = lock_node.position + chara.TransformVector(high_off);
-            // the authored High/Low pair is a vertical band around the node (song 1004:
-            // +0.07 / -0.07); the game picks by the animated hand height.
-            Vector3 target = wrist.position.y >= (low_target.y + high_target.y) * 0.5f ? high_target : low_target;
-            float weight;
 
-            // binary lock with hysteresis: the game snaps at full weight in the high
-            // band and never pulls in the low band; a half-weight lerp floats hands.
-            float reach = Vector3.Distance(wrist.position, target);
-            bool was_locked = rig.last_weight.TryGetValue(side, out var prev) && prev >= 0.999f;
-            if (reach <= lock_snap_dist || (was_locked && reach <= lock_release_dist))
-                weight = 1f;
-            else
-            {
-                weight = 0f;
-                rig.last_target[side] = target;
-                rig.last_weight[side] = weight;
-                if (rig.engaged.Contains(side))
-                {
-                    rig.engaged.Remove(side);
-                    trace_log.write($"props: mic ik released slot {slot} {side} hand (reach {reach:0.00}m)");
-                }
-                return;
-            }
+            // the game picks the band by the animated hand height, then pulls at
+            // the per-character height rate — continuous, no hysteresis.
+            Vector3 target = wrist.position.y >= (low_target.y + high_target.y) * 0.5f ? high_target : low_target;
+            // the shaft target replaces the raw node when the stand is planted.
+            if (rig.stand_mic != null)
+                target = shaft;
+            float weight = height_rate(chara);
 
             rig.last_target[side] = target;
             rig.last_weight[side] = weight;
@@ -704,20 +696,27 @@ namespace UV2.Live
             if (!rig.engaged.Contains(side))
             {
                 rig.engaged.Add(side);
-                trace_log.write($"props: mic ik locked slot {slot} {side} hand (reach {reach:0.00}m, band {(target == high_target ? "high" : "low")} target {target})");
+                trace_log.write($"props: mic ik engaged slot {slot} {side} hand (rate {weight:0.00}, target {target})");
             }
             else if (trace_lock_ticks++ % trace_lock_every == 0)
             {
-                trace_log.write($"props: mic ik hold slot {slot} {side} hand (reach {reach:0.00}m, band {(target == high_target ? "high" : "low")})");
+                trace_log.write($"props: mic ik hold slot {slot} {side} hand (rate {weight:0.00})");
             }
 
-            solve_two_bone(shoulder, elbow, wrist, target);
+            Vector3 pull = Vector3.Lerp(wrist.position, target, Mathf.Clamp01(weight));
+            solve_two_bone(shoulder, elbow, wrist, pull);
         }
 
-        // wrist-to-mic distances where the hand locks and releases (hysteresis band).
-        // the authored choreo reach oscillates ~0.45-0.68m; the band must swallow it.
-        private const float lock_snap_dist = 0.42f;
-        private const float lock_release_dist = 0.80f;
+        // how far below the mic head the grip point sits.
+        private const float shaft_below_head = 0.10f;
+
+        // the character's height rate from its authored scale, per the decoded
+        // game formula: clamp((totalScale - 0.827) / 0.338, 0, 1.6665).
+        private static float height_rate(Transform chara)
+        {
+            float total_scale = Mathf.Max(0.01f, chara.lossyScale.y);
+            return Mathf.Clamp((total_scale - 0.827f) / 0.338f, 0f, 1.6665f);
+        }
 
         // heartbeat trace for held locks: one line per hand every ~2s of song time.
         private static int trace_lock_ticks;

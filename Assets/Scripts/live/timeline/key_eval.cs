@@ -7,7 +7,8 @@ namespace UV2.Live
     // blends timeline keys; the NEXT key's interpolate_type drives the blend.
     public static class key_eval
     {
-        // the blend between two keys, in 0..1.
+        // the blend between two keys, in 0..1. t is the raw clock time in
+        // seconds; the bracket pair itself resolves the span.
         public static float interp(live_key cur, live_key next, float t)
         {
             if (cur == null) return 0f;
@@ -16,18 +17,16 @@ namespace UV2.Live
             float span = next.time - cur.time;
             float raw = span <= 0f ? 0f : (t - cur.time) / span;
 
-            // the next key's curve drives the blend when it carries keyframes.
-            if (next.curve != null && next.curve.Count > 0)
-                return evaluate_curve(next.curve, Mathf.Clamp01(raw));
-
+            // the game's interpolate types: 1=linear, 2=curve, 3=ease.
             switch (next.interpolate_type)
             {
-                case 2: // linear
+                case 1: // linear
                     return Mathf.Clamp01(raw);
-                case 4: // curve: a fixed smooth profile stands in when the
-                    // authored curve carries no keyframes.
-                    return Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(raw));
-                case 6: // ease: the game's 41-entry table
+                case 2: // curve: the next key's authored keyframes shape the blend.
+                    if (next.curve != null && next.curve.Count > 0)
+                        return evaluate_curve(next.curve, Mathf.Clamp01(raw));
+                    return Mathf.Clamp01(raw);
+                case 3: // ease: the 41-entry table
                     return Mathf.Clamp01(live_easing.evaluate(next.easing_type,
                         Mathf.Max(0f, t - cur.time), 0f, 1f, Mathf.Max(0.0001f, span)));
                 default:

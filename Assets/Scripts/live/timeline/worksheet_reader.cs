@@ -162,6 +162,7 @@ namespace UV2.Live
                     look_at_chara_pos = k.lookAtCharaPos,
                     look_at_chara_parts = k.lookAtCharaParts,
                     look_at_chara_pos_offset = k.charaPos,
+                    trace_speed = k.traceSpeed,
                     bezier_points = (k.bezierPoints ?? new()).ToList(),
                 }).ToList();
 
@@ -432,6 +433,17 @@ namespace UV2.Live
                     interpolate_type = k.interpolateType,
                     curve = read_curve(k.curve),
                     degree = k.degree,
+                }).ToList();
+
+            ws.handshake = (sheet.handShakeCameraKeys?.thisList ?? new())
+                .Select(k => new handshake_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    power = k.power,
+                    frequency = k.frequency,
+                    rate = k.Rate,
                 }).ToList();
 
             ws.camera_motion = (sheet.cameraMotionKeys?.thisList ?? new())

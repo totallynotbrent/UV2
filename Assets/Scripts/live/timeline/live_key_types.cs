@@ -31,6 +31,15 @@ namespace UV2.Live
         public float time => frame / 60f;
     }
 
+    // camera handshake key: per-frame noise shake while the bracketed key is active.
+    [Serializable]
+    public class handshake_key : live_key
+    {
+        public float power;      // shake amplitude
+        public float frequency;  // noise cycles per second
+        public float rate;       // noise evolution speed
+    }
+
     // camera position key (worksheet cameraPosKeys entries).
     [Serializable]
     public class camera_pos_key : live_key
@@ -60,6 +69,7 @@ namespace UV2.Live
         public int look_at_chara_pos;     // position flags: bit i enables slot i
         public int look_at_chara_parts;
         public Vector3 look_at_chara_pos_offset;  // the charaPos field
+        public float trace_speed;         // the delay-chase rate when flagged
 
         // authored bezier control points between this key and the next.
         public List<Vector3> bezier_points = new();
@@ -239,6 +249,7 @@ namespace UV2.Live
         public List<camera_lookat_key> camera_lookat = new();
         public List<camera_fov_key> camera_fov = new();
         public List<camera_roll_key> camera_roll = new();
+        public List<handshake_key> handshake = new();
         public List<camera_switcher_key> camera_switcher = new();
         public List<camera_motion_key> camera_motion = new();
         public List<camera_layer_key> camera_layer = new();

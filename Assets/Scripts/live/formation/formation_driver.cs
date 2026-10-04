@@ -36,7 +36,7 @@ namespace UV2.Live
                 if (i < 0) continue;
                 var cur = keys[i];
                 var next = i + 1 < keys.Count ? keys[i + 1] : null;
-                float k = key_eval.interp(cur, next, key_eval.span_t(cur, next, t));
+                float k = key_eval.interp(cur, next, t);
 
                 foreach (var skv in slots)
                 {
