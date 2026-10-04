@@ -14,12 +14,10 @@ namespace UV2.Live
         public long length;
     }
 
-    // reads the game's afs2 (.awb) wave banks and decodes the hca inside into a
-    // playable unity clip.
+    // reads afs2 (.awb) wave banks and decodes the hca inside into a playable unity clip.
     public static class live_audio
     {
-        // the game client's hca key constant (from the client binary, next to
-        // its cri auth block); mixed per wave bank with the awb subkey.
+        // hca key constant from the game client, mixed per wave bank with the awb subkey.
         private const ulong base_key = 75923756697503UL;
 
         // parses the afs2 header; returns the wave entries.

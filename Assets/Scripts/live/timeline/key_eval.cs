@@ -4,13 +4,11 @@ using UnityEngine;
 
 namespace UV2.Live
 {
-    // key evaluation: finds the bracketing keys and blends with the game's
-    // interpolation contract - the NEXT key's interpolate_type drives the
-    // blend (0 = hold, 2 = linear, 4 = curve, 6 = ease), with the easing
-    // table applied on top when authored.
+    // blends timeline keys; the NEXT key's interpolate_type drives the blend.
     public static class key_eval
     {
-        // the blend the game's CalculateInterpolationValue applies between keys.
+        // the blend between two keys, in 0..1. t is the raw clock time in
+        // seconds; the bracket pair itself resolves the span.
         public static float interp(live_key cur, live_key next, float t)
         {
             if (cur == null) return 0f;
@@ -19,20 +17,16 @@ namespace UV2.Live
             float span = next.time - cur.time;
             float raw = span <= 0f ? 0f : (t - cur.time) / span;
 
-            // the next key's authored AnimationCurve drives the blend when it
-            // carries keyframes (the game's CurveInterpolateKeyframes);
-            // linear keys with an empty curve plain-lerp.
-            if (next.curve != null && next.curve.Count > 0)
-                return evaluate_curve(next.curve, Mathf.Clamp01(raw));
-
+            // the game's interpolate types: 1=linear, 2=curve, 3=ease.
             switch (next.interpolate_type)
             {
-                case 2: // linear
+                case 1: // linear
                     return Mathf.Clamp01(raw);
-                case 4: // curve: a fixed smooth profile stands in when the
-                    // authored curve carries no keyframes.
-                    return Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(raw));
-                case 6: // ease: the game's 41-entry table
+                case 2: // curve: the next key's authored keyframes shape the blend.
+                    if (next.curve != null && next.curve.Count > 0)
+                        return evaluate_curve(next.curve, Mathf.Clamp01(raw));
+                    return Mathf.Clamp01(raw);
+                case 3: // ease: the 41-entry table
                     return Mathf.Clamp01(live_easing.evaluate(next.easing_type,
                         Mathf.Max(0f, t - cur.time), 0f, 1f, Mathf.Max(0.0001f, span)));
                 default:
@@ -40,8 +34,7 @@ namespace UV2.Live
             }
         }
 
-        // the authored curve evaluated at u in 0..1: piecewise-linear through
-        // the keyframe values (the game's AnimationCurve.Evaluate shape).
+        // evaluates the curve at u in 0..1, piecewise-linear through the keyframe values.
         public static float evaluate_curve(List<curve_key> curve, float u)
         {
             if (curve == null || curve.Count == 0) return u;
@@ -89,8 +82,7 @@ namespace UV2.Live
 
         public static float lerp_f(float a, float b, float t) => Mathf.Lerp(a, b, t);
 
-        // bezier through authored control points: the segment runs cur -> ctrl
-        // points -> next; de casteljau over the run.
+        // bezier through the authored control points, evaluated via de casteljau.
         public static Vector3 bezier_v3(Vector3 a, Vector3 b, List<Vector3> ctrl, float t)
         {
             if (ctrl == null || ctrl.Count == 0) return Vector3.Lerp(a, b, t);

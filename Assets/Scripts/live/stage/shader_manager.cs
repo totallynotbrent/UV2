@@ -5,8 +5,7 @@ using UV2.Data;
 
 namespace UV2.Live
 {
-    // loads the game's own shader bundle first so the externals in character and
-    // stage material bundles resolve to real shaders instead of the magenta fallback.
+    // loads the game shader bundle first so material bundle externals resolve to real shaders instead of the magenta fallback.
     public static class shader_manager
     {
         private static AssetBundle bundle;
@@ -38,8 +37,7 @@ namespace UV2.Live
             return bundle.LoadAsset<Shader>(shader_name);
         }
 
-        // reports fallback-shader coverage; the game's shaders bind natively via
-        // the stub assembly, so this only surfaces what still misses.
+        // reports fallback-shader coverage across the hierarchy's materials.
         public static int fix_game_shaders(Transform root, string context)
         {
             int fixed_count = 0, unknown = 0;
@@ -58,7 +56,7 @@ namespace UV2.Live
             return fixed_count;
         }
 
-        // logs every material's live shader so fallback coverage is auditable.
+        // logs every material's current shader.
         public static void audit_shaders(Transform root, string context)
         {
             int ok = 0, fallback = 0, nullmat = 0;

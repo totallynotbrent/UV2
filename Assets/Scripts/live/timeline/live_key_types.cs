@@ -24,12 +24,20 @@ namespace UV2.Live
         public int interpolate_type;
         public int easing_type;
 
-        // the key's authored AnimationCurve keyframes; the game evaluates the
-        // NEXT key's curve between keys, so the blend reads this list.
+        // the curve keyframes; the NEXT key's curve drives the blend toward it.
         public List<curve_key> curve = new();
 
         // seconds position of this key on the clock.
         public float time => frame / 60f;
+    }
+
+    // camera handshake key: per-frame noise shake while the bracketed key is active.
+    [Serializable]
+    public class handshake_key : live_key
+    {
+        public float power;      // shake amplitude
+        public float frequency;  // noise cycles per second
+        public float rate;       // noise evolution speed
     }
 
     // camera position key (worksheet cameraPosKeys entries).
@@ -61,6 +69,7 @@ namespace UV2.Live
         public int look_at_chara_pos;     // position flags: bit i enables slot i
         public int look_at_chara_parts;
         public Vector3 look_at_chara_pos_offset;  // the charaPos field
+        public float trace_speed;         // the delay-chase rate when flagged
 
         // authored bezier control points between this key and the next.
         public List<Vector3> bezier_points = new();
@@ -150,8 +159,7 @@ namespace UV2.Live
         public float rim_shadow_rate2;
     }
 
-    // cinematic animation-clip camera move (the cameraMotionKeys track):
-    // an authored clip samples onto a proxy transform and the camera rides it.
+    // cinematic camera move: an authored clip samples a proxy transform the camera rides.
     [Serializable]
     public class camera_motion_key : live_key
     {
@@ -172,14 +180,76 @@ namespace UV2.Live
         public Vector3 offset_max_position;
     }
 
+    // one mob/cyalume control group key: the crowd rig's transform for the frame.
+    [Serializable]
+    public class mob_cyalume_key : live_key
+    {
+        public Vector3 position;
+        public Vector3 angle;
+        public Vector3 scale = Vector3.one;
+    }
+
+    // one mob/cyalume control group: name + GroupIndex + the key track.
+    [Serializable]
+    public class mob_cyalume_group
+    {
+        public string name;
+        public int group_index;
+        public List<mob_cyalume_key> keys = new();
+    }
+
+    // one audience key: transform + cyalume tint + animation selection.
+    [Serializable]
+    public class audience_key : live_key
+    {
+        public Vector3 position;
+        public Vector3 rotate;
+        public Vector3 scale = Vector3.one;
+        public Color cyalume_color = Color.white;
+        public Color cyalume_glow_color = Color.white;
+        public float cyalume_glow_color_power = 1f;
+        public float cyalume_mask_radius = 1f;
+        public int animation_setting;
+        public int animation_root_index;
+        public int animation_body_region;
+        public int animation_category;
+        public int animation_index = -1;
+        public int animation_wrap_mode;
+        public float animation_speed = 1f;
+        public float animation_offset_time;
+        public float animation_time;
+        public int use_animation_time;
+    }
+
+    // one audienceList entry: the crowd prefab name + the key track.
+    [Serializable]
+    public class audience_track
+    {
+        public string name;
+        public int object_index;
+        public List<audience_key> keys = new();
+    }
+
     public class live_worksheet
     {
+        public List<blink_track_container> blink_tracks = new();
+        public List<spot_track_container> spot_tracks = new();
+        public List<laser_track_container> laser_tracks = new();
+        public List<audience_track> audience_tracks = new();
+        public List<mob_cyalume_group> mob_groups = new();
+        public List<mob_cyalume_group> cyalume_groups = new();
+        public List<foot_light_key> foot_light = new();
+        public List<volume_track_container> volume_tracks = new();
+        public List<uv_scroll_track_container> uv_scroll_tracks = new();
+        public List<wash_track_container> wash_tracks = new();
+        public List<additional_track_container> additional_tracks = new();
         public string song_id;
         public List<global_light_key> global_light = new();
         public List<camera_pos_key> camera_pos = new();
         public List<camera_lookat_key> camera_lookat = new();
         public List<camera_fov_key> camera_fov = new();
         public List<camera_roll_key> camera_roll = new();
+        public List<handshake_key> handshake = new();
         public List<camera_switcher_key> camera_switcher = new();
         public List<camera_motion_key> camera_motion = new();
         public List<camera_layer_key> camera_layer = new();
@@ -187,5 +257,48 @@ namespace UV2.Live
         public List<List<motion_seq_key>> motion_sequences = new();
         public Dictionary<string, List<formation_key>> formation = new();
         public float total_frames;
+
+        // propsList = per-prop render state; propsAttachList = joint attach + offset per frame.
+        public List<props_render_track> props_render = new();
+        public List<props_attach_track> props_attach = new();
+    }
+
+    // one prop's render/visibility track; settingFlags is the slot bit (1/2/4).
+    [Serializable]
+    public class props_render_key : live_key
+    {
+        public int setting_flags;
+        public int props_id;
+        public byte renderer_enable;
+        public byte is_visible_attached_chara_linked;
+        public byte is_emissive;
+    }
+
+    [Serializable]
+    public class props_render_track
+    {
+        public string name;
+        public List<props_render_key> keys = new();
+    }
+
+    // one prop's attach track: the joint it rides plus per-frame offsets.
+    [Serializable]
+    public class props_attach_key : live_key
+    {
+        public string attach_joint_name;
+        public string copy_position_joint_name;
+        public int setting_flags;
+        public int props_id;
+        public Vector3 offset_position;
+        public Vector3 offset_rotate;
+        public Vector3 offset_scale;
+        public byte is_link_attach_bone;
+    }
+
+    [Serializable]
+    public class props_attach_track
+    {
+        public string name;
+        public List<props_attach_key> keys = new();
     }
 }

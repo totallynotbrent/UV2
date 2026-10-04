@@ -43,3 +43,4 @@ Config.json
 Tools/UmaLauncher/bin/
 Tools/UmaLauncher/obj/
 launcher_out/
+.hermes/
