@@ -37,6 +37,7 @@ namespace UV2.Live
             public Transform attach_loc;        // Position/Mic_Attach_00_loc
             public Transform node_l;           // _loc/Mic_Node_L
             public Transform node_r;           // _loc/Mic_Node_R
+            public Transform stand_mic;        // the planted stand's mic_node when the slot has one
             public readonly Dictionary<string, Vector3> last_target = new();
             public readonly Dictionary<string, float> last_weight = new();
             public readonly HashSet<string> engaged = new();
@@ -435,6 +436,17 @@ namespace UV2.Live
             };
 
             stage_props.Add(sp);
+
+            // the stand's mic_node is the hand-ik lock target for this slot.
+            if (rigs.TryGetValue(slot, out var slot_rig))
+            {
+                var mic_node = instance.transform.Find("standmic/adjust/mic_node");
+                if (mic_node == null)
+                    foreach (var t in instance.transform.GetComponentsInChildren<Transform>(true))
+                        if (t.name == "mic_node") { mic_node = t; break; }
+                if (mic_node != null) slot_rig.stand_mic = mic_node;
+            }
+
             trace_log.write($"props: stage prop '{g.propsName}' attached to slot {slot}'s Mic_Attach_00_loc (flag bit {sp.flag_bit}, {instance.GetComponentsInChildren<Renderer>(true).Length} renderers)");
             return true;
         }
@@ -646,7 +658,8 @@ namespace UV2.Live
             _ => side == "L" ? "Wrist_L" : "Wrist_R",
         };
 
-        // aims one hand at its mic node and solves the arm chain toward it.
+        // aims one hand at the slot's lock target with the game's band semantics:
+        // full snap when the authored pose brings the wrist near the mic, release beyond.
         private static void aim_hand(Transform chara, Transform node, Vector3 low_off, Vector3 high_off, int slot, string side)
         {
             if (node == null) return;
@@ -656,39 +669,48 @@ namespace UV2.Live
             var wrist = find_bone(chara, arm_bone(side, 2));
             if (shoulder == null || elbow == null || wrist == null) return;
 
-            Vector3 low_target = node.position + chara.TransformVector(low_off);
-            Vector3 high_target = node.position + chara.TransformVector(high_off);
-            float hand_y = wrist.position.y;
-
+            // the lock target: the planted stand's real mic_node when the slot has one,
+            // else the body-side node (handheld-mic songs).
+            Transform lock_node = rig.stand_mic != null ? rig.stand_mic : node;
+            Vector3 low_target = lock_node.position + chara.TransformVector(low_off);
+            Vector3 high_target = lock_node.position + chara.TransformVector(high_off);
+            Vector3 target = high_target;
             float weight;
-            Vector3 target;
-            if (hand_y >= high_target.y)
-            {
+
+            // binary lock with hysteresis: the game snaps at full weight in the high
+            // band and never pulls in the low band; a half-weight lerp floats hands.
+            float reach = Vector3.Distance(wrist.position, target);
+            bool was_locked = rig.last_weight.TryGetValue(side, out var prev) && prev >= 0.999f;
+            if (reach <= lock_snap_dist || (was_locked && reach <= lock_release_dist))
                 weight = 1f;
-                target = high_target;
-            }
-            else if (hand_y >= low_target.y)
-            {
-                weight = height_rate(chara);
-                target = rig.last_target.TryGetValue(side, out var last) ? last : low_target;
-            }
             else
             {
-                weight = rig.last_weight.TryGetValue(side, out var w) ? w : 0.6f;
-                target = rig.last_target.TryGetValue(side, out var t) ? t : low_target;
+                weight = 0f;
+                rig.last_target[side] = target;
+                rig.last_weight[side] = weight;
+                if (rig.engaged.Contains(side))
+                {
+                    rig.engaged.Remove(side);
+                    trace_log.write($"props: mic ik released slot {slot} {side} hand (reach {reach:0.00}m)");
+                }
+                return;
             }
+
             rig.last_target[side] = target;
             rig.last_weight[side] = weight;
 
             if (!rig.engaged.Contains(side))
             {
                 rig.engaged.Add(side);
-                trace_log.write($"props: mic ik engaged slot {slot} {side} hand (node {node.position}, target {target}, weight {weight:0.00})");
+                trace_log.write($"props: mic ik locked slot {slot} {side} hand (reach {reach:0.00}m, target {target})");
             }
 
-            Vector3 pull = Vector3.Lerp(wrist.position, target, Mathf.Clamp01(weight));
-            solve_two_bone(shoulder, elbow, wrist, pull);
+            solve_two_bone(shoulder, elbow, wrist, target);
         }
+
+        // wrist-to-mic distances where the hand locks and releases (hysteresis band).
+        private const float lock_snap_dist = 0.50f;
+        private const float lock_release_dist = 0.65f;
 
         // analytic two-bone ik in world space, keeping the elbow's bend plane.
         private static void solve_two_bone(Transform shoulder, Transform elbow, Transform wrist, Vector3 target)
@@ -735,13 +757,6 @@ namespace UV2.Live
             if (dot > 0.99999f) return;
             var turn = Quaternion.FromToRotation(from_dir, to_dir);
             bone.rotation = turn * bone.rotation;
-        }
-
-        // the character's height rate from its lossy y scale.
-        private static float height_rate(Transform chara)
-        {
-            float total_scale = Mathf.Max(0.01f, chara.lossyScale.y);
-            return Mathf.Clamp((total_scale - 0.827f) / 0.338f, 0f, 1.6665f);
         }
 
         private static meta_reader.asset_row meta_row(string name)
