@@ -56,12 +56,6 @@ namespace UV2.Live
         public float far_clip;
         public int culling_layer;
 
-        // props attach (IsAttachedToProps): the camera rides a chara prop's
-        // attach-node transform for this key (1177's parade segment).
-        public bool is_attached_to_props;
-        public int props_index;
-        public int props_attach_node_index;
-
         // authored bezier control points between this key and the next.
         public List<Vector3> bezier_points = new();
     }
