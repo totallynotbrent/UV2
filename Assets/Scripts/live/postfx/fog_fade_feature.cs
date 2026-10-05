@@ -196,22 +196,26 @@ namespace UV2.Live
 
                 var b = director.bloom_state;
                 float aspect = (float)desc.width / Mathf.Max(1, desc.height);
-                // the decode's per-level publishes: A = (1/w, 1/h, threshold,
-                // intensity); C/D = (blur*2^-9/aspect, blur*2^-9, threshold,
-                // intensity). the threshold fold repeats every level.
+                // the game's publishes, register-proven (fastbloom decode):
+                // blit A (pass 1 DownSample): _Parameter = (1/srcW, 1/srcH,
+                // threshold, intensity); blits C/D (passes 2+3):
+                // (blur*2^-9/aspect, blur*2^-9, threshold, intensity).
+                // intensity folds into the downsample and the horizontal
+                // blur only; the vertical blur never multiplies it.
                 bloom_mat.SetVector("_Parameter", new Vector4(
-                    1f / bw, 1f / bh, b.threshold, b.intensity));
-                cmd.Blit(cur, bloom_rt_a, bloom_mat, 0);
+                    1f / desc.width, 1f / desc.height, b.threshold, b.intensity));
+                cmd.Blit(cur, bloom_rt_a, bloom_mat, 1);
                 bloom_mat.SetVector("_Parameter", new Vector4(
                     b.blur_size * Mathf.Pow(2f, -9f) / aspect,
                     b.blur_size * Mathf.Pow(2f, -9f),
                     b.threshold, b.intensity));
-                cmd.Blit(bloom_rt_a, bloom_rt_b, bloom_mat, 1);
-                cmd.Blit(bloom_rt_b, bloom_rt_a, bloom_mat, 2);
-                // composite: source + blurred energy, soft-add; never scaled.
+                cmd.Blit(bloom_rt_a, bloom_rt_b, bloom_mat, 2);
+                cmd.Blit(bloom_rt_b, bloom_rt_a, bloom_mat, 3);
+                // composite (pass 0 Bloom): additive for authored mode 1, the
+                // screen-blend family otherwise; never an intensity scale.
                 bloom_mat.SetTexture("_BloomTex", bloom_rt_a);
-                bloom_mat.SetFloat("_BloomGate", 0f);
-                cmd.Blit(cur, nxt, bloom_mat, 3);
+                bloom_mat.SetFloat("_BloomBlendMode", b.blend_mode == 1 ? 1f : 0f);
+                cmd.Blit(cur, nxt, bloom_mat, 0);
                 cur = nxt; cur_is_color = false;
                 nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
             }
