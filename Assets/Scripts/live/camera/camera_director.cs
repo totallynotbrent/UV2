@@ -153,37 +153,6 @@ namespace UV2.Live
                     var next = i + 1 < ws.camera_pos.Count ? ws.camera_pos[i + 1] : null;
                     float k = key_eval.interp(cur, next, t);
 
-                    // props-attach keys ride a prop transform: node.position +
-                    // node.rotation * key.position, charaPos/locator/layer all
-                    // skipped (game's IsAttachedToProps branch); when no prop
-                    // resolves, the authored position stands alone.
-                    if (cur.is_attached_to_props)
-                    {
-                        Transform node = null;
-                        for (int slot = 0; slot < chara_roots.Count && slot < chara_parts.MAX; slot++)
-                        {
-                            if ((cur.chara_relative_base & (1 << slot)) == 0) continue;
-                            node = props_system.camera_attach_node(slot + 1, cur.props_index, cur.props_attach_node_index);
-                            if (node != null) break;
-                        }
-                        Vector3 pos_att = node != null
-                            ? node.position + node.rotation * cur.position
-                            : cur.position;
-                        pos_att += cur.offset;
-                        if (next != null && next.interpolate_type != 0)
-                        {
-                            Vector3 next_att = next.is_attached_to_props
-                                ? pos_att // unresolved attach keys hold - matching the game's fallback
-                                : pos_att; // attach keys don't blend out through authored geometry
-                            pos_att = key_eval.lerp_v3(pos_att, next_att, 0f);
-                        }
-                        cam.transform.position = pos_att;
-                        trace_prev_pos = pos_att;
-                        if (cur.near_clip > 0f) cam.nearClipPlane = cur.near_clip;
-                        if (cur.far_clip > 0f) cam.farClipPlane = cur.far_clip;
-                        goto lookat;
-                    }
-
                     // the layer band rides the pos key's own flags.
                     Vector3 pos_layer = Vector3.zero;
                     if (cur.set_type == 1)
@@ -227,8 +196,6 @@ namespace UV2.Live
                     if (cur.far_clip > 0f) cam.farClipPlane = cur.far_clip;
                 }
             }
-
-        lookat:;
 
             // look-at
             if (ws.camera_lookat.Count > 0)

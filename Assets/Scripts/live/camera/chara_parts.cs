@@ -48,11 +48,8 @@ namespace UV2.Live
         public static void record(Transform root)
         {
             if (root == null || anchors.ContainsKey(root)) return;
-            var a = new chara_anchor();
+            var a = new chara_anchor { initial_position = root.position };
             var position_bone = find_bone(root, "Position") ?? root;
-            // the game's liveCharaInitialPosition: the "Position" bone's world
-            // transform at load; the full-vector part anchors (6-8, 17-19) ride it.
-            a.initial_position = position_bone.position;
             var head = find_bone(root, "Head");
             var waist = find_bone(root, "Waist");
             var chest = find_bone(root, "Chest");
@@ -128,34 +125,26 @@ namespace UV2.Live
                     var chest = find_bone(root, "Chest");
                     return chest == null ? null : new Vector3(chest.position.x, 0f, chest.position.z);
                 // const-height anchors supply only the y; the key's chara_pos supplies x/z.
-                // init/initial-height anchors (parts 6-8, 17-19) are FULL vectors: the
-                // character's load-time x/z with the rest-pose bone height — this is the
-                // game's liveCharaInitialHeight*Position, not a const-y lookup.
                 case CONST_FACE_HEIGHT:
-                    if (anchors.TryGetValue(root, out var a_cf))
-                        return new Vector3(0f, a_cf.head_height, 0f);
+                case INIT_FACE_HEIGHT:
+                case INITIAL_HEIGHT_FACE:
+                    if (anchors.TryGetValue(root, out var a_head))
+                        return new Vector3(0f, a_head.head_height, 0f);
                     return null;
                 case CONST_WAIST_HEIGHT:
-                    if (anchors.TryGetValue(root, out var a_cw))
-                        return new Vector3(0f, a_cw.waist_height, 0f);
+                case INIT_WAIST_HEIGHT:
+                case INITIAL_HEIGHT_WAIST:
+                    if (anchors.TryGetValue(root, out var a_waist))
+                        return new Vector3(0f, a_waist.waist_height, 0f);
                     return null;
                 case CONST_CHEST_HEIGHT:
-                    if (anchors.TryGetValue(root, out var a_cc))
-                        return new Vector3(0f, a_cc.chest_height, 0f);
+                case INIT_CHEST_HEIGHT:
+                case INITIAL_HEIGHT_CHEST:
+                    if (anchors.TryGetValue(root, out var a_chest))
+                        return new Vector3(0f, a_chest.chest_height, 0f);
                     return null;
                 case CONST_FOOT_HEIGHT:
                     return Vector3.zero;
-                case INIT_FACE_HEIGHT:
-                case INITIAL_HEIGHT_FACE:
-                case INIT_WAIST_HEIGHT:
-                case INITIAL_HEIGHT_WAIST:
-                case INIT_CHEST_HEIGHT:
-                case INITIAL_HEIGHT_CHEST:
-                    if (!anchors.TryGetValue(root, out var a)) return null;
-                    float y = part == INIT_CHEST_HEIGHT || part == INITIAL_HEIGHT_CHEST ? a.chest_height
-                            : part == INIT_WAIST_HEIGHT || part == INITIAL_HEIGHT_WAIST ? a.waist_height
-                            : a.head_height;
-                    return new Vector3(a.initial_position.x, y, a.initial_position.z);
                 case POSITION:
                 case POSITION_WITHOUT_OFFSET:
                     return root.position;

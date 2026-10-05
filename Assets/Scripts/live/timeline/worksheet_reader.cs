@@ -147,9 +147,6 @@ namespace UV2.Live
                     near_clip = k.nearClip,
                     far_clip = k.farClip,
                     culling_layer = k.cullingLayer,
-                    is_attached_to_props = k.IsAttachedToProps != 0,
-                    props_index = k.PropsIndex,
-                    props_attach_node_index = k.PropsAttachNodeIndex,
                 }).ToList();
 
             ws.camera_lookat = (sheet.cameraLookAtKeys?.thisList ?? new())
