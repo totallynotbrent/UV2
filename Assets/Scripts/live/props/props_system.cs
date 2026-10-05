@@ -49,6 +49,27 @@ namespace UV2.Live
         private static readonly Dictionary<int, Dictionary<string, Transform>> bone_cache = new();
         private static bool bound;
 
+        // resolves the attach-node transform a camera pos key rides: slot -> the
+        // slot's chara prop instance, node index -> the prop's own transform (the
+        // game's _attachNodeTransformList[0] for chara props with no authored
+        // attach table). Mirrors LiveTimelineControl's TryGetAttachNodeTransform.
+        public static Transform camera_attach_node(int slot, int props_index, int node_index)
+        {
+            if (!bound) return null;
+            var matches = new List<Transform>();
+            foreach (var p in chara_props)
+                if (p.instance != null && p.joint != null)
+                    matches.Add(p.instance.transform);
+            if (matches.Count == 0) return null;
+            // the game keys props per flagged slot; UV2 keeps one instance per
+            // (group, slot) pair - index into creation order as the game does.
+            if (slot - 1 >= 0 && slot - 1 < matches.Count && props_index == 0)
+                return matches[slot - 1];
+            int idx = props_index < matches.Count ? props_index : -1;
+            if (idx < 0) return null;
+            return matches[idx];
+        }
+
         // clears every spawned instance + registry; call between concerts.
         public static void reset()
         {
