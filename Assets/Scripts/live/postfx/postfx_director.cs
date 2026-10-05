@@ -122,6 +122,7 @@ namespace UV2.Live
                 intensity = Mathf.Max(0f, intensity),
                 blur_size = Mathf.Max(0f, blur),
                 threshold = Mathf.Max(0f, threshold),
+                blend_mode = cur.blend_mode,
             };
             bloom_state_valid = bloom_state.intensity > 0f;
         }
