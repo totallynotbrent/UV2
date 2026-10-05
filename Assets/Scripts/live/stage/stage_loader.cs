@@ -30,7 +30,9 @@ namespace UV2.Live
         private readonly List<Transform> chara_roots = new();
         private camera_director director;
         private formation_driver formation;
+        private bg_color1_director bg_color1;
         private motion_player motion;
+        private vocal_mixer vocals;
 
         public IReadOnlyList<Transform> characters => chara_roots;
 
@@ -105,11 +107,22 @@ namespace UV2.Live
             wire_drivers(clips, sel.music_id);
             trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
 
-            UV2.UI.load_progress.report("starting music");
+            // the vocal stems: decode the banks but keep every stem silent
+            // until its part row arrives — the bgm below is the timing
+            // master and must start only once the whole stage is live.
+            UV2.UI.load_progress.report("starting vocals");
             yield return null;
-            start_music(sel.music_id);
+            var vocals_go = new GameObject("vocal_mixer");
+            vocals = vocals_go.AddComponent<vocal_mixer>();
+            vocals.open(clock, chara_roots, sel.slots, sel.music_id);
+
             UV2.UI.load_progress.report("concert ready");
             _open_ok = true;
+
+            // the music starts last, with everything visible: starting it
+            // mid-load made the song audible during the loading phase and
+            // led the visible concert by the remaining load time.
+            start_music(sel.music_id);
         }
 
         // loads the worksheet and resolves the stage manifest; false on failure.
@@ -835,6 +848,11 @@ namespace UV2.Live
 
             var formation_go = new GameObject("formation_driver");
             formation = formation_go.AddComponent<formation_driver>();
+
+            // the bgColor1 tracks drive ambient + chara tint per frame.
+            var bgc_go = new GameObject("bg_color1_director");
+            bg_color1 = bgc_go.AddComponent<bg_color1_director>();
+            bg_color1.open(ws, clock, chara_roots);
             formation.open(ws, clock, chara_roots);
 
             var motion_go = new GameObject("motion_player");
@@ -974,6 +992,9 @@ namespace UV2.Live
             {
                 global_shade.publish(FindObjectOfType<Camera>());
                 global_shade.publish_chara_block(chara_roots);
+                // bg_color1 publishes the worksheet's ambient + chara tint
+                // AFTER the fallback so the authored values win.
+                bg_color1?.update(clock?.time ?? 0f);
             });
 
             // foot lights run after the pose so they track the characters exactly.

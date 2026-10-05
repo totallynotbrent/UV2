@@ -101,17 +101,26 @@ namespace UV2.Live
                         mat.SetVector("_DistanceParams", new Vector4(
                             f.exp_density > 0f ? -f.exp_density : 0f, 0, 0, 0));
                         mat.SetColor("_FogColor", f.color);
+                        // the game's _SceneFogParams per the consumer decode:
+                        // .x = exp2 density (mode 3), .y = exp density (mode
+                        // 2), .z/.w = the linear ramp (mode 1). the shader muxes
+                        // on _SceneFogMode.x == 1/2/3.
                         if (f.fog_mode == 1)
                             mat.SetVector("_SceneFogParams", new Vector4(
-                                0f, 0f, 1f, 1f / Mathf.Max(0.0001f, f.end - f.start)));
+                                0f, 0f,
+                                1f / Mathf.Max(0.0001f, f.end - f.start),
+                                -f.start / Mathf.Max(0.0001f, f.end - f.start)));
+                        else if (f.fog_mode == 2)
+                            mat.SetVector("_SceneFogParams", new Vector4(
+                                0f, f.exp_density * 1.4427f, 0f, 0f));
                         else
                             mat.SetVector("_SceneFogParams", new Vector4(
-                                f.fog_mode == 3 ? f.exp_density * 1.4427f : f.exp_density * 1.20112f,
-                                1f, 0f, 0f));
+                                f.exp_density * 1.20112f, 0f, 0f, 0f));
                         mat.SetVector("_SceneFogMode", new Vector4(
-                            (float)(f.fog_mode - 1),
+                            (float)f.fog_mode,
                             f.use_radial_distance != 0 ? 1f : 0f, 0, 0));
                         mat.SetFloat("_HeightDensity", f.height_density);
+                        mat.SetFloat("_FogStart", f.start);
                         cmd.EnableShaderKeyword("FOG_HEIGHT_ON");
                     }
                     else

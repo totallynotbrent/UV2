@@ -31,6 +31,7 @@ Shader "live/uv2_fog_fade"
             float4 _FogColor;
             float4 _FadeColor;
             float _HeightDensity;
+            float _FogStart;
 
             struct v2f
             {
@@ -55,28 +56,59 @@ Shader "live/uv2_fog_fade"
                 float fog_factor = 0;
 
             #ifdef FOG_HEIGHT_ON
+                // the game's GlobalFog pixel math, register-exact per the
+                // d3dasm decode (@1422 height pass / @3258 simple pass):
+                //   eye = 1 / (zBufferParams.x*depth + zBufferParams.y)
+                //   d_base = (radial ? |eyeRay| : eye*far) + _DistanceParams.x
+                //   height pass adds: d -= radS * hcorr where
+                //     hAbove = eye*ray.y - _HeightParams.x
+                //     k = 1 - 2*_HeightParams.z
+                //     hgrad = (min(hAbove*k, 0))^2 / |eye*ray.y + 1e-5|
+                //     hcorr = _HeightParams.z*hAbove - hgrad
+                //     radS = |eyeRay * _HeightParams.w|
+                //   f = mode 1: saturate(d*SP.z + SP.w)
+                //       mode 2: 1-exp(-d*SP.y)
+                //       mode 3: 1-exp(-(d*SP.x)^2)
                 float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, i.uv);
-                float interpDepth = Linear01Depth(rawDepth);
-                float3 vdir = i.ray.xyz;
-                float dist = length(vdir) * interpDepth;
+                float eye = LinearEyeDepth(rawDepth);
+                float3 ray = i.ray.xyz;
+                bool is_sky = rawDepth >= 0.999999;
 
-                float2 dist_params = _DistanceParams.xy;
-                float scene_fog_z = 1;
-                float fog_start = 0;
+                float3 er = eye * ray;
+                float d;
+                if (_SceneFogMode.y > 0.5)
+                    d = length(er);
+                else
+                    d = eye * _ProjectionParams.z;
 
-                // exp/exp2: 1-exp(-d*density), linear: (d-start)/(end-start)
-                if (_SceneFogMode.x > 1.5)
-                {
-                    float d = max(0, dist - fog_start) * dist_params.x;
-                    if (_SceneFogMode.x > 2.5)
-                        fog_factor = 1 - exp(-exp2(d));
-                    else
-                        fog_factor = 1 - exp(-d);
-                }
+                float hcorr = 0;
+                float radS = 0;
+                // the height correction (@1422): worldY = eye*ray.y + camY;
+                // hAbove = worldY - HP.x; k = 1-2*HP.z; the plane term adds
+                // HP.y back (hcorr uses worldY - HP.x + HP.y verbatim);
+                // slope = |eye*ray.y + 1e-5|; hgrad = min(hAbove*k,0)^2/slope.
+                float worldY = eye * ray.y + _CameraWS.y;
+                float hAbove = worldY - _HeightParams.x;
+                float k = 1.0 - 2.0 * _HeightParams.z;
+                float t0 = min(hAbove * k, 0.0);
+                float slope = abs(eye * ray.y) + 1e-5;
+                float hgrad = (t0 * t0) / slope;
+                hcorr = _HeightParams.z * (hAbove + _HeightParams.y) - hgrad;
+                radS = length(er * _HeightParams.w);
+                d = d - radS * hcorr;
+
+                d = max(d + _DistanceParams.x - _FogStart, 0.0);
+
+                if (_SceneFogMode.x < 1.5)
+                    fog_factor = saturate(d * _SceneFogParams.z + _SceneFogParams.w);
+                else if (_SceneFogMode.x < 2.5)
+                    fog_factor = 1.0 - exp(-d * _SceneFogParams.y);
                 else
                 {
-                    fog_factor = saturate((dist - _SceneFogParams.z) * _SceneFogParams.w);
+                    float a = d * _SceneFogParams.x;
+                    fog_factor = 1.0 - exp(-(a * a));
                 }
+                if (is_sky) fog_factor = 1.0;
             #endif
 
                 fixed4 col = scene;

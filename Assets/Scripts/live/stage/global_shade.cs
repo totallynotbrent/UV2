@@ -33,6 +33,11 @@ namespace UV2.Live
         private static readonly int id_use_orig_light = Shader.PropertyToID("_UseOriginalDirectionalLight");
         private static readonly int id_orig_light_dir = Shader.PropertyToID("_OriginalDirectionalLightDir");
 
+        // the pre-driver ambient floor: unity's trilight sky color, replaced
+        // by the bg_color1 director's publish once the worksheet runs.
+        private static Color ambient_fallback = new(0.212f, 0.227f, 0.259f, 1f);
+        public static void set_ambient_fallback(Color c) => ambient_fallback = c;
+
         private const float lightmap_density = 1.0f;
         private const float lightmap_min_density = 0.0f;
         private static readonly Color lightmap_density_color = new(0.5f, 0.5f, 0.5f, 1f);
@@ -83,6 +88,30 @@ namespace UV2.Live
 
             _chara_mpb.SetFloat(id_use_orig_light, 1f);
             _chara_mpb.SetVector(id_orig_light_dir, dir);
+
+            // the game publishes the toon light direction via Material::SetVector
+            // (ModelController::UpdateBodyLightDir 0x7ff8e51a8010), not only a
+            // property block — a later SetPropertyBlock (the bg_color1 tint)
+            // would otherwise wipe it. pin use_orig + dir on shared materials.
+            foreach (var root in chara_roots)
+            {
+                if (root == null) continue;
+                foreach (var r in root.GetComponentsInChildren<Renderer>())
+                {
+                    if (r == null) continue;
+                    try
+                    {
+                        foreach (var m in r.sharedMaterials)
+                        {
+                            if (m == null) continue;
+                            if (m.HasProperty(id_use_orig_light)) m.SetFloat(id_use_orig_light, 1f);
+                            if (m.HasProperty(id_orig_light_dir)) m.SetVector(id_orig_light_dir, dir);
+                        }
+                    }
+                    catch { /* destroyed mid-shutdown */ }
+                }
+            }
+
             if (k != null)
             {
                 var nx = _light_next ?? k;
@@ -132,12 +161,16 @@ namespace UV2.Live
             foreach (var l in existing_lights) if (l.type == LightType.Directional) has_dir = true;
             if (!has_dir)
             {
+                // the game's concert scene carries zero Light objects: shading
+                // is globals + property blocks. keep the sun dark (intensity 0)
+                // so any consumer expecting a directional reference still has
+                // one without lifting the whole stage.
                 _sun = new GameObject("Directional Light");
                 var light = _sun.AddComponent<Light>();
                 light.type = LightType.Directional;
                 light.color = Color.white;
-                light.intensity = 1f;
-                light.shadows = LightShadows.Soft;
+                light.intensity = 0f;
+                light.shadows = LightShadows.None;
                 _sun.transform.rotation = Quaternion.Euler(50f, -30f, 0f);
             }
             RenderSettings.sun = null; // the chara mpb drives toon light, not the sun
@@ -173,7 +206,9 @@ namespace UV2.Live
             Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtRimSpecularColor"), new Color(0.25f, 0.25f, 0.25f, 1f));
             Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtToonColor"), new Color(0.5f, 0.5f, 0.5f, 1f));
             Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtColor"), new Color(0.6f, 0.451f, 0.384f, 1f));
-            Shader.SetGlobalColor(Shader.PropertyToID("_AmbientColor"), new Color(0.212f, 0.227f, 0.259f, 1f));
+            // the bgColor1 driver owns _AmbientColor now (color*colorPower
+            // from the worksheet); the constant here was the showroom floor.
+            Shader.SetGlobalColor(Shader.PropertyToID("_AmbientColor"), ambient_fallback);
             Shader.SetGlobalFloat(Shader.PropertyToID("_CylinderBlend"), 0f);
             Shader.SetGlobalFloat(Shader.PropertyToID("_RimHorizonOffset"), 0f);
             Shader.SetGlobalFloat(Shader.PropertyToID("_UVEmissivePower"), 0f);
