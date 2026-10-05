@@ -249,6 +249,7 @@ namespace UV2.Live
         public List<camera_lookat_key> camera_lookat = new();
         public List<camera_fov_key> camera_fov = new();
         public List<camera_roll_key> camera_roll = new();
+        public postfx_worksheet postfx = new();
         public List<handshake_key> handshake = new();
         public List<camera_switcher_key> camera_switcher = new();
         public List<camera_motion_key> camera_motion = new();
@@ -261,6 +262,9 @@ namespace UV2.Live
         // propsList = per-prop render state; propsAttachList = joint attach + offset per frame.
         public List<props_render_track> props_render = new();
         public List<props_attach_track> props_attach = new();
+
+        // facial: facial1Set (slot 0) + other4FacialArray (slots 1..n), game-shaped.
+        public List<facial_track_set> facial_slots = new();
     }
 
     // one prop's render/visibility track; settingFlags is the slot bit (1/2/4).

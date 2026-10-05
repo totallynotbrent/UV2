@@ -17,6 +17,30 @@ namespace UV2.Live
         // the clock frame of the previous update, for the camera-delay window.
         private float prev_frame;
 
+        // handshake state: the authored key params + the running noise time.
+        private Vector2 n0, n1, n2;
+        private float time_pos;
+        private Vector3 shake_offset_pos;
+        private float shake_offset_roll;
+
+        // the centered 2-octave perlin fbm the game's noise engine uses.
+        private static float fbm_centered(float x, float y)
+        {
+            float sum = (Mathf.PerlinNoise(x, y) - 0.5f);
+            sum += 0.5f * (Mathf.PerlinNoise(x * 2f, y * 2f) - 0.5f);
+            return sum;
+        }
+
+        // seeds the noise direction vectors once per camera, like the game's AlterAwake.
+        private void seed_noise()
+        {
+            var r = new System.Random(GetInstanceID());
+            Vector2 rand_dir() => new Vector2(Mathf.Cos((float)r.NextDouble() * Mathf.PI * 2f),
+                                               Mathf.Sin((float)r.NextDouble() * Mathf.PI * 2f));
+            n0 = rand_dir(); n1 = rand_dir(); n2 = rand_dir();
+            time_pos = (float)r.NextDouble() * 10f;
+        }
+
         // height-band constants: rate = (avg_height - 130) / 60 over the flagged characters.
         private const float LAYER_HEIGHT_MIN = 130f;
         private const float LAYER_HEIGHT_DIFF = 60f;
@@ -27,6 +51,23 @@ namespace UV2.Live
             clock = timeline;
             chara_roots = characters;
             cam = target;
+            seed_noise();
+        }
+
+        // the game applies the handshake as a render-time view-matrix shake, so
+        // the authored transform is never polluted by the noise.
+        private void OnPreCull()
+        {
+            if (shake_offset_pos == Vector3.zero && shake_offset_roll == 0f) return;
+            var rot = Quaternion.Euler(0f, 0f, shake_offset_roll);
+            cam.worldToCameraMatrix = Matrix4x4.TRS(shake_offset_pos, rot, new Vector3(1f, 1f, -1f))
+                                    * cam.transform.worldToLocalMatrix;
+        }
+
+        private void OnPreRender()
+        {
+            // reset the matrix so the next frame's eval starts from the true transform.
+            cam.ResetWorldToCameraMatrix();
         }
 
         // proxy transform that samples the cinematic clip; the camera rides it as a late override.
@@ -252,28 +293,44 @@ namespace UV2.Live
                 }
             }
 
-            // the authored handshake rides on top: smooth noise displaced along
-            // the camera's own axes, amplitude = power, speed = rate, and the
-            // frequency sets the spatial wavelength of the noise sample.
+            // the authored handshake rides on top: the key params interp between
+            // keys (zeroed when no key is current, unlike pos which holds), and
+            // the game applies the noise as a render-time view-matrix offset.
             if (ws.handshake.Count > 0)
             {
                 int i = key_eval.bracket(ws.handshake, t);
+                float power = 0f, frequency = 0f, rate = 0f;
                 if (i >= 0)
                 {
                     var cur = ws.handshake[i];
-                    if (cur.power > 0f)
+                    var next = i + 1 < ws.handshake.Count ? ws.handshake[i + 1] : null;
+                    power = cur.power;
+                    frequency = cur.frequency;
+                    rate = cur.rate;
+                    if (next != null && next.interpolate_type != 0)
                     {
-                        float speed = cur.rate > 0f ? cur.rate : 1f;
-                        float scale = cur.frequency > 0f ? cur.frequency : 1f;
-                        Vector3 noise = new Vector3(
-                            Mathf.PerlinNoise(t * speed, 0f) - 0.5f,
-                            Mathf.PerlinNoise(0f, t * speed) - 0.5f,
-                            Mathf.PerlinNoise(t * speed * scale, t * speed * scale) - 0.5f);
-                        cam.transform.position += cam.transform.right * (noise.x * cur.power)
-                                                 + cam.transform.up * (noise.y * cur.power);
-                        float roll_noise = (Mathf.PerlinNoise(t * speed * scale, 7.3f) - 0.5f) * cur.power * 10f;
-                        cam.transform.Rotate(Vector3.forward, roll_noise, Space.Self);
+                        float k = key_eval.interp(cur, next, t);
+                        power = key_eval.lerp_f(cur.power, next.power, k);
+                        frequency = key_eval.lerp_f(cur.frequency, next.frequency, k);
+                        rate = key_eval.lerp_f(cur.rate, next.rate, k);
                     }
+                }
+                // the noise engine: 2-octave centered perlin fbm, time advancing
+                // at the game's fixed 0.2/sec, applied along the camera axes.
+                if (power > 0f)
+                {
+                    time_pos += Time.deltaTime * 0.2f * Mathf.Max(0.01f, rate);
+                    Vector3 noise = new Vector3(
+                        fbm_centered(n0.x * time_pos, n0.y * time_pos),
+                        fbm_centered(n1.x * time_pos, n1.y * time_pos),
+                        fbm_centered(n2.x * time_pos, n2.y * time_pos));
+                    shake_offset_pos = noise * power * 2f;
+                    shake_offset_roll = noise.x * power * 2f;
+                }
+                else
+                {
+                    shake_offset_pos = Vector3.zero;
+                    shake_offset_roll = 0f;
                 }
             }
 

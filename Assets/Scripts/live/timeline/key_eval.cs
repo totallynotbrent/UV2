@@ -83,16 +83,20 @@ namespace UV2.Live
         public static float lerp_f(float a, float b, float t) => Mathf.Lerp(a, b, t);
 
         // bezier through the authored control points, evaluated via de casteljau.
+        // the game anchors each control point at the END key's resolved value
+        // (GetValue + offset, fork LiveTimelineWorkSheet.cs GetBezierPoints) and
+        // lerps unclamped, so extrapolation matches for t outside 0..1.
         public static Vector3 bezier_v3(Vector3 a, Vector3 b, List<Vector3> ctrl, float t)
         {
-            if (ctrl == null || ctrl.Count == 0) return Vector3.Lerp(a, b, t);
+            if (ctrl == null || ctrl.Count == 0) return Vector3.LerpUnclamped(a, b, t);
             var pts = new List<Vector3>(ctrl.Count + 2) { a };
-            pts.AddRange(ctrl);
+            for (int i = 0; i < ctrl.Count; i++)
+                pts.Add(b + ctrl[i]);
             pts.Add(b);
             int n = pts.Count - 1;
             for (int r = n; r > 0; r--)
                 for (int i = 0; i < r; i++)
-                    pts[i] = Vector3.Lerp(pts[i], pts[i + 1], t);
+                    pts[i] = Vector3.LerpUnclamped(pts[i], pts[i + 1], t);
             return pts[0];
         }
     }

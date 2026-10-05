@@ -446,6 +446,102 @@ namespace UV2.Live
                     rate = k.Rate,
                 }).ToList();
 
+            // the postfx tracks: dof, bloom/diffusion, three film layers, fog, fade.
+            ws.postfx.dof = (sheet.postEffectDOFKeys?.thisList ?? new())
+                .Select(k => new dof_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    focal_size = k.forcalSize,
+                    blur_spread = k.blurSpread,
+                    character = k.charactor,
+                    blur_type = k.dofBlurType,
+                    quality = k.dofQuality,
+                    foreground_size = k.dofForegroundSize,
+                    focal_point = k.dofFocalPoint,
+                    smoothness = k.dofSmoothness,
+                }).ToList();
+
+            ws.postfx.bloom = (sheet.postEffectBloomDiffusionKeys?.thisList ?? new())
+                .Select(k => new bloom_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    bloom_dof_weight = k.bloomDofWeight,
+                    threshold = k.threshold,
+                    intensity = k.intensity,
+                    blur_size = k.BloomBlurSize,
+                    blend_mode = k.BloomBlendMode,
+                    diffusion_blur_size = k.diffusionBlurSize,
+                    diffusion_bright = k.diffusionBright,
+                }).ToList();
+
+            Func<Cutt.LiveTimelineKeyPostFilmDataList, List<film_key>> read_film = list =>
+                (list?.thisList ?? new()).Select(k => new film_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    film_mode = k.filmMode,
+                    color_type = k.colorType,
+                    power = k.filmPower,
+                    offset_param = k.filmOffsetParam,
+                    option_param = k.filmOptionParam,
+                    color0 = k.color0,
+                    color1 = k.color1,
+                    color2 = k.color2,
+                    color3 = k.color3,
+                    depth_power = k.depthPower,
+                    depth_clip = k.DepthClip,
+                    roll_angle = k.RollAngle,
+                    scale = k.FilmScale,
+                    layer_mode = k.layerMode,
+                }).ToList();
+            ws.postfx.film1 = read_film(sheet.postFilmKeys);
+            ws.postfx.film2 = read_film(sheet.postFilm2Keys);
+            ws.postfx.film3 = read_film(sheet.postFilm3Keys);
+
+            ws.postfx.fog = (sheet.globalFogDataLists ?? new())
+                .Where(g => g?.keys?.thisList != null)
+                .SelectMany(g => g.keys.thisList.Select(k => new fog_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    is_distance = k.isDistance,
+                    start_distance = k.startDistance,
+                    is_height = k.isHeight,
+                    height = k.height,
+                    height_density = k.heightDensity,
+                    color = k.color,
+                    fog_mode = k.fogMode,
+                    exp_density = k.expDensity,
+                    start = k.start,
+                    end = k.end,
+                    use_radial_distance = k.useRadialDistance,
+                })).ToList();
+
+            ws.postfx.fade = (sheet.fadeKeys?.thisList ?? new())
+                .Select(k => new fade_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    color = k.fadeColor,
+                }).ToList();
+
             ws.camera_motion = (sheet.cameraMotionKeys?.thisList ?? new())
                 .Select(k => new camera_motion_key
                 {
@@ -521,9 +617,60 @@ namespace UV2.Live
 
             add_props_tracks(ws, sheet);
 
+            add_facial_tracks(ws, sheet);
+
             Debug.Log($"[worksheet_reader] {music_id}: {ws.camera_pos.Count} cam keys, " +
                       $"{ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups");
             return ws;
+        }
+
+        // maps the facial1Set + other4FacialArray slots into per-slot track sets.
+        private static void add_facial_tracks(live_worksheet ws, Cutt.LiveTimelineWorkSheet sheet)
+        {
+            var sources = new List<Cutt.LiveTimelineFacialData>();
+            if (sheet.facial1Set != null) sources.Add(sheet.facial1Set);
+            foreach (var o in sheet.other4FacialArray ?? new()) sources.Add(o);
+            foreach (var src in sources)
+            {
+                var slot = new facial_track_set();
+                slot.face = (src.faceKeys?.thisList ?? new()).Select(k => new facial_face_key
+                {
+                    frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
+                    facial_id = k.facialId, weight = k.weight, speed = k.speed, time_frames = k.time,
+                }).ToList();
+                slot.mouth = (src.mouthKeys?.thisList ?? new()).Select(k => new facial_mouth_key
+                {
+                    frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
+                    facial_id = k.facialId, weight = k.weight, speed = k.speed,
+                    time_frames = k.time, type = k.type,
+                }).ToList();
+                slot.eye = (src.eyeKeys?.thisList ?? new()).Select(k => new facial_eye_key
+                {
+                    frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
+                    facial_id = k.facialId, weight = k.weight, speed = k.speed, time_frames = k.time,
+                }).ToList();
+                slot.eyebrow = (src.eyebrowKeys?.thisList ?? new()).Select(k => new facial_eyebrow_key
+                {
+                    frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
+                    facial_id = k.facialId, weight = k.weight, speed = k.speed, time_frames = k.time,
+                }).ToList();
+                slot.eye_track = (src.eyeTrackKeys?.thisList ?? new()).Select(k => new facial_eyetrack_key
+                {
+                    frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
+                    target_type = k.targetType,
+                    vertical_rate_per = k.verticalRatePer, horizontal_rate_per = k.horizontalRatePer,
+                    speed_rate_per = k.speedRatePer, speed = k.speed,
+                    direct_position = k.DirectPosition,
+                }).ToList();
+                slot.ear = (src.earKeys?.thisList ?? new()).Select(k => new facial_ear_key
+                {
+                    frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
+                    facial_id = k.facialId, weight = k.weight, speed = k.speed, time_frames = k.time,
+                }).ToList();
+                ws.facial_slots.Add(slot);
+            }
+            Debug.Log($"[worksheet_reader] facial slots: {ws.facial_slots.Count} " +
+                      $"(keys: {string.Join(",", ws.facial_slots.Select(s => s.face.Count + s.mouth.Count + s.eye.Count + s.eyebrow.Count + s.eye_track.Count + s.ear.Count))})");
         }
 
         // maps one formation group's keys into the model.

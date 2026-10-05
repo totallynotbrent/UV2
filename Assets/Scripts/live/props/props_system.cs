@@ -658,10 +658,11 @@ namespace UV2.Live
             _ => side == "L" ? "Wrist_L" : "Wrist_R",
         };
 
-        // aims one hand at the slot's lock target with the game's semantics: the
-        // authored formation key enables the pull (no reach-distance gate), the
-        // strength is the per-character height rate, and the target band comes
-        // from the authored high/low offsets around the mic shaft.
+        // aims one hand at the mic with the game's per-frame gate: the authored
+        // formation key enables the system (ik_system == 4, never the enables
+        // alone — the tail keys keep enables on with the system off), the clip
+        // bakes the wrist target at the mic, and the animated hand height vs
+        // the authored high/low band picks the pull strength.
         private static void aim_hand(Transform chara, Transform node, Vector3 low_off, Vector3 high_off, int slot, string side)
         {
             if (node == null) return;
@@ -671,24 +672,37 @@ namespace UV2.Live
             var wrist = find_bone(chara, arm_bone(side, 2));
             if (shoulder == null || elbow == null || wrist == null) return;
 
-            // the lock target: the planted stand's mic shaft (the head sits
-            // above the authored grip band), else the body-side node.
-            Transform lock_node = rig.stand_mic != null ? rig.stand_mic : node;
-            // the shaft point: the authored high/low band is a vertical range
-            // around the grip point; aim below the head so the hand wraps the shaft.
-            Vector3 band_mid = (high_off + low_off) * 0.5f;
-            Vector3 shaft = lock_node.position + chara.TransformVector(band_mid)
-                          - lock_node.up * shaft_below_head;
-            Vector3 low_target = lock_node.position + chara.TransformVector(low_off);
-            Vector3 high_target = lock_node.position + chara.TransformVector(high_off);
+            // the target: the baked clip wrist target when the rig carries it
+            // (group clips author Wrist_*_Target at the mic head), else the
+            // planted stand's mic node, else the body-side node.
+            Transform baked = find_bone(chara, side == "L" ? "Wrist_L_Target" : "Wrist_R_Target");
+            Vector3 target = baked != null
+                ? baked.position
+                : (rig.stand_mic != null ? rig.stand_mic.position : node.position);
 
-            // the game picks the band by the animated hand height, then pulls at
-            // the per-character height rate — continuous, no hysteresis.
-            Vector3 target = wrist.position.y >= (low_target.y + high_target.y) * 0.5f ? high_target : low_target;
-            // the shaft target replaces the raw node when the stand is planted.
-            if (rig.stand_mic != null)
-                target = shaft;
-            float weight = height_rate(chara);
+            // the authored high/low pair is the vertical band around the grip.
+            Vector3 low_target = target + chara.TransformVector(low_off);
+            Vector3 high_target = target + chara.TransformVector(high_off);
+
+            // the game's per-frame gate: hand at/above the high band snaps at
+            // full strength, inside the band pulls at the per-character height
+            // rate (soft attach), below the band the authored pose wins.
+            float band_top = Mathf.Max(high_target.y, low_target.y);
+            float band_bottom = Mathf.Min(high_target.y, low_target.y);
+            float weight;
+            if (wrist.position.y >= band_top)
+                weight = 1f;
+            else if (wrist.position.y >= band_bottom)
+                weight = height_rate(chara);
+            else
+            {
+                if (rig.engaged.Contains(side))
+                {
+                    rig.engaged.Remove(side);
+                    trace_log.write($"props: mic ik released slot {slot} {side} hand (below band)");
+                }
+                return;
+            }
 
             rig.last_target[side] = target;
             rig.last_weight[side] = weight;
@@ -696,19 +710,16 @@ namespace UV2.Live
             if (!rig.engaged.Contains(side))
             {
                 rig.engaged.Add(side);
-                trace_log.write($"props: mic ik engaged slot {slot} {side} hand (rate {weight:0.00}, target {target})");
+                trace_log.write($"props: mic ik engaged slot {slot} {side} hand (weight {weight:0.00}, target {target})");
             }
             else if (trace_lock_ticks++ % trace_lock_every == 0)
             {
-                trace_log.write($"props: mic ik hold slot {slot} {side} hand (rate {weight:0.00})");
+                trace_log.write($"props: mic ik hold slot {slot} {side} hand (weight {weight:0.00})");
             }
 
             Vector3 pull = Vector3.Lerp(wrist.position, target, Mathf.Clamp01(weight));
             solve_two_bone(shoulder, elbow, wrist, pull);
         }
-
-        // how far below the mic head the grip point sits.
-        private const float shaft_below_head = 0.10f;
 
         // the character's height rate from its authored scale, per the decoded
         // game formula: clamp((totalScale - 0.827) / 0.338, 0, 1.6665).

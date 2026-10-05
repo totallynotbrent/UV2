@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 using UV2.App;
 using UV2.Concert;
 using UV2.Data;
@@ -18,8 +19,19 @@ namespace UV2.App
             try
             {
                 stage_loader.force_free_clock = free_clock;
+                // the batch editor reverts asset hdr during bakes, so the
+                // pipeline settings are pinned at boot instead: hdr for bloom,
+                // the camera generates the depth texture for dof.
+                var urp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline
+                    as UnityEngine.Rendering.Universal.UniversalRenderPipelineAsset;
+                if (urp != null)
+                    urp.supportsHDR = true;
                 var cam_go = new GameObject("main_camera", typeof(Camera));
                 var cam = cam_go.GetComponent<Camera>();
+                cam.depthTextureMode = UnityEngine.DepthTextureMode.Depth;
+                // urp skips the whole post chain unless the camera opts in.
+                var cam_data = cam.GetUniversalAdditionalCameraData();
+                cam_data.renderPostProcessing = true;
                 // live camera defaults; the fov/position come from the worksheet camera keys.
                 cam.clearFlags = CameraClearFlags.Skybox;
                 cam.orthographic = false;

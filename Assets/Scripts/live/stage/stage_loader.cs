@@ -823,6 +823,16 @@ namespace UV2.Live
             director = director_go.AddComponent<camera_director>();
             director.open(ws, clock, chara_roots, cam);
 
+            // phase 4: the postfx director drives the volume bloom + fog/fade.
+            var postfx_go = new GameObject("postfx_director");
+            var postfx = postfx_go.AddComponent<postfx_director>();
+            postfx.open(ws, clock, cam, chara_roots);
+
+            // phase 4: the facial director drives mouth weight + gaze from the cutt facial tracks.
+            var facial_go = new GameObject("facial_director");
+            var facial = facial_go.AddComponent<facial_director>();
+            facial.open(ws, clock, chara_roots);
+
             var formation_go = new GameObject("formation_driver");
             formation = formation_go.AddComponent<formation_driver>();
             formation.open(ws, clock, chara_roots);
