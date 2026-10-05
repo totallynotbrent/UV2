@@ -56,6 +56,12 @@ namespace UV2.Live
         public float far_clip;
         public int culling_layer;
 
+        // props attach (IsAttachedToProps): the camera rides a chara prop's
+        // attach-node transform for this key (1177's parade segment).
+        public bool is_attached_to_props;
+        public int props_index;
+        public int props_attach_node_index;
+
         // authored bezier control points between this key and the next.
         public List<Vector3> bezier_points = new();
     }
@@ -159,6 +165,33 @@ namespace UV2.Live
         public float rim_shadow_rate2;
     }
 
+    // one bgColor1 key: the concert's ambient + character tint track.
+    [Serializable]
+    public class bg_color1_key
+    {
+        public int frame;
+        public int attribute;
+        public int interpolate_type;
+        public int easing_type;
+        public int flags;
+        public Color color;
+        public float power;
+        public float scale;
+        public float saturation;
+        public Color toon_dark_color;
+        public Color toon_bright_color;
+        public Color outline_color;
+        public float outline_width_power;
+        public int color_type;
+    }
+
+    [Serializable]
+    public class bg_color1_track
+    {
+        public string name;
+        public List<bg_color1_key> keys = new();
+    }
+
     // cinematic camera move: an authored clip samples a proxy transform the camera rides.
     [Serializable]
     public class camera_motion_key : live_key
@@ -245,6 +278,7 @@ namespace UV2.Live
         public List<additional_track_container> additional_tracks = new();
         public string song_id;
         public List<global_light_key> global_light = new();
+        public List<bg_color1_track> bg_color1 = new();
         public List<camera_pos_key> camera_pos = new();
         public List<camera_lookat_key> camera_lookat = new();
         public List<camera_fov_key> camera_fov = new();

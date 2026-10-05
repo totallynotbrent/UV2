@@ -233,15 +233,23 @@ namespace UV2.Live
                 smooth = key_eval.lerp_f(cur.smoothness, next.smoothness, k);
             }
 
-            // focal: the authored dofFocalPoint is an eye-distance in METERS
-            // (1004 authors 1.0-13.57), the game's coc math subtracts it from
-            // the eye distance before scaling, so publish meters directly.
+            // focal: the authored dofFocalPoint is an eye-distance the game
+            // resolves via FocalDistance01 — worldPos = cam.pos + (fp − near)
+            // * cam.forward, then WorldToViewportPoint().z / (far − near).
+            // (register-exact per uv2_dof_focal_path_decoded.md)
+            float near = cam.nearClipPlane;
             float far = cam.farClipPlane;
+            float far_near = Mathf.Max(1e-4f, far - near);
+            Vector3 world_pos = cam.transform.position + (fp - near) * cam.transform.forward;
+            float focal01 = Mathf.Max(0f, cam.WorldToViewportPoint(world_pos).z / far_near);
             dof_enabled = focal_size > 0f && fp > 0f;
-            dof_focal_m = fp;
-            float focal01 = Mathf.Clamp01(fp / far);
+            // the shader's coc pass subtracts focal in eye meters; the game
+            // keeps focal in focal01 viewport-z space, so reconstruct the
+            // meters equivalent of the resolved focal01 (register-exact
+            // inverse of WorldToViewportPoint().z/(far-near)).
+            dof_focal_m = focal01 * far_near + near;
             dof_focal01 = focal01;
-            dof_far_blend = Mathf.Clamp01(focal_size / far * 0.5f + focal01);
+            dof_far_blend = focal_size / far_near * 0.5f + focal01;
             dof_blur_spread = blur;
             dof_foreground_size = fg;
             dof_smoothness = Mathf.Max(0.1f, smooth);

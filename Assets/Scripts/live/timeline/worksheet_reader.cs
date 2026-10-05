@@ -127,6 +127,32 @@ namespace UV2.Live
                     rim_shadow_rate2 = k.globalRimShadowRate2,
                 }).ToList();
 
+            // bgColor1: the ambient + chara tint track, one entry per named group.
+            ws.bg_color1 = (sheet.bgColor1List ?? new())
+                .Select(g => new bg_color1_track
+                {
+                    name = g.name,
+                    keys = (g.keys?.thisList ?? new()).Select(k => new bg_color1_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        flags = k.flags,
+                        color = k.color,
+                        power = k.power,
+                        scale = k.scale,
+                        saturation = k.Saturation,
+                        toon_dark_color = k.toonDarkColor,
+                        toon_bright_color = k.toonBrightColor,
+                        outline_color = k.outlineColor,
+                        outline_width_power = k.outlineWidthPower,
+                        color_type = k.ColorType,
+                    }).ToList(),
+                })
+                .Where(t => t.keys.Count > 0)
+                .ToList();
+
             ws.camera_pos = (sheet.cameraPosKeys?.thisList ?? new())
                 .Select(k => new camera_pos_key
                 {
@@ -147,6 +173,9 @@ namespace UV2.Live
                     near_clip = k.nearClip,
                     far_clip = k.farClip,
                     culling_layer = k.cullingLayer,
+                    is_attached_to_props = k.IsAttachedToProps != 0,
+                    props_index = k.PropsIndex,
+                    props_attach_node_index = k.PropsAttachNodeIndex,
                 }).ToList();
 
             ws.camera_lookat = (sheet.cameraLookAtKeys?.thisList ?? new())
