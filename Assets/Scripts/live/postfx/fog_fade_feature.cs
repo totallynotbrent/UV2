@@ -44,7 +44,8 @@ namespace UV2.Live
                             || film_valid(director.film3_state);
                 bool dof_on = director.dof_enabled;
                 bool bloom_on = director.bloom_state_valid && director.bloom_state != null;
-                if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on) return;
+                bool tilt_on = director.tilt_enabled;
+                if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on && !tilt_on) return;
 
                 // blitting a target onto itself is undefined in urp: d3d unbinds
                 // the srv when the texture becomes the render target, so the
@@ -153,6 +154,12 @@ namespace UV2.Live
                     apply_film(cmd, renderingData, director.film2_state, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
                 if (film_valid(director.film3_state))
                     apply_film(cmd, renderingData, director.film3_state, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
+
+                // the tilt-shift overlay runs last — the game's Execute flow
+                // ends the chain with it (final: event<=550 source-rt else
+                // plain copy; the visible output IS the blurred image).
+                if (tilt_on)
+                    apply_tilt(cmd, renderingData, director, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
 
                 if (!cur_is_color)
                     cmd.Blit(cur, color);
@@ -276,6 +283,39 @@ namespace UV2.Live
                 => s != null && s.valid && s.mode > 0;
 
             private Material film_mat;
+
+            private Material tilt_mat;
+
+            // the game's TiltShiftHdrLensBlur, ported per the decode doc: one
+            // full-res blit with pass = quality*2 + (mode!=1) — planar or
+            // radial COC by mode, blur radius min(|dist|*area, size) planar /
+            // clamp(dot(d,d)*area, 0, size) radial, 28-tap jittered disc,
+            // _Params = (offset.x, offset.y, sin(roll), cos(roll)).
+            private void apply_tilt(CommandBuffer cmd, RenderingData renderingData,
+                                    postfx_director director, ref RenderTargetIdentifier cur,
+                                    ref bool cur_is_color, ref RenderTargetIdentifier nxt,
+                                    ref bool nxt_is_a, RenderTargetIdentifier tmp_a, RenderTargetIdentifier tmp_b)
+            {
+                if (tilt_mat == null)
+                {
+                    var sh = Shader.Find("live/uv2_tiltshift");
+                    if (sh == null) return;
+                    tilt_mat = CoreUtils.CreateEngineMaterial(sh);
+                }
+                var desc = renderingData.cameraData.cameraTargetDescriptor;
+                tilt_mat.SetVector("_MainTex_TexelSize", new Vector4(
+                    1f / Mathf.Max(1, desc.width), 1f / Mathf.Max(1, desc.height),
+                    desc.width, desc.height));
+                tilt_mat.SetFloat("_BlurSize", director.tilt_max_blur);
+                tilt_mat.SetFloat("_BlurArea", director.tilt_blur_area);
+                float rad = director.tilt_roll * Mathf.Deg2Rad;
+                tilt_mat.SetVector("_Params", new Vector4(
+                    director.tilt_offset.x, director.tilt_offset.y,
+                    Mathf.Sin(rad), Mathf.Cos(rad)));
+                cmd.Blit(cur, nxt, tilt_mat, director.tilt_pass);
+                cur = nxt; cur_is_color = false;
+                nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
+            }
 
             private static readonly string[] film_keywords =
             {

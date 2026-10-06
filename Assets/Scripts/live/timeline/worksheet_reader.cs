@@ -571,6 +571,26 @@ namespace UV2.Live
                     color = k.fadeColor,
                 }).ToList();
 
+            // the tilt-shift overlay track (uv2_tiltshift_decoded.md): the
+            // game gates on mode>0; mode/quality/downsample copy un-lerped,
+            // blurArea/maxBlurSize/offset/roll lerp by the next-key rule.
+            ws.postfx.tiltshift = (sheet.tiltShiftKeys?.thisList ?? new())
+                .Select(k => new tiltshift_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    mode = k.mode,
+                    quality = k.quality,
+                    blur_area = k.blurArea,
+                    max_blur_size = k.maxBlurSize,
+                    downsample = k.downsample,
+                    offset = k.offset,
+                    roll = k.roll,
+                }).ToList();
+
             ws.camera_motion = (sheet.cameraMotionKeys?.thisList ?? new())
                 .Select(k => new camera_motion_key
                 {

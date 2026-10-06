@@ -7,9 +7,13 @@ using UV2.Data;
 
 namespace UV2.Live
 {
-    // per-character vocal stems mixed by the song's part table: at open it
-    // decodes every cast member's vocal bank, then each frame it sets each
-    // member's volume from the part group its stage column belongs to.
+    // per-character vocal stems mixed by the song's part table, using the
+    // game's own placement model (decoded from the IL2CPP dump; the tables
+    // below are heap-verified, see umadump/out/uv2_vocal_cue_decode.md).
+    // at open it decodes each cast member's vocal bank (main take plus the
+    // extra take when the bank carries one), then each frame it gates each
+    // stem on its part group flag, ranks the singing stems left to right,
+    // and applies the placement row's type gain, singer-count rate and pan.
     // the part table (m<song>_part) is a per-time activation of five groups
     // lleft..rright; the groups are stage columns, derived at runtime from
     // the slot x positions so no song carries hardcoded positions.
@@ -19,24 +23,46 @@ namespace UV2.Live
         {
             public AudioSource source;
             public int group;
+            public int wave;          // 0 = main take, 1 = extra take
+            public AudioClip[] clips; // [main, extra?]
             public float volume;
             public bool started;
         }
 
         private readonly List<stem> stems = new();
         private float[] part_times;
-        private int[][] part_rows;   // per row: 5 group flags
+        private int[][] part_rows;   // per row: 5 group flags (0 silent, 1 main, 2 extra)
         private float last_volume = 1f;
-        // the game's mix sits the vocal stems under the oke; unity-gain
-        // stems read as shouting over the bgm. chorus members run quieter.
-        private const float stem_gain = 0.5f;
-        private const float fade_rate = 20f;  // ~50ms ramp between 0 and 1
+        private const float fade_rate = 20f;  // ~50ms ramp between gain steps
+
+        // the game's gain tables (AudioManager container +0x30/+0x40): gain
+        // by placement type, and the rate by how many singers are active.
+        private static readonly float[] part_type_gains =
+            { 0f, 0.79f, 0.89f, 1.0f, 1.12f, 1.26f };
+        private static readonly float[] part_volume_rates =
+            { 0f, 0.79f, 0.79f, 0.56f, 0.53f, 0.47f, 0.42f, 0.37f };
+
+        // placement rows by active singer count: (type, pan) per singer,
+        // ranked left to right on stage (container +0x38).
+        private static readonly (int type, float pan)[][] placement_rows =
+        {
+            new (int, float)[] { (5, 0.00f) },
+            new (int, float)[] { (2, -0.15f), (2, 0.15f) },
+            new (int, float)[] { (3, -0.30f), (5, 0.00f), (3, 0.30f) },
+            new (int, float)[] { (3, -0.30f), (3, -0.10f), (3, 0.10f), (3, 0.30f) },
+            new (int, float)[] { (1, -0.30f), (2, -0.15f), (4, 0.00f), (2, 0.15f), (1, 0.30f) },
+            new (int, float)[] { (3, -0.30f), (3, -0.20f), (3, -0.10f), (3, 0.10f), (3, 0.20f), (3, 0.30f) },
+            new (int, float)[] { (1, -0.30f), (1, -0.20f), (2, -0.10f), (4, 0.00f), (2, 0.10f), (1, 0.20f), (1, 0.30f) },
+        };
 
         private timeline_clock clock;
         private bool bound;
+        private Transform[] stem_roots;   // chara roots, parallel to stems
+        private int last_section = -1;
 
-        // decodes each member's vocal bank and starts it muted; volume comes
-        // from the part table every frame. members without a bank are skipped.
+        // decodes each member's vocal bank and starts it muted; volume and
+        // pan come from the part table every frame. members without a bank
+        // are skipped.
         public void open(timeline_clock clock_ref, IReadOnlyList<Transform> chara_roots,
             List<slot_pick> slots, int music_id)
         {
@@ -60,19 +86,12 @@ namespace UV2.Live
 
             if (chara_roots.Count == 0) return;
 
-            // stage columns: quantize slot x into 5 groups across the cast's
-            // live x span. members on the same column share a group.
-            float xmin = float.MaxValue, xmax = float.MinValue;
-            foreach (var root in chara_roots)
-            {
-                if (root == null) continue;
-                float x = root.position.x;
-                xmin = Mathf.Min(xmin, x);
-                xmax = Mathf.Max(xmax, x);
-            }
-            float span = Mathf.Max(0.01f, xmax - xmin);
-
+            // the stage-column map is built lazily in Update: at open time the
+            // roots sit at their spawn x (often the same spot) and the
+            // formation has not separated them yet. quantizing now would put
+            // the whole cast in one group and gate them together.
             int cast_index = 0;
+            var roots_list = new List<Transform>();
             for (int i = 0; i < slots.Count && cast_index < chara_roots.Count; i++)
             {
                 var slot = slots[i];
@@ -80,18 +99,48 @@ namespace UV2.Live
                 var root = chara_roots[cast_index++];
                 if (root == null) continue;
 
-                int group = Mathf.Clamp(Mathf.RoundToInt((root.position.x - xmin) / span * 4f), 0, 4);
-                var source = start_stem(go.transform, music_id, slot.chara_id);
+                var (source, clips) = start_stem(go.transform, music_id, slot.chara_id);
                 if (source == null) continue;
-                stems.Add(new stem { source = source, group = group, volume = 0f });
+                roots_list.Add(root);
+                stems.Add(new stem { source = source, group = 0, wave = 0,
+                    clips = clips, volume = 0f });
+                // the game maps stage POSITION id to a part column center-out
+                // (pos 1 = center, 2 = left, 3 = right, 4 = lleft, ...), matching
+                // the csv's lleft..rright column order. this is the authoring
+                // order, independent of the runtime x layout.
+                slot_positions.Add(slot.position);
             }
-            trace_log.write($"vocals: {stems.Count} stems bound, groups " +
-                string.Join(",", stems.Select(s => s.group)));
+            stem_roots = roots_list.ToArray();
+            lock_positions();
+            trace_log.write($"vocals: {stems.Count} stems bound, positions " +
+                string.Join(",", slot_positions) + ", waves " +
+                string.Join(",", stems.Select(s => s.clips.Length)));
             bound = stems.Count > 0;
         }
 
-        // decodes one member's vocal bank and starts playback muted.
-        private AudioSource start_stem(Transform parent, int music_id, int chara_id)
+        private readonly List<int> slot_positions = new();
+
+        // stage position id -> part-table column, center-out: pos 1 = center,
+        // then alternating right/left (2=left, 3=right, 4=lleft, 5=rright...).
+        // the part csv columns are lleft,left,center,right,rright.
+        private static int position_column(int position)
+        {
+            if (position <= 1) return 2;                     // center
+            int dist = position / 2;
+            bool left = (position & 1) == 0;
+            return left ? 2 - dist : 2 + dist;               // left side / right side
+        }
+
+        private void lock_positions()
+        {
+            for (int i = 0; i < stems.Count && i < slot_positions.Count; i++)
+                stems[i].group = position_column(slot_positions[i]);
+        }
+
+        // decodes one member's vocal bank: one wave per take (0 = main,
+        // 1 = extra on songs that record both), and starts playback muted.
+        private (AudioSource source, AudioClip[] clips) start_stem(Transform parent,
+            int music_id, int chara_id)
         {
             var candidates = new[]
             {
@@ -108,27 +157,33 @@ namespace UV2.Live
                     if (row != null) break;
                 }
             }
-            if (row == null) return null;
+            if (row == null) return (null, null);
 
             string path = System.IO.Path.Combine(config.data_root, "dat",
                 row.hash.Substring(0, 2), row.hash);
-            if (!System.IO.File.Exists(path)) return null;
+            if (!System.IO.File.Exists(path)) return (null, null);
             byte[] bank = System.IO.File.ReadAllBytes(path);
             var waves = live_audio.parse_afs2(bank);
-            if (waves.Count == 0) return null;
+            if (waves.Count == 0) return (null, null);
 
-            var clip = live_audio.decode_wave(bank, waves[0], $"voc_{chara_id}");
-            if (clip == null) return null;
+            var clips = new List<AudioClip>();
+            int take_count = Mathf.Min(waves.Count, 2);
+            for (int i = 0; i < take_count; i++)
+            {
+                var clip = live_audio.decode_wave(bank, waves[i], $"voc_{chara_id}_{i}");
+                if (clip != null) clips.Add(clip);
+            }
+            if (clips.Count == 0) return (null, null);
 
             var source = parent.gameObject.AddComponent<AudioSource>();
-            source.clip = clip;
+            source.clip = clips[0];
             source.loop = false;
             source.volume = 0f;
             // do NOT Play() here: the stems decode staggered across many
             // seconds while the bgm already runs; a free-running playhead
             // lands each member at a different offset. the volume ride
             // starts the stem aligned to the song clock on first unmute.
-            return source;
+            return (source, clips.ToArray());
         }
 
         // the part table from the meta manifest: m<song>_part, a csv text asset
@@ -172,39 +227,103 @@ namespace UV2.Live
             return out_rows;
         }
 
-        // the per-frame volume ride: 1 when the member's group is active at
-        // the clock, 0 otherwise, both approached with a short ramp. each
-        // stem starts on its first unmute, playhead synced to the song clock.
+        // the per-frame ride, mirroring the game's UpdatePartParamer: gate
+        // each stem on its group flag, rank the singing stems left to right,
+        // then gain = part_type_gains[type] * part_volume_rates[n] and the
+        // row's pan. the flag value picks the take: 1 = main wave, 2 = extra.
         private void Update()
         {
             if (!bound) return;
             float t = clock?.time ?? 0f;
             int[] active = part_flags(t);
+            bool uncut = active == null;
+
+            var singing = new List<stem>();
+            foreach (var s in stems)
+                if (uncut || active[s.group] > 0) singing.Add(s);
+            singing.Sort((a, b) => a.group.CompareTo(b.group));
+
+            // trace each section change so the bench can assert the ride:
+            // section index, singing count, per-stem (gain, pan).
+            int section = part_section(t);
+            if (section != last_section)
+            {
+                last_section = section;
+                int dn = Mathf.Clamp(singing.Count, 1, 7);
+                var dbg = new List<string>();
+                for (int i = 0; i < singing.Count; i++)
+                {
+                    var slot = placement_rows[dn - 1][Mathf.Clamp(i, 0, dn - 1)];
+                    dbg.Add($"g{singing[i].group}:" +
+                        $"{part_type_gains[slot.type] * part_volume_rates[dn]:0.000}@pan{slot.pan:+0.00;-0.00}");
+                }
+                trace_log.write($"vocals: t={t:0.0} section={section} n={singing.Count} " +
+                    string.Join(" ", dbg));
+            }
+
+            // the game's tables stop at seven singers; a fuller cast reuses
+            // the last row's tail placement for the ranks beyond it.
+            int n = Mathf.Clamp(singing.Count, 1, placement_rows.Length);
+            var row = placement_rows[n - 1];
 
             foreach (var s in stems)
             {
-                float target = 1f;
-                if (active != null) target = active[s.group] > 0 ? 1f : 0f;
+                bool on = uncut || active[s.group] > 0;
+                float target = 0f;
+                float pan = 0f;
 
-                if (target > 0f && !s.started && s.source != null && s.source.clip != null)
+                if (on)
                 {
-                    // full-length per-character stem: align its playhead to
-                    // the song clock, wrapping if the song time exceeds the
-                    // clip (the oke and stem lengths can differ slightly).
-                    s.source.time = t % s.source.clip.length;
-                    s.source.Play();
-                    s.started = true;
+                    int rank = singing.IndexOf(s);
+                    var slot = row[Mathf.Clamp(rank, 0, row.Length - 1)];
+                    target = part_type_gains[slot.type] * part_volume_rates[n];
+                    pan = slot.pan;
+
+                    int wave = !uncut && active[s.group] == 2 && s.clips.Length > 1 ? 1 : 0;
+                    if (!s.started && s.source != null && s.clips.Length > 0)
+                    {
+                        play_wave(s, wave, t);
+                        s.started = true;
+                    }
+                    else if (s.started && wave != s.wave)
+                    {
+                        // main <-> extra take switch, playhead kept on the clock.
+                        play_wave(s, wave, t);
+                    }
                 }
 
-                s.volume = Mathf.MoveTowards(s.volume, target * last_volume * stem_gain, fade_rate * Time.deltaTime);
-                if (s.source != null) s.source.volume = s.volume;
+                s.volume = Mathf.MoveTowards(s.volume, target * last_volume, fade_rate * Time.deltaTime);
+                if (s.source != null)
+                {
+                    s.source.volume = s.volume;
+                    s.source.panStereo = pan;
+                }
             }
+        }
+
+        // swaps the stem onto the given take, playhead synced to the song
+        // clock (wrapping when the song outlasts the clip).
+        private void play_wave(stem s, int wave, float t)
+        {
+            if (s.source == null || s.clips.Length == 0) return;
+            var clip = s.clips[Mathf.Clamp(wave, 0, s.clips.Length - 1)];
+            if (clip.length > 0f) s.source.time = t % clip.length;
+            s.source.clip = clip;
+            s.source.Play();
+            s.wave = wave;
         }
 
         // binary-search the part row at time t; the row holds until the next.
         private int[] part_flags(float t)
         {
-            if (part_times == null || part_times.Length == 0) return null;
+            int idx = part_section(t);
+            return idx < 0 ? null : part_rows[idx];
+        }
+
+        // the section index at time t, or -1 with no part table.
+        private int part_section(float t)
+        {
+            if (part_times == null || part_times.Length == 0) return -1;
             int lo = 0, hi = part_times.Length - 1;
             while (lo < hi)
             {
@@ -212,7 +331,7 @@ namespace UV2.Live
                 if (part_times[mid] <= t) lo = mid;
                 else hi = mid - 1;
             }
-            return part_rows[lo];
+            return lo;
         }
 
         // the ui volume slider.
