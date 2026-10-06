@@ -104,6 +104,16 @@ namespace UV2.Live
             }
 
             if (chara_dirty) apply_chara_block();
+
+            // the game publishes the winning group's tint as the shader
+            // global _AmbientColor EVERY frame (slow path AND fast path of
+            // StageController::UpdateBgColor1; last group in frame order
+            // wins). stage parts with no group of their own read this, not
+            // the trilight fallback. decode: uv2_bgcolor1_ambient_decoded.md
+            // 'gate polarity resolution'.
+            if (!string.IsNullOrEmpty(last_name))
+                Shader.SetGlobalColor(id_ambient, last_tint);
+
             maybe_log(last_name, last_tint, song_time);
         }
 

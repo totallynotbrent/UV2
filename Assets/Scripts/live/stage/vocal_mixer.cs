@@ -27,6 +27,9 @@ namespace UV2.Live
         private float[] part_times;
         private int[][] part_rows;   // per row: 5 group flags
         private float last_volume = 1f;
+        // the game's mix sits the vocal stems under the oke; unity-gain
+        // stems read as shouting over the bgm. chorus members run quieter.
+        private const float stem_gain = 0.5f;
         private const float fade_rate = 20f;  // ~50ms ramp between 0 and 1
 
         private timeline_clock clock;
@@ -193,7 +196,7 @@ namespace UV2.Live
                     s.started = true;
                 }
 
-                s.volume = Mathf.MoveTowards(s.volume, target * last_volume, fade_rate * Time.deltaTime);
+                s.volume = Mathf.MoveTowards(s.volume, target * last_volume * stem_gain, fade_rate * Time.deltaTime);
                 if (s.source != null) s.source.volume = s.volume;
             }
         }
