@@ -75,6 +75,13 @@ namespace UV2.Live
                 float power = lerp_f(cur.power, next?.power, blend);
                 Color tint = new(c.r * power, c.g * power, c.b * power, 1f);
 
+                // the game's global publish is last-group-PROCESSED wins
+                // (worksheet frame order), regardless of whether the group
+                // binds renderers. on 1004 that is smoke_alpha_d_005's
+                // power-0 black, not the last resolved part's tint.
+                last_tint = tint;
+                last_name = track.name;
+
                 if (chara_group_names.Contains(track.name))
                 {
                     mpb.SetColor(id_chara_color, c);
@@ -98,8 +105,6 @@ namespace UV2.Live
                         try { r.SetPropertyBlock(mpb); }
                         catch { /* destroyed mid-shutdown */ }
                     }
-                    last_tint = tint;
-                    last_name = track.name;
                 }
             }
 
