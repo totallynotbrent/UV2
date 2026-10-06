@@ -65,6 +65,7 @@ namespace UV2.Live
         // the assembled character mpb: rebuilt when the light track moves.
         private static MaterialPropertyBlock _chara_mpb;
         private static Vector3 _last_light_dir = new(12345f, 0f, 0f);
+        private static bool _pin_log_pending;
 
         // applies the toon-light + rim block onto every character renderer.
         public static void publish_chara_block(List<Transform> chara_roots)
@@ -85,6 +86,7 @@ namespace UV2.Live
 
             if ((dir - _last_light_dir).sqrMagnitude < 1e-10f) return;
             _last_light_dir = dir;
+            _pin_log_pending = true;
 
             _chara_mpb.SetFloat(id_use_orig_light, 1f);
             _chara_mpb.SetVector(id_orig_light_dir, dir);
@@ -106,6 +108,20 @@ namespace UV2.Live
                             if (m == null) continue;
                             if (m.HasProperty(id_use_orig_light)) m.SetFloat(id_use_orig_light, 1f);
                             if (m.HasProperty(id_orig_light_dir)) m.SetVector(id_orig_light_dir, dir);
+                        }
+                        // one-shot diagnostic: confirms whether the material
+                        // path accepts the toon-light props. in our pipeline
+                        // the game shader's lighting uniforms are not mapped
+                        // (HasProperty false) — the chara toon port needs its
+                        // own shader; kept as a runtime canary for that day.
+                        if (_pin_log_pending)
+                        {
+                            var m0 = r.sharedMaterials != null && r.sharedMaterials.Length > 0 ? r.sharedMaterials[0] : null;
+                            if (m0 != null)
+                            {
+                                trace_log.write($"shade pin: '{r.name}' mat '{m0.name}' acceptsUseOrig={m0.HasProperty(id_use_orig_light)} shader '{m0.shader.name}'");
+                                _pin_log_pending = false;
+                            }
                         }
                     }
                     catch { /* destroyed mid-shutdown */ }
