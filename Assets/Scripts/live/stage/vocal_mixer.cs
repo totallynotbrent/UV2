@@ -62,7 +62,9 @@ namespace UV2.Live
 
         // decodes each member's vocal bank and starts it muted; volume and
         // pan come from the part table every frame. members without a bank
-        // are skipped.
+        // are skipped. the decode runs as a coroutine: 18 hca decodes take
+        // ~15s and concert open waits on this method, so the stems materialize
+        // after open returns (the part table gates them silent until then).
         public void open(timeline_clock clock_ref, IReadOnlyList<Transform> chara_roots,
             List<slot_pick> slots, int music_id)
         {
@@ -86,31 +88,62 @@ namespace UV2.Live
 
             if (chara_roots.Count == 0) return;
 
-            // the stage-column map is built lazily in Update: at open time the
-            // roots sit at their spawn x (often the same spot) and the
-            // formation has not separated them yet. quantizing now would put
-            // the whole cast in one group and gate them together.
             int cast_index = 0;
             var roots_list = new List<Transform>();
+            var chara_ids = new List<int>();
+            var positions = new List<int>();
             for (int i = 0; i < slots.Count && cast_index < chara_roots.Count; i++)
             {
                 var slot = slots[i];
                 if (slot.chara_id <= 0) continue;
                 var root = chara_roots[cast_index++];
                 if (root == null) continue;
-
-                var (source, clips) = start_stem(go.transform, music_id, slot.chara_id);
-                if (source == null) continue;
                 roots_list.Add(root);
-                stems.Add(new stem { source = source, group = 0, wave = 0,
-                    clips = clips, volume = 0f });
+                chara_ids.Add(slot.chara_id);
                 // the game maps stage POSITION id to a part column center-out
                 // (pos 1 = center, 2 = left, 3 = right, 4 = lleft, ...), matching
                 // the csv's lleft..rright column order. this is the authoring
                 // order, independent of the runtime x layout.
-                slot_positions.Add(slot.position);
+                positions.Add(slot.position);
             }
             stem_roots = roots_list.ToArray();
+            trace_log.write($"vocals: {chara_ids.Count} stems pending (lazy decode)");
+            StartCoroutine(decode_stems(go.transform, music_id, chara_ids, positions));
+        }
+
+        private readonly List<int> slot_positions = new();
+
+        // stage position id -> part-table column, center-out: pos 1 = center,
+        // then alternating left/right (2=left, 3=right, 4=lleft, 5=rright...).
+        // validated against the decode doc's solo sections (1004: the center
+        // solo at t=0 is position 1's chara, so pos 1 reads the center column).
+        // returns -1 when the position has no column in this song's part table
+        // (a backdancer) - those stems stay silent.
+        private static int position_column(int position, int width)
+        {
+            if (position < 1 || position > width) return -1;
+            if (position == 1) return width / 2;             // center
+            int dist = position / 2;
+            bool left = (position & 1) == 0;
+            int col = left ? width / 2 - dist : width / 2 + dist;
+            return col >= 0 && col < width ? col : -1;
+        }
+
+        private System.Collections.IEnumerator decode_stems(Transform parent, int music_id,
+            List<int> chara_ids, List<int> positions)
+        {
+            int width = part_width();
+            for (int i = 0; i < chara_ids.Count; i++)
+            {
+                var (source, clips) = start_stem(parent, music_id, chara_ids[i]);
+                if (source == null) continue;
+                stems.Add(new stem { source = source, group = position_column(positions[i], width),
+                    wave = 0, clips = clips, volume = 0f });
+                slot_positions.Add(positions[i]);
+                // one frame between decodes keeps open-time frame hitches small
+                // while the whole bank still lands within a few seconds.
+                yield return null;
+            }
             lock_positions();
             trace_log.write($"vocals: {stems.Count} stems bound, positions " +
                 string.Join(",", slot_positions) + ", waves " +
@@ -118,24 +151,16 @@ namespace UV2.Live
             bound = stems.Count > 0;
         }
 
-        private readonly List<int> slot_positions = new();
-
-        // stage position id -> part-table column, center-out: pos 1 = center,
-        // then alternating right/left (2=left, 3=right, 4=lleft, 5=rright...).
-        // the part csv columns are lleft,left,center,right,rright.
-        private static int position_column(int position)
-        {
-            if (position <= 1) return 2;                     // center
-            int dist = position / 2;
-            bool left = (position & 1) == 0;
-            return left ? 2 - dist : 2 + dist;               // left side / right side
-        }
-
         private void lock_positions()
         {
+            int width = part_width();
             for (int i = 0; i < stems.Count && i < slot_positions.Count; i++)
-                stems[i].group = position_column(slot_positions[i]);
+                stems[i].group = position_column(slot_positions[i], width);
         }
+
+        // the part table's slot width, 0 with no table.
+        private int part_width()
+            => part_rows != null && part_rows.Length > 0 ? part_rows[0].Length : 0;
 
         // decodes one member's vocal bank: one wave per take (0 = main,
         // 1 = extra on songs that record both), and starts playback muted.
@@ -216,10 +241,14 @@ namespace UV2.Live
             {
                 var cols = line.Trim().Split(',');
                 if (header) { header = false; continue; }
-                if (cols.Length < 6) continue;
+                if (cols.Length < 2) continue;
                 if (!float.TryParse(cols[0], out float time)) continue;
-                var flags = new int[5];
-                for (int g = 0; g < 5; g++)
+                // the csv's own width is the number of stage slots it addresses
+                // (5 for 1004, 16 for 1012, 23 for 1059). members beyond it are
+                // backdancers with no column.
+                int width = cols.Length - 1;
+                var flags = new int[width];
+                for (int g = 0; g < width; g++)
                     int.TryParse(cols[g + 1], out flags[g]);
                 out_rows.Add((time / 1000f, flags));
             }
@@ -240,7 +269,7 @@ namespace UV2.Live
 
             var singing = new List<stem>();
             foreach (var s in stems)
-                if (uncut || active[s.group] > 0) singing.Add(s);
+                if (s.group >= 0 && (uncut || active[s.group] > 0)) singing.Add(s);
             singing.Sort((a, b) => a.group.CompareTo(b.group));
 
             // trace each section change so the bench can assert the ride:
@@ -268,7 +297,7 @@ namespace UV2.Live
 
             foreach (var s in stems)
             {
-                bool on = uncut || active[s.group] > 0;
+                bool on = s.group >= 0 && (uncut || active[s.group] > 0);
                 float target = 0f;
                 float pan = 0f;
 
