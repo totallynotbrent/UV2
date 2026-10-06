@@ -36,6 +36,15 @@ namespace UV2.Live
         [HideInInspector] public float dof_foreground_size;
         [HideInInspector] public float dof_smoothness;
 
+        // the evaluated tilt-shift overlay state, read by the render feature.
+        [HideInInspector] public bool tilt_enabled;
+        [HideInInspector] public int tilt_mode;
+        [HideInInspector] public int tilt_pass;
+        [HideInInspector] public float tilt_blur_area;
+        [HideInInspector] public float tilt_max_blur;
+        [HideInInspector] public Vector2 tilt_offset;
+        [HideInInspector] public float tilt_roll;
+
         // one film overlay layer's evaluated state.
         public class film_state
         {
@@ -76,6 +85,7 @@ namespace UV2.Live
             film2_state = eval_film(ws.postfx.film2, t);
             film3_state = eval_film(ws.postfx.film3, t);
             eval_dof(t);
+            eval_tilt(t);
 
             // one heartbeat every ~2s so the bench proves the postfx engaged.
             if (trace_postfx_ticks++ % 120 == 0)
@@ -85,7 +95,8 @@ namespace UV2.Live
                 string f = fog_enabled && fog_state != null ? $"on mode {fog_state.fog_mode}" : "off";
                 string fl = film1_state != null && film1_state.valid ? $"film m{film1_state.mode} p{film1_state.power:0.00}" : "film none";
                 string d = dof_enabled ? $"dof {dof_focal_m:0.0}m f{dof_focal01:0.00} far{dof_far_blend:0.00}" : "dof off";
-                trace_log.write($"postfx: bloom {b} fog {f} fade a {fade_color.a:0.00} {fl} {d}");
+                string ts = tilt_enabled ? $"tilt m{tilt_mode} a{tilt_blur_area:0.0} blur{tilt_max_blur:0.0} roll{tilt_roll:0.0}" : "tilt off";
+                trace_log.write($"postfx: bloom {b} fog {f} fade a {fade_color.a:0.00} {fl} {d} {ts}");
             }
         }
         private int trace_postfx_ticks;
@@ -257,6 +268,44 @@ namespace UV2.Live
 
         // the character roots for focal resolution, wired at open.
         private List<Transform> focus_roots;
+
+        // the tilt-shift overlay, evaluated per the game's OnUpdateTiltShift:
+        // mode/quality/downsample copy from the bracketing key un-lerped;
+        // blurArea/maxBlurSize/offset/roll lerp by the next-key rule (hold on
+        // interpolateType 0, linear on 1, curve on 2, bezier on 3). the pass
+        // index is quality*2 + (mode!=1). (uv2_tiltshift_decoded.md)
+        private void eval_tilt(float t)
+        {
+            if (ws.postfx.tiltshift.Count == 0) { tilt_enabled = false; return; }
+            int i = key_eval.bracket(ws.postfx.tiltshift, t);
+            if (i < 0) { tilt_enabled = false; return; }
+            var cur = ws.postfx.tiltshift[i];
+            var next = i + 1 < ws.postfx.tiltshift.Count ? ws.postfx.tiltshift[i + 1] : null;
+
+            tilt_mode = cur.mode;
+            int quality = cur.quality;
+            float area = cur.blur_area;
+            float max_blur = cur.max_blur_size;
+            Vector2 off = cur.offset;
+            float roll = cur.roll;
+            if (next != null && next.interpolate_type != 0)
+            {
+                float k = key_eval.interp(cur, next, t);
+                area = key_eval.lerp_f(cur.blur_area, next.blur_area, k);
+                max_blur = key_eval.lerp_f(cur.max_blur_size, next.max_blur_size, k);
+                off = Vector2.Lerp(cur.offset, next.offset, k);
+                roll = key_eval.lerp_f(cur.roll, next.roll, k);
+            }
+            // the game's downsample>0 path exports the blurred image via
+            // _Blurred and passes the source through; the consumer is not
+            // identified, so clamp to 0 (all son1004 keys author 0 anyway).
+            tilt_blur_area = Mathf.Max(0f, area);
+            tilt_max_blur = Mathf.Max(0f, max_blur);
+            tilt_offset = off;
+            tilt_roll = roll;
+            tilt_pass = quality * 2 + (tilt_mode != 1 ? 1 : 0);
+            tilt_enabled = tilt_mode > 0 && (tilt_blur_area > 0f || tilt_max_blur > 0f);
+        }
 
         // fade: the authored fadeColor's ALPHA is the quad opacity (1004 runs
         // alpha 0 for the whole song then fades to white alpha 1 at the end).

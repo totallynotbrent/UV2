@@ -71,6 +71,21 @@ namespace UV2.Live
         public Color color;
     }
 
+    // the song's tilt-shift overlay keys (worksheet tiltShiftKeys). the game
+    // gates on mode: 0 off, 1 planar, 2 radial; pass = quality*2 + (mode!=1).
+    // (uv2_tiltshift_decoded.md)
+    [Serializable]
+    public class tiltshift_key : live_key
+    {
+        public int mode;
+        public int quality;
+        public float blur_area;
+        public float max_blur_size;
+        public int downsample;
+        public Vector2 offset;
+        public float roll;
+    }
+
     // the postfx worksheet lists, mirrored from the cutt stub sheet.
     public class postfx_worksheet
     {
@@ -81,5 +96,6 @@ namespace UV2.Live
         public List<film_key> film3 = new();
         public List<fog_key> fog = new();
         public List<fade_key> fade = new();
+        public List<tiltshift_key> tiltshift = new();
     }
 }

@@ -32,6 +32,14 @@ namespace UV2.Live
         // the toon light direction comes from the worksheet, not a unity light object.
         private static readonly int id_use_orig_light = Shader.PropertyToID("_UseOriginalDirectionalLight");
         private static readonly int id_orig_light_dir = Shader.PropertyToID("_OriginalDirectionalLightDir");
+        // the main-light globals: the game's GlobalShaderLightParameter::Update
+        // (0x7ff8e4d7c1e0) publishes normalize(-transform.forward) as
+        // _MainLightPosition (w=0) and the light color as _MainLightColor via
+        // Shader::SetGlobalVector. in the concert scene (zero Light objects)
+        // these are the chara PS's fallback light (cb0[6]/cb0[7]) when
+        // _UseOriginalDirectionalLight is 0.
+        private static readonly int id_main_light_pos = Shader.PropertyToID("_MainLightPosition");
+        private static readonly int id_main_light_color = Shader.PropertyToID("_MainLightColor");
 
         // the pre-driver ambient floor: unity's trilight sky color, replaced
         // by the bg_color1 director's publish once the worksheet runs.
@@ -91,10 +99,11 @@ namespace UV2.Live
             _chara_mpb.SetFloat(id_use_orig_light, 1f);
             _chara_mpb.SetVector(id_orig_light_dir, dir);
 
-            // the game publishes the toon light direction via Material::SetVector
-            // (ModelController::UpdateBodyLightDir 0x7ff8e51a8010), not only a
-            // property block — a later SetPropertyBlock (the bg_color1 tint)
-            // would otherwise wipe it. pin use_orig + dir on shared materials.
+            // the game publishes the toon light direction via Material::SetInt/SetVector
+            // (ModelController::UpdateBodyLightDir 0x7ff8e51a8010) with NO HasProperty
+            // check — a stripped variant simply ignores the write. pin use_orig +
+            // dir unconditionally so a later SetPropertyBlock (the bg_color1 tint)
+            // cannot wipe them.
             foreach (var root in chara_roots)
             {
                 if (root == null) continue;
@@ -106,20 +115,34 @@ namespace UV2.Live
                         foreach (var m in r.sharedMaterials)
                         {
                             if (m == null) continue;
-                            if (m.HasProperty(id_use_orig_light)) m.SetFloat(id_use_orig_light, 1f);
-                            if (m.HasProperty(id_orig_light_dir)) m.SetVector(id_orig_light_dir, dir);
+                            m.SetFloat(id_use_orig_light, 1f);
+                            m.SetVector(id_orig_light_dir, dir);
                         }
-                        // one-shot diagnostic: confirms whether the material
-                        // path accepts the toon-light props. in our pipeline
-                        // the game shader's lighting uniforms are not mapped
-                        // (HasProperty false) — the chara toon port needs its
-                        // own shader; kept as a runtime canary for that day.
+                        // one-shot diagnostic: whether the loaded variant carries
+                        // the toon-light props (llvmpipe benches read False —
+                        // variant stripping; his DX11 trace reads True). dumps
+                        // the name table once so the bundle-skew hypothesis is
+                        // checkable from the trace alone.
                         if (_pin_log_pending)
                         {
                             var m0 = r.sharedMaterials != null && r.sharedMaterials.Length > 0 ? r.sharedMaterials[0] : null;
                             if (m0 != null)
                             {
-                                trace_log.write($"shade pin: '{r.name}' mat '{m0.name}' acceptsUseOrig={m0.HasProperty(id_use_orig_light)} shader '{m0.shader.name}'");
+                                var sb = new System.Text.StringBuilder();
+                                var sh = m0.shader;
+                                int prop_count = sh.GetPropertyCount();
+                                int printed = 0;
+                                for (int pi = 0; pi < prop_count && printed < 12; pi++)
+                                {
+                                    var pname = sh.GetPropertyName(pi);
+                                    if (pname == null) continue;
+                                    if (pname.Contains("Light") || pname.Contains("Toon") || pname.Contains("Rim"))
+                                    {
+                                        if (printed++ > 0) sb.Append(' ');
+                                        sb.Append(pname);
+                                    }
+                                }
+                                trace_log.write($"shade pin: '{r.name}' mat '{m0.name}' acceptsUseOrig={m0.HasProperty(id_use_orig_light)} shader '{sh.name}' props({prop_count}) [{sb}]");
                                 _pin_log_pending = false;
                             }
                         }
@@ -218,10 +241,12 @@ namespace UV2.Live
             Shader.SetGlobalFloat(id_outline_width, 1.0f);
             Shader.SetGlobalFloat(id_outline_offset, 1.0f);
 
-            // the dirt + ambient + array globals.
-            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtRimSpecularColor"), new Color(0.25f, 0.25f, 0.25f, 1f));
-            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtToonColor"), new Color(0.5f, 0.5f, 0.5f, 1f));
-            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtColor"), new Color(0.6f, 0.451f, 0.384f, 1f));
+            // the dirt + ambient + array globals. the dirt triplet matches the
+            // game's static defaults (0x1b82cde4ee0 +0x24/34/44): dirt color,
+            // dirt rim/spec, dirt toon.
+            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtColor"), new Color(0.35f, 0.254f, 0.215f, 1f));
+            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtRimSpecularColor"), new Color(0.6f, 0.451f, 0.384f, 1f));
+            Shader.SetGlobalColor(Shader.PropertyToID("_GlobalDirtToonColor"), new Color(0.28f, 0.19f, 0.14f, 1f));
             // the bgColor1 driver owns _AmbientColor now (color*colorPower
             // from the worksheet); the constant here was the showroom floor.
             Shader.SetGlobalColor(Shader.PropertyToID("_AmbientColor"), ambient_fallback);
@@ -245,6 +270,18 @@ namespace UV2.Live
             }
 
             publish_toon_light();
+
+            // the main-light globals, mirroring GlobalShaderLightParameter::Update:
+            // the direction the shader falls back to when _UseOriginalDirectionalLight
+            // is 0, plus the color the chara PS multiplies albedo/toon/spec by
+            // (cb0[7]). white light, direction from the same worksheet track
+            // (the game publishes from its light rig; ours is the global-light
+            // track's current direction).
+            Vector3 main_dir = Vector3.down;
+            if (_light_key != null && _light_key.light_dir.sqrMagnitude > 1e-06f)
+                main_dir = -(Quaternion.Euler(_light_key.light_dir) * Vector3.forward).normalized;
+            Shader.SetGlobalVector(id_main_light_pos, new Vector4(main_dir.x, main_dir.y, main_dir.z, 0f));
+            Shader.SetGlobalColor(id_main_light_color, Color.white);
         }
 
         // publishes the fog-off state so stage shaders never fade the frame.

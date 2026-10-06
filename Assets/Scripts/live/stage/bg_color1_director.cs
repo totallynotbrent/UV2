@@ -21,6 +21,7 @@ namespace UV2.Live
 
         private static readonly int id_ambient = Shader.PropertyToID("_AmbientColor");
         private static readonly int id_chara_color = Shader.PropertyToID("_CharaColor");
+        private static readonly int id_light_probe = Shader.PropertyToID("_LightProbeColor");
         private static readonly int id_toon_dark = Shader.PropertyToID("_ToonDarkColor");
         private static readonly int id_toon_bright = Shader.PropertyToID("_ToonBrightColor");
         private static readonly int id_outline_color = Shader.PropertyToID("_OutlineColor");
@@ -85,6 +86,13 @@ namespace UV2.Live
                 if (chara_group_names.Contains(track.name))
                 {
                     mpb.SetColor(id_chara_color, c);
+                    // the game's chara "ambient": UpdateCharaColor1 publishes the
+                    // bgColor1 key color as _LightProbeColor (propid 41,
+                    // ModelController::SetLightProbeColor 0x7ff8e51a3320) and
+                    // the chara PS multiplies the WHOLE final color by it.
+                    // without this, chars render at full albedo - the washed-out
+                    // look. (uv2_chara_texture_color_decoded.md §4 fix #1)
+                    mpb.SetColor(id_light_probe, c);
                     mpb.SetColor(id_toon_dark, lerp_color(cur.toon_dark_color, next?.toon_dark_color, blend));
                     mpb.SetColor(id_toon_bright, lerp_color(cur.toon_bright_color, next?.toon_bright_color, blend));
                     mpb.SetColor(id_outline_color, lerp_color(cur.outline_color, next?.outline_color, blend));
