@@ -709,16 +709,26 @@ namespace UV2.Live
                     frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
                     facial_id = k.facialId, weight = k.weight, speed = k.speed,
                     time_frames = k.time, type = k.type,
+                    parts = (k.facialPartsDataArray ?? new()).Select(p => new facial_part
+                        { parts_id = p.FacialPartsId, weight_per = p.WeightPer }).ToList(),
                 }).ToList();
                 slot.eye = (src.eyeKeys?.thisList ?? new()).Select(k => new facial_eye_key
                 {
                     frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
                     facial_id = k.facialId, weight = k.weight, speed = k.speed, time_frames = k.time,
+                    parts_l = (k.facialPartsDataArrayL ?? new()).Select(p => new facial_part
+                        { parts_id = p.FacialPartsId, weight_per = p.WeightPer }).ToList(),
+                    parts_r = (k.facialPartsDataArrayR ?? new()).Select(p => new facial_part
+                        { parts_id = p.FacialPartsId, weight_per = p.WeightPer }).ToList(),
                 }).ToList();
                 slot.eyebrow = (src.eyebrowKeys?.thisList ?? new()).Select(k => new facial_eyebrow_key
                 {
                     frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
                     facial_id = k.facialId, weight = k.weight, speed = k.speed, time_frames = k.time,
+                    parts_l = (k.facialPartsDataArrayL ?? new()).Select(p => new facial_part
+                        { parts_id = p.FacialPartsId, weight_per = p.WeightPer }).ToList(),
+                    parts_r = (k.facialPartsDataArrayR ?? new()).Select(p => new facial_part
+                        { parts_id = p.FacialPartsId, weight_per = p.WeightPer }).ToList(),
                 }).ToList();
                 slot.eye_track = (src.eyeTrackKeys?.thisList ?? new()).Select(k => new facial_eyetrack_key
                 {
@@ -732,6 +742,8 @@ namespace UV2.Live
                 {
                     frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
                     facial_id = k.facialId, weight = k.weight, speed = k.speed, time_frames = k.time,
+                    ear_id_l = k.facialEarIdL, ear_id_r = k.facialEarIdR,
+                    random_motion = k.useEarRandomMotion != 0,
                 }).ToList();
                 ws.facial_slots.Add(slot);
             }
