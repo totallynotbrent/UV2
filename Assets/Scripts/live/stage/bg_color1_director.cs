@@ -22,6 +22,8 @@ namespace UV2.Live
         private static readonly int id_ambient = Shader.PropertyToID("_AmbientColor");
         private static readonly int id_chara_color = Shader.PropertyToID("_CharaColor");
         private static readonly int id_light_probe = Shader.PropertyToID("_LightProbeColor");
+        private static readonly int id_mul_color0 = Shader.PropertyToID("_MulColor0");
+        private static readonly int id_color_power = Shader.PropertyToID("_ColorPower");
         private static readonly int id_toon_dark = Shader.PropertyToID("_ToonDarkColor");
         private static readonly int id_toon_bright = Shader.PropertyToID("_ToonBrightColor");
         private static readonly int id_outline_color = Shader.PropertyToID("_OutlineColor");
@@ -39,8 +41,26 @@ namespace UV2.Live
         private MaterialPropertyBlock mpb;
         private float last_logged = -1f;
 
-        // per-group resolved renderer sets (the game resolves by object name).
+        // per-group resolved renderer sets (the game resolves by FNV-1 hash of
+        // the object/unit name, never substring: uv2_bgcolor1_resolution_decoded.md).
         private readonly Dictionary<string, List<Renderer>> part_sets = new();
+
+        // the game's FNV-1 over the low byte of each char (FNVHash::Generate
+        // 0x7ff8e4e11d00: h = h*prime XOR (c & 0xff), mul first).
+        private static uint fnv1(string s)
+        {
+            uint h = 0x811c9dc5;
+            foreach (char c in s) h = (h * 0x01000193u) ^ (c & 0xffu);
+            return h;
+        }
+
+        // strips unity's "(Clone)" token the way the game's work-info key does
+        // (GallopGameObjectExtensions::DeleteCloneToken).
+        private static string clean_name(string s)
+        {
+            int i = s.IndexOf("(Clone)", System.StringComparison.Ordinal);
+            return i > 0 ? s.Substring(0, i) : s;
+        }
 
         public void open(live_worksheet worksheet, timeline_clock clock_ref, List<Transform> roots)
         {
@@ -104,9 +124,13 @@ namespace UV2.Live
                 }
                 else if (part_sets.TryGetValue(track.name, out var renderers) && renderers.Count > 0)
                 {
-                    // each named group tints its own resolved stage parts,
-                    // exactly the game's per-object SetColor(0x99).
-                    mpb.SetColor(id_ambient, tint);
+                    // the game's slow path tints resolved stage parts via
+                    // _MulColor0 (0x94) + _ColorPower (0x97) - MPB when a
+                    // block is cached, else the instance material. the fast
+                    // path's _AmbientColor (0x99) global publish stays.
+                    // (uv2_bgcolor1_resolution_decoded.md §3.3)
+                    mpb.SetColor(id_mul_color0, tint);
+                    mpb.SetFloat(id_color_power, power);
                     foreach (var r in renderers)
                     {
                         if (r == null) continue;
@@ -159,22 +183,32 @@ namespace UV2.Live
 
         private bool try_resolve_part_sets()
         {
-            // stage geometry roots are siblings, not children of this
-            // loader object; sweep the whole scene like the game's registry.
+            // stage geometry loads after open(); resolve the part sets once
+            // the scene actually has renderers to match against.
             var all = FindObjectsOfType<Renderer>();
             if (all.Length == 0 && resolve_attempts++ < 600) return false;
             resolved = true;
 
+            // the game's registries (StartStageObject @0x7ff8e4db0360):
+            // unitNameMap[FNV(unit.name)] = unit; workInfo[FNV(name no
+            // "(Clone)")] = objects. a group only ever tints objects whose
+            // FNV-1 matches its TimelineNameHash EXACTLY - unit name or
+            // object name; unknown hashes are silent no-ops, and the unit
+            // table also expands a matched unit to every object inside it.
+            // UV2 has no authored unit table, so both hops collapse to one
+            // exact-hash rule on renderer names (unit object + unit name).
             foreach (var track in ws.bg_color1)
             {
                 if (chara_group_names.Contains(track.name)) continue;
+                uint want = fnv1(track.name);
                 var set = new List<Renderer>();
                 foreach (var r in all)
                 {
                     if (r == null || r.transform == null) continue;
-                    string obj_name = r.transform.name;
-                    string parent_name = r.transform.parent ? r.transform.parent.name : "";
-                    if (obj_name.Contains(track.name) || parent_name.Contains(track.name))
+                    // object hop: exact FNV of the clean name; parent hop:
+                    // exact FNV of the parent (unit) name.
+                    if (fnv1(clean_name(r.transform.name)) == want
+                        || (r.transform.parent != null && fnv1(clean_name(r.transform.parent.name)) == want))
                         set.Add(r);
                 }
                 if (set.Count > 0) part_sets[track.name] = set;

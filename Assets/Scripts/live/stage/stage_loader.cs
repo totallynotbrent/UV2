@@ -454,6 +454,9 @@ namespace UV2.Live
         public bool opened { get { return _open_ok; } }
         private bool _open_ok;
 
+        // the song clock, exposed for the -uv2frame seek mode in scene_boot.
+        public timeline_clock song_clock { get { return clock; } }
+
         public System.Collections.IEnumerator open(selection_state sel) { yield return open_core(sel); }
 
         private AssetBundle load_bundle_keep(string name)

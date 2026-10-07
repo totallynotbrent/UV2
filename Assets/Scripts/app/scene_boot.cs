@@ -57,7 +57,35 @@ namespace UV2.App
                 yield break;
             }
 
-            if (method_name == "build_concert_scene") scene_bootstrap.build_concert_scene(free_clock);
+            // frame-perfect comparison mode: -uv2frame <seconds> seeks the
+            // song clock after the concert opens, settles one frame, and
+            // writes a named png. pairs with the user's exe frames so
+            // both machines capture the same song time.
+            var frame_args = System.Environment.GetCommandLineArgs();
+            float seek_s = -1f;
+            for (int i = 0; i < frame_args.Length - 1; i++)
+                if (frame_args[i] == "-uv2frame" && float.TryParse(frame_args[i + 1], out var s)) seek_s = s;
+
+            if (method_name == "build_concert_scene")
+            {
+                scene_bootstrap.build_concert_scene(free_clock);
+
+                if (seek_s >= 0f)
+                {
+                    var loader = UnityEngine.Object.FindObjectOfType<UV2.Live.stage_loader>();
+                    // wait for the open to finish, then seek and settle.
+                    float open_deadline = Time.realtimeSinceStartup + 90f;
+                    while (loader != null && !loader.opened && Time.realtimeSinceStartup < open_deadline)
+                        yield return null;
+                    if (loader != null && loader.song_clock != null)
+                    {
+                        loader.song_clock.pause();
+                        loader.song_clock.seek(seek_s);
+                        trace_log.write($"frame mode: seeked clock to {seek_s:0.00}s");
+                        for (int f = 0; f < 3; f++) yield return null;
+                    }
+                }
+            }
             else Debug.LogError($"[scene_boot] unknown bootstrap: {method_name}");
 
             // headless e2e evidence: dump the rendered frame after the ui settles.
@@ -70,7 +98,13 @@ namespace UV2.App
                     for (int f = 0; f < delay; f++) yield return null;
                     string shot_dir = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "e2e_shots");
                     System.IO.Directory.CreateDirectory(shot_dir);
-                    string shot_path = System.IO.Path.Combine(shot_dir, $"{method_name}_{System.DateTime.Now:HHmmss}.png");
+                    // frame mode names the shot with the seeked song time so
+                    // captures from both machines pair by filename.
+                    var sel_now = UV2.App.selection_store.load();
+                    string shot_path = System.IO.Path.Combine(shot_dir,
+                        seek_s >= 0f && sel_now != null
+                            ? $"{method_name}_{sel_now.music_id}_{seek_s:0.0}s.png"
+                            : $"{method_name}_{System.DateTime.Now:HHmmss}.png");
                     ScreenCapture.CaptureScreenshot(shot_path);
                     Debug.Log($"[scene_boot] screenshot requested: {shot_path}");
                     yield return new WaitForSeconds(1.5f);

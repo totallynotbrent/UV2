@@ -26,7 +26,7 @@ Shader "live/uv2_fog_fade"
             float4 _DistanceParams;
             float4 _SceneFogParams;
             float4 _SceneFogMode;
-            float4 _FrustumCornersWS;
+            float4 _FrustumCornersWS[4];
             float4 _CameraWS;
             float4 _FogColor;
             float4 _FadeColor;
@@ -70,16 +70,21 @@ Shader "live/uv2_fog_fade"
                 //       mode 2: 1-exp(-d*SP.y)
                 //       mode 3: 1-exp(-(d*SP.x)^2)
                 float rawDepth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, i.uv);
-                float eye = LinearEyeDepth(rawDepth);
+                // the game's eye = 1/(zp.x*raw+zp.y) = linear01 depth (0..1),
+                // meters = eye * far. the frustum rays carry length=far, so
+                // er = eye01 * ray is world-space meters exactly; mixing
+                // LinearEyeDepth (already meters) with far-length rays
+                // overscaled every distance by far (the white-frame bug).
+                float eye01 = Linear01Depth(rawDepth);
                 float3 ray = i.ray.xyz;
                 bool is_sky = rawDepth >= 0.999999;
 
-                float3 er = eye * ray;
+                float3 er = eye01 * ray;
                 float d;
                 if (_SceneFogMode.y > 0.5)
                     d = length(er);
                 else
-                    d = eye * _ProjectionParams.z;
+                    d = eye01 * _ProjectionParams.z;
 
                 float hcorr = 0;
                 float radS = 0;
@@ -87,11 +92,11 @@ Shader "live/uv2_fog_fade"
                 // hAbove = worldY - HP.x; k = 1-2*HP.z; the plane term adds
                 // HP.y back (hcorr uses worldY - HP.x + HP.y verbatim);
                 // slope = |eye*ray.y + 1e-5|; hgrad = min(hAbove*k,0)^2/slope.
-                float worldY = eye * ray.y + _CameraWS.y;
+                float worldY = eye01 * ray.y + _CameraWS.y;
                 float hAbove = worldY - _HeightParams.x;
                 float k = 1.0 - 2.0 * _HeightParams.z;
                 float t0 = min(hAbove * k, 0.0);
-                float slope = abs(eye * ray.y) + 1e-5;
+                float slope = abs(eye01 * ray.y) + 1e-5;
                 float hgrad = (t0 * t0) / slope;
                 hcorr = _HeightParams.z * (hAbove + _HeightParams.y) - hgrad;
                 radS = length(er * _HeightParams.w);
