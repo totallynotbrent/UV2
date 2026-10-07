@@ -86,6 +86,23 @@ namespace UV2.Live
         public float roll;
     }
 
+    // the color grading keys (worksheet colorCorrectionDataLists). the game's
+    // ColorCorrectionPass::UpdateTextureParameter (0x7ff8e5101ca0) evaluates
+    // each channel's AnimationCurve into a 256-entry rgb LUT texture and
+    // SetPixels32+Apply, blended between cur/next by blendCurve (mode 0) or a
+    // second 32-entry curve set (mode 1). saturation multiplies the graded
+    // luma back in.
+    [Serializable]
+    public class color_correction_key : live_key
+    {
+        public int enable;
+        public float saturation;
+        public int mode;
+        public AnimationCurve red_curve = new();
+        public AnimationCurve green_curve = new();
+        public AnimationCurve blue_curve = new();
+    }
+
     // the postfx worksheet lists, mirrored from the cutt stub sheet.
     public class postfx_worksheet
     {
@@ -97,5 +114,6 @@ namespace UV2.Live
         public List<fog_key> fog = new();
         public List<fade_key> fade = new();
         public List<tiltshift_key> tiltshift = new();
+        public List<color_correction_key> color_correction = new();
     }
 }

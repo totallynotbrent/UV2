@@ -591,6 +591,23 @@ namespace UV2.Live
                     roll = k.roll,
                 }).ToList();
 
+            // colorCorrectionDataLists carries one named entry; its keys blend
+            // the rgb curves between cur/next (the game's ColorCorrectionPass
+            // evaluates them into a 256-entry LUT each frame).
+            ws.postfx.color_correction = (sheet.colorCorrectionDataLists ?? new())
+                .Where(g => g?.keys?.thisList != null)
+                .SelectMany(g => g.keys.thisList.Select(k => new color_correction_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    enable = k.enable,
+                    saturation = k.saturation,
+                    mode = k.mode,
+                    red_curve = k.redCurve,
+                    green_curve = k.greenCurve,
+                    blue_curve = k.blueCurve,
+                })).ToList();
+
             ws.camera_motion = (sheet.cameraMotionKeys?.thisList ?? new())
                 .Select(k => new camera_motion_key
                 {
