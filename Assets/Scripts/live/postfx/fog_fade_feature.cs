@@ -45,7 +45,8 @@ namespace UV2.Live
                 bool dof_on = director.dof_enabled;
                 bool bloom_on = director.bloom_state_valid && director.bloom_state != null;
                 bool tilt_on = director.tilt_enabled;
-                if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on && !tilt_on) return;
+                bool grade_on = director.cc != null && director.cc.valid && director.cc_lut != null;
+                if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on && !tilt_on && !grade_on) return;
 
                 // blitting a target onto itself is undefined in urp: d3d unbinds
                 // the srv when the texture becomes the render target, so the
@@ -154,6 +155,12 @@ namespace UV2.Live
                     apply_film(cmd, renderingData, director.film2_state, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
                 if (film_valid(director.film3_state))
                     apply_film(cmd, renderingData, director.film3_state, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
+
+                // the color-correction grade rides after the film layers and
+                // before the tilt-shift overlay (the game's ColorCorrectionPass
+                // runs in its post-bloom chain before the final overlay).
+                if (director.cc != null && director.cc.valid && director.cc_lut != null)
+                    apply_colorgrade(cmd, director, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
 
                 // the tilt-shift overlay runs last — the game's Execute flow
                 // ends the chain with it (final: event<=550 source-rt else
@@ -291,6 +298,28 @@ namespace UV2.Live
             // radial COC by mode, blur radius min(|dist|*area, size) planar /
             // clamp(dot(d,d)*area, 0, size) radial, 28-tap jittered disc,
             // _Params = (offset.x, offset.y, sin(roll), cos(roll)).
+            private Material grade_mat;
+
+            // the color-correction grade: sample the director's 256x1 rgb LUT
+            // per channel, then the authored saturation.
+            private void apply_colorgrade(CommandBuffer cmd, postfx_director director,
+                                          ref RenderTargetIdentifier cur, ref bool cur_is_color,
+                                          ref RenderTargetIdentifier nxt, ref bool nxt_is_a,
+                                          RenderTargetIdentifier tmp_a, RenderTargetIdentifier tmp_b)
+            {
+                if (grade_mat == null)
+                {
+                    var sh = Shader.Find("live/uv2_colorgrade");
+                    if (sh == null) return;
+                    grade_mat = CoreUtils.CreateEngineMaterial(sh);
+                }
+                grade_mat.SetTexture("_Lut", director.cc_lut);
+                grade_mat.SetFloat("_Saturation", director.cc.saturation);
+                cmd.Blit(cur, nxt, grade_mat, 0);
+                cur = nxt; cur_is_color = false;
+                nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
+            }
+
             private void apply_tilt(CommandBuffer cmd, RenderingData renderingData,
                                     postfx_director director, ref RenderTargetIdentifier cur,
                                     ref bool cur_is_color, ref RenderTargetIdentifier nxt,
@@ -347,6 +376,7 @@ namespace UV2.Live
                 // (composite decode, id 263).
                 film_mat.SetFloat("_DepthClip", Mathf.Max(0f, 1.5f - s.depth_clip));
                 film_mat.SetVector("_PostFilmOffsetParam", new Vector4(s.offset_param.x, s.offset_param.y, 0, 0));
+                film_mat.SetVector("_PostFilmOptionParam", new Vector4(s.option_param.x, s.option_param.y, 0, 0));
                 film_mat.SetColor("_PostFilmColor0", s.color0);
                 film_mat.SetColor("_PostFilmColor1", s.color1);
                 film_mat.SetColor("_PostFilmColor2", s.color2);

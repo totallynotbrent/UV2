@@ -26,6 +26,8 @@ namespace UV2.Live
         [HideInInspector] public film_state film1_state;
         [HideInInspector] public film_state film2_state;
         [HideInInspector] public film_state film3_state;
+        // the color-correction state: null when no track or enable=0.
+        [HideInInspector] public cc_state cc;
 
         // the evaluated dof state, read by the render feature.
         [HideInInspector] public bool dof_enabled;
@@ -53,6 +55,7 @@ namespace UV2.Live
             public float depth_power;
             public float depth_clip;
             public Vector2 offset_param;
+            public Vector4 option_param;
             public Color color0;
             public Color color1;
             public Color color2;
@@ -70,6 +73,7 @@ namespace UV2.Live
             clock = timeline;
             cam = target;
             focus_roots = characters;
+            cc_lut = null;
         }
 
         private void LateUpdate()
@@ -84,6 +88,7 @@ namespace UV2.Live
             film1_state = eval_film(ws.postfx.film1, t);
             film2_state = eval_film(ws.postfx.film2, t);
             film3_state = eval_film(ws.postfx.film3, t);
+            cc = eval_cc(t);
             eval_dof(t);
             eval_tilt(t);
 
@@ -96,7 +101,8 @@ namespace UV2.Live
                 string fl = film1_state != null && film1_state.valid ? $"film m{film1_state.mode} p{film1_state.power:0.00}" : "film none";
                 string d = dof_enabled ? $"dof {dof_focal_m:0.0}m f{dof_focal01:0.00} far{dof_far_blend:0.00}" : "dof off";
                 string ts = tilt_enabled ? $"tilt m{tilt_mode} a{tilt_blur_area:0.0} blur{tilt_max_blur:0.0} roll{tilt_roll:0.0}" : "tilt off";
-                trace_log.write($"postfx: bloom {b} fog {f} fade a {fade_color.a:0.00} {fl} {d} {ts}");
+                string gr = cc != null && cc.valid ? $"grade sat{cc.saturation:0.00}" : "grade off";
+                trace_log.write($"postfx: bloom {b} fog {f} fade a {fade_color.a:0.00} {fl} {d} {ts} {gr}");
             }
         }
         private int trace_postfx_ticks;
@@ -136,6 +142,91 @@ namespace UV2.Live
                 blend_mode = cur.blend_mode,
             };
             bloom_state_valid = bloom_state.intensity > 0f;
+        }
+
+        // the color-correction state the feature samples: per-channel curves
+        // blended between cur/next keys, baked into a 256x1 LUT.
+        public class cc_state
+        {
+            public AnimationCurve red = new();
+            public AnimationCurve green = new();
+            public AnimationCurve blue = new();
+            public float saturation = 1f;
+            public bool valid;
+        }
+
+        // the graded LUT texture (256x1 rgba), rebuilt when the blended
+        // curves move. the game builds it in ColorCorrectionPass::
+        // UpdateTextureParameter (0x7ff8e5101ca0): Evaluate each channel
+        // curve at i/255, clamp 0..1, *255 -> SetPixels32 + Apply.
+        [HideInInspector] public Texture2D cc_lut;
+        private int cc_lut_frame = -1;
+        private float cc_lut_blend = -1f;
+
+        private cc_state eval_cc(float t)
+        {
+            var keys = ws.postfx.color_correction;
+            if (keys == null || keys.Count == 0) return null;
+            int i = key_eval.bracket(keys, t);
+            if (i < 0) return null;
+            var cur = keys[i];
+            if (cur.enable == 0) return null;
+            var next = i + 1 < keys.Count ? keys[i + 1] : null;
+            var s = new cc_state { saturation = cur.saturation, valid = true };
+            s.red = cur.red_curve;
+            s.green = cur.green_curve;
+            s.blue = cur.blue_curve;
+            float blend = 0f;
+            if (next != null && next.interpolate_type != 0 && next.enable != 0)
+                blend = key_eval.interp(cur, next, t);
+            if (blend > 0f && next != null)
+            {
+                s.red = blend_curves(cur.red_curve, next.red_curve, blend);
+                s.green = blend_curves(cur.green_curve, next.green_curve, blend);
+                s.blue = blend_curves(cur.blue_curve, next.blue_curve, blend);
+                s.saturation = Mathf.Lerp(cur.saturation, next.saturation, blend);
+            }
+            rebuild_cc_lut(s, i, blend);
+            return s;
+        }
+
+        // lerp two curves by baking the blended curve's sampled values: unity
+        // has no curve-lerp primitive, and 256 samples rebuild cheap.
+        private AnimationCurve blend_curves(AnimationCurve a, AnimationCurve b, float t)
+        {
+            var c = new AnimationCurve();
+            for (int i = 0; i <= 8; i++)
+            {
+                float time = i / 8f;
+                c.AddKey(time, Mathf.Lerp(a.Evaluate(time), b.Evaluate(time), t));
+            }
+            return c;
+        }
+
+        private void rebuild_cc_lut(cc_state s, int bracket, float blend)
+        {
+            if (cc_lut != null && cc_lut_frame == bracket
+                && Mathf.Abs(blend - cc_lut_blend) < 0.004f) return;
+            if (cc_lut == null)
+            {
+                cc_lut = new Texture2D(256, 1, TextureFormat.RGBA32, false);
+                cc_lut.wrapMode = TextureWrapMode.Clamp;
+                cc_lut.filterMode = FilterMode.Bilinear;
+            }
+            var px = new Color32[256];
+            for (int i = 0; i < 256; i++)
+            {
+                float u = i / 255f;
+                px[i] = new Color32(
+                    (byte)(Mathf.Clamp01(s.red.Evaluate(u)) * 255f),
+                    (byte)(Mathf.Clamp01(s.green.Evaluate(u)) * 255f),
+                    (byte)(Mathf.Clamp01(s.blue.Evaluate(u)) * 255f),
+                    255);
+            }
+            cc_lut.SetPixels32(px);
+            cc_lut.Apply();
+            cc_lut_frame = bracket;
+            cc_lut_blend = blend;
         }
 
         // fog: the authored key fields publish straight into the classic
@@ -190,6 +281,7 @@ namespace UV2.Live
                 depth_power = cur.depth_power,
                 depth_clip = cur.depth_clip,
                 offset_param = cur.offset_param,
+                option_param = cur.option_param,
                 color0 = cur.color0,
                 color1 = cur.color1,
                 color2 = cur.color2,
@@ -209,6 +301,7 @@ namespace UV2.Live
                 s.color2 = Color.Lerp(cur.color2, next.color2, k);
                 s.color3 = Color.Lerp(cur.color3, next.color3, k);
                 s.offset_param = Vector2.Lerp(cur.offset_param, next.offset_param, k);
+                s.option_param = Vector4.Lerp(cur.option_param, next.option_param, k);
             }
             // the game's validity gate, per mode.
             if (s.mode == 0) s.valid = false;

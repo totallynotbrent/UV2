@@ -1,6 +1,8 @@
-// the film overlay shader: the game's PostBloom_Rich overlay passes reduced to
-// the pure-color layer path (no movie textures in the live concert path).
-// mode keywords match the game's keyword-selection array exactly.
+// the film overlay shader: the game's PostBloom_Rich overlay reduced to the
+// pure-color layer path (no movie textures in the live concert path).
+// the mask algebra is register-decoded from the film variant ps_4_0
+// (postbloom listing @181622): aspect-correct, scale, roll, recenter,
+// offset, d2 = dist2 * optionParam.x, mask m = d2/(d2 + opt.y*(1-d2)).
 Shader "live/uv2_film"
 {
     Properties
@@ -11,7 +13,6 @@ Shader "live/uv2_film"
     {
         Cull Off ZWrite Off ZTest Always
 
-        // pass 0/1: the standard film pass + its inverse-vignette twin.
         Pass
         {
             CGPROGRAM
@@ -21,6 +22,7 @@ Shader "live/uv2_film"
             #include "UnityCG.cginc"
 
             sampler2D _MainTex;
+            float4 _MainTex_TexelSize;
             float _PostFilmPower;
             float _DepthPower;
             float _DepthClip;
@@ -47,23 +49,35 @@ Shader "live/uv2_film"
                 return o;
             }
 
-            // the vignette mask: distance from the layer's center, scaled by
-            // the authored offset/roll/scale, 0 at center -> 1 at the corners.
-            float vignette(float2 uv)
+            // the game's mask (film variant ps_4_0 @181622, register-exact):
+            //   p = ((uv*aspect - 0.5*aspect).xy * scale.xy), roll-rotated,
+            //       recentered (+0.5, x/aspect), + _PostFilmOffsetParam;
+            //   d2 = dot((p-0.5)*2, (p-0.5)*2) * optionParam.x
+            //   num = (optionParam.y <= 0) ? 1e-4 : d2      [GE 0,y -> z=1 when y<=0]
+            //   m   = num / (num + optionParam.y * (1 - num))
+            // y == 0 -> m = 1 everywhere (full-screen film); y > 0 -> vignette.
+            float mask(float2 uv)
             {
-                float2 p = uv - 0.5;
-                float sinr = _PostFilmRollParameter.x;
-                float cosr = _PostFilmRollParameter.y;
-                p = float2(p.x * cosr - p.y * sinr, p.x * sinr + p.y * cosr);
+                float aspect = _MainTex_TexelSize.w > 0 ? _MainTex_TexelSize.z / _MainTex_TexelSize.w : 1.0;
+                float2 p = uv * float2(aspect, 1.0) - float2(0.5 * aspect, 0.5);
                 p *= _PostFilmScaleParameter.xy;
-                p -= _PostFilmOffsetParam.xy;
-                return saturate(length(p) * 2.0);
+                float s = _PostFilmRollParameter.x;
+                float c = _PostFilmRollParameter.y;
+                float2 r = float2(p.x * c - p.y * s, p.x * s + p.y * c);
+                r += float2(0.5 * aspect, 0.5);
+                r.x /= aspect;
+                r += _PostFilmOffsetParam.xy;
+                float2 d = (r - float2(0.5, 0.5)) * 2.0;
+                float d2 = dot(d, d) * _PostFilmOptionParam.x;
+                float b = _PostFilmOptionParam.y;
+                float num = b <= 0.0 ? 1e-4 : d2;
+                return num / (num + b * (1.0 - num));
             }
 
             fixed4 frag(v2f i) : SV_Target
             {
                 fixed4 scene = tex2D(_MainTex, i.uv);
-                float v = vignette(i.uv);
+                float v = mask(i.uv);
                 float p = _PostFilmPower;
                 fixed4 c0 = _PostFilmColor0;
 
