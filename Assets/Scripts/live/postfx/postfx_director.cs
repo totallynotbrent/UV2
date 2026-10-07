@@ -92,7 +92,7 @@ namespace UV2.Live
             eval_dof(t);
             eval_tilt(t);
 
-            // one heartbeat every ~2s so the bench proves the postfx engaged.
+            // one heartbeat every ~2s so the bench proves the chain engaged.
             if (trace_postfx_ticks++ % 120 == 0)
             {
                 string b = ws.postfx.bloom.Count == 0 ? "none"
@@ -107,11 +107,8 @@ namespace UV2.Live
         }
         private int trace_postfx_ticks;
 
-        // bloom: the game's FastBloom pyramid parameters, published from the
-        // authored keys. the volume bloom is gone — the game blits its own
-        // pyramid (source/4, threshold folded per tap at every level, intensity
-        // exactly once at the first downsample, soft-add composite) per the
-        // bloom pipeline decode.
+        // bloom: the game's FastBloom pyramid parameters from the authored
+        // keys (GAME_BLOOM_PIPELINE_DECODED.md).
         public bloom_key bloom_state;
         [HideInInspector] public bool bloom_state_valid;
 
@@ -155,10 +152,9 @@ namespace UV2.Live
             public bool valid;
         }
 
-        // the graded LUT texture (256x1 rgba), rebuilt when the blended
-        // curves move. the game builds it in ColorCorrectionPass::
-        // UpdateTextureParameter (0x7ff8e5101ca0): Evaluate each channel
-        // curve at i/255, clamp 0..1, *255 -> SetPixels32 + Apply.
+        // the graded LUT (256x1), rebuilt when the blended curves move;
+        // the game builds it in ColorCorrectionPass::UpdateTextureParameter
+        // (0x7ff8e5101ca0).
         [HideInInspector] public Texture2D cc_lut;
         private int cc_lut_frame = -1;
         private float cc_lut_blend = -1f;
@@ -289,6 +285,11 @@ namespace UV2.Live
                 roll_angle = cur.roll_angle,
                 scale = cur.scale,
                 layer_mode = cur.layer_mode,
+                // key attribute bit 0x100000 = isUseTexMask (uv2_timeline_
+                // attribute_gate_decoded.md): the game's UpdatePostFilm copies
+                // it into the layer param and the draw helper publishes it as
+                // _PostFilmIsInverseVignette - the shader inverts the mask.
+                inverse = (cur.attribute & 0x100000) != 0,
             };
             if (next != null && next.interpolate_type != 0)
             {
@@ -303,7 +304,14 @@ namespace UV2.Live
                 s.offset_param = Vector2.Lerp(cur.offset_param, next.offset_param, k);
                 s.option_param = Vector4.Lerp(cur.option_param, next.option_param, k);
             }
-            // the game's validity gate, per mode.
+            // the game's validity gate, per mode (ScreenOverlayRender.Parameter
+            // .IsValidity 0x7ff8e51300e0, register-proven): mode0 never;
+            // modes 1/2/5 valid iff filmPower > 0; 3/4/6 always; 7 iff
+            // color0.a > 0. AND the ps scales every layer by _DepthPower =
+            // key.depthPower, so a valid layer with depthPower==0 paints
+            // exactly zero (uv2_film_mode_bodies_decoded.md §6): 1004's
+            // film1 never paints at open (first painting key f2190), 1009's
+            // film2 never paints at all (0/381 keys carry depthPower>0).
             if (s.mode == 0) s.valid = false;
             else if (s.mode == 3 || s.mode == 4 || s.mode == 6) s.valid = true;
             else if (s.mode == 7) s.valid = s.color0.a > 0f;
@@ -337,20 +345,16 @@ namespace UV2.Live
                 smooth = key_eval.lerp_f(cur.smoothness, next.smoothness, k);
             }
 
-            // focal: the authored dofFocalPoint is an eye-distance the game
-            // resolves via FocalDistance01 — worldPos = cam.pos + (fp − near)
-            // * cam.forward, then WorldToViewportPoint().z / (far − near).
-            // (register-exact per uv2_dof_focal_path_decoded.md)
+            // the authored dofFocalPoint resolves to focal01 via
+            // WorldToViewportPoint (uv2_dof_focal_path_decoded.md).
             float near = cam.nearClipPlane;
             float far = cam.farClipPlane;
             float far_near = Mathf.Max(1e-4f, far - near);
             Vector3 world_pos = cam.transform.position + (fp - near) * cam.transform.forward;
             float focal01 = Mathf.Max(0f, cam.WorldToViewportPoint(world_pos).z / far_near);
             dof_enabled = focal_size > 0f && fp > 0f;
-            // the shader's coc pass subtracts focal in eye meters; the game
-            // keeps focal in focal01 viewport-z space, so reconstruct the
-            // meters equivalent of the resolved focal01 (register-exact
-            // inverse of WorldToViewportPoint().z/(far-near)).
+            // the coc pass wants eye meters; reconstruct the meters of the
+            // resolved focal01 (inverse of WorldToViewportPoint().z/(far-near)).
             dof_focal_m = focal01 * far_near + near;
             dof_focal01 = focal01;
             dof_far_blend = focal_size / far_near * 0.5f + focal01;
@@ -362,11 +366,9 @@ namespace UV2.Live
         // the character roots for focal resolution, wired at open.
         private List<Transform> focus_roots;
 
-        // the tilt-shift overlay, evaluated per the game's OnUpdateTiltShift:
-        // mode/quality/downsample copy from the bracketing key un-lerped;
-        // blurArea/maxBlurSize/offset/roll lerp by the next-key rule (hold on
-        // interpolateType 0, linear on 1, curve on 2, bezier on 3). the pass
-        // index is quality*2 + (mode!=1). (uv2_tiltshift_decoded.md)
+        // tilt-shift per the game's OnUpdateTiltShift (uv2_tiltshift_decoded.
+        // md): scalar fields copy un-lerped, the rest ride the next-key rule;
+        // pass index = quality*2 + (mode!=1).
         private void eval_tilt(float t)
         {
             if (ws.postfx.tiltshift.Count == 0) { tilt_enabled = false; return; }
@@ -389,9 +391,8 @@ namespace UV2.Live
                 off = Vector2.Lerp(cur.offset, next.offset, k);
                 roll = key_eval.lerp_f(cur.roll, next.roll, k);
             }
-            // the game's downsample>0 path exports the blurred image via
-            // _Blurred and passes the source through; the consumer is not
-            // identified, so clamp to 0 (all son1004 keys author 0 anyway).
+            // downsample>0 exports _Blurred to an unidentified consumer;
+            // clamp to 0 (all son1004 keys author 0 anyway).
             tilt_blur_area = Mathf.Max(0f, area);
             tilt_max_blur = Mathf.Max(0f, max_blur);
             tilt_offset = off;

@@ -282,14 +282,23 @@ namespace UV2.Live
                 main_dir = -(Quaternion.Euler(_light_key.light_dir) * Vector3.forward).normalized;
             Shader.SetGlobalVector(id_main_light_pos, new Vector4(main_dir.x, main_dir.y, main_dir.z, 0f));
             Shader.SetGlobalColor(id_main_light_color, Color.white);
+
+            // feed the render-loop republish pass: urp's SetupLights clobbers
+            // both globals after this publish, and the pass restores them.
+            UV2.Live.fog_fade_feature.set_main_light_dir(main_dir);
         }
 
-        // publishes the fog-off state so stage shaders never fade the frame.
+        // publishes the game's live fog-off state (GraphicSettings::UpdateFog
+        // pushes these every frame of a live; live heap read in
+        // uv2_chara_fog_factor_decoded.md §4). fog color is the PALE CYAN
+        // default, not black, and MaxDensity=1 floors the chara VS clarity
+        // factor at 1 — both publishes give full chara color, but any
+        // partial-fog path fades through the right color.
         private static void publish_fog_off()
         {
-            Shader.SetGlobalColor(id_fog_color, Color.clear);
-            Shader.SetGlobalVector(id_fog_min_distance, new Vector4(100000f, 0f, 0f, 0f));
-            Shader.SetGlobalVector(id_fog_length, new Vector4(0f, 0f, 0f, 1e-06f));
+            Shader.SetGlobalColor(id_fog_color, new Color(0.76f, 1.00f, 1.00f, 1f));
+            Shader.SetGlobalVector(id_fog_min_distance, new Vector4(0f, 0f, 0f, 0f));
+            Shader.SetGlobalVector(id_fog_length, new Vector4(1000f, 1000f, 1000f, 1000f));
             Shader.SetGlobalFloat(id_fog_max_density, 1f);
             Shader.SetGlobalFloat(id_fog_max_height, 100f);
             Shader.SetGlobalVector(id_fog_world_origin, Vector4.zero);

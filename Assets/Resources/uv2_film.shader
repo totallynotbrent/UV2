@@ -33,6 +33,7 @@ Shader "live/uv2_film"
             float4 _PostFilmColor2;
             float4 _PostFilmColor3;
             float4 _PostFilmRollParameter;
+            float _PostFilmIsInverseVignette;
             float4 _PostFilmScaleParameter;
 
             struct v2f
@@ -71,14 +72,23 @@ Shader "live/uv2_film"
                 float d2 = dot(d, d) * _PostFilmOptionParam.x;
                 float b = _PostFilmOptionParam.y;
                 float num = b <= 0.0 ? 1e-4 : d2;
-                return num / (num + b * (1.0 - num));
+                float m = num / (num + b * (1.0 - num));
+                // the game's isUseTexMask flag (published as
+                // _PostFilmIsInverseVignette, id 223) swaps which side of the
+                // mask passes (uv2_timeline_attribute_gate_decoded.md §5):
+                // the authored inverse layers paint the complement.
+                return _PostFilmIsInverseVignette > 0.5 ? 1.0 - m : m;
             }
 
             fixed4 frag(v2f i) : SV_Target
             {
                 fixed4 scene = tex2D(_MainTex, i.uv);
                 float v = mask(i.uv);
-                float p = _PostFilmPower;
+                // the ps scales every mode's layer color by cb0[152].x =
+                // _DepthPower = key.depthPower (uv2_film_mode_bodies_decoded.md
+                // §5) - a valid layer with depthPower==0 paints exactly zero.
+                // _PostFilmPower (key.filmPower) is the validity term.
+                float p = _DepthPower;
                 fixed4 c0 = _PostFilmColor0;
 
             #ifdef MODE_NONE

@@ -33,9 +33,11 @@ namespace UV2.Live
         private bool _audio_trusted;
 
         // one frame step: the audio position once it has proven it advances
-        // plausibly, else real-time accumulation.
+        // plausibly, else real-time accumulation. a paused clock holds the
+        // seeked frame for the -uv2frame capture mode.
         public void advance(float delta)
         {
+            if (paused) return;
             if (_master != null && _master.clip != null && _master.isPlaying)
             {
                 float at = _master.time;

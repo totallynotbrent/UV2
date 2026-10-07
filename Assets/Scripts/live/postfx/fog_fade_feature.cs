@@ -370,6 +370,12 @@ namespace UV2.Live
                     film_mat.DisableKeyword(film_keywords[i]);
                 if (s.mode >= 0 && s.mode < film_keywords.Length)
                     film_mat.EnableKeyword(film_keywords[s.mode]);
+                // the game's draw helper publishes id192 _PostFilmPower =
+                // param+0x04 = key.filmPower and id187 _DepthPower = param+0x08
+                // = key.depthPower (register-proven at 0x7ff8e513707f/70ad -
+                // the fork's names are correct, there is no swap). the ps
+                // scales every mode's layer color by _DepthPower; the validity
+                // gate tests filmPower. (uv2_film_mode_bodies_decoded.md §5-6)
                 film_mat.SetFloat("_PostFilmPower", s.power);
                 film_mat.SetFloat("_DepthPower", s.depth_power);
                 // the game publishes max(0, 1.5 - clip) into _DepthClip
@@ -384,6 +390,11 @@ namespace UV2.Live
                 float rad = s.roll_angle * Mathf.Deg2Rad;
                 film_mat.SetVector("_PostFilmRollParameter", new Vector4(Mathf.Sin(rad), Mathf.Cos(rad), 0, 0));
                 film_mat.SetVector("_PostFilmScaleParameter", new Vector4(s.scale.x, s.scale.y, 0, 0));
+                // the game's draw helper publishes isUseTexMask as
+                // _PostFilmIsInverseVignette (id 223) - the shader's mask
+                // inversion flag. ignoring it made every authored inverse
+                // layer paint the uninverted full mask (the white wash).
+                film_mat.SetFloat("_PostFilmIsInverseVignette", s.inverse ? 1f : 0f);
 
                 cmd.Blit(cur, nxt, film_mat, 0);
                 cur = nxt; cur_is_color = false;
@@ -393,16 +404,70 @@ namespace UV2.Live
 
         public Shader shader;
         private pass the_pass;
+        private light_globals_pass the_light_pass;
 
         public override void Create()
         {
             the_pass = new pass(this);
         }
 
+        // republishes the game's chara-light globals inside the render loop.
+        // urp's ForwardLights::SetupMainLightConstants publishes
+        // _MainLightColor = finalColor (color*intensity) of the main
+        // directional at SetupLights — our rig's sun is intensity 0 and the
+        // zero-light default is Color.black — and that lands AFTER every c#
+        // publish, so c# SetGlobalColor can never win. the game's chara
+        // shader multiplies albedo/toon by cb0[7] _MainLightColor, so the
+        // clobber renders chars black on real gpus (llvmpipe binds a stripped
+        // variant without the multiply, which is why the bench looked fine).
+        // this pass rides at BeforeRendering, after SetupLights, so the last
+        // write is the game's value. (uv2_chara_toon_light_decoded.md,
+        // uv2_chara_texture_color_decoded.md)
+        private class light_globals_pass : ScriptableRenderPass
+        {
+            private static readonly int id_main_light_pos = Shader.PropertyToID("_MainLightPosition");
+            private static readonly int id_main_light_color = Shader.PropertyToID("_MainLightColor");
+
+            // the stage loader feeds these every frame; static fallbacks keep
+            // the pass safe before the loader opens (menus, shutdown).
+            public static Vector3 light_dir = Vector3.down;
+
+            public light_globals_pass()
+            {
+                renderPassEvent = RenderPassEvent.BeforeRendering;
+            }
+
+            public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
+            {
+                // only the two urp-clobbered names need the republish; the
+                // fog globals are gallop-custom and urp never touches them,
+                // so republishing fog-off here would clobber authored fog
+                // keys on songs that use fog.
+                var d = light_dir;
+                CommandBuffer cmd = CommandBufferPool.Get("uv2 chara light globals");
+                cmd.SetGlobalVector(id_main_light_pos, new Vector4(d.x, d.y, d.z, 0f));
+                cmd.SetGlobalColor(id_main_light_color, Color.white);
+                context.ExecuteCommandBuffer(cmd);
+                CommandBufferPool.Release(cmd);
+            }
+        }
+
+        // the light-globals republish pass rides before every camera render.
+        public static void set_main_light_dir(Vector3 dir)
+            => light_globals_pass.light_dir = dir;
+
+        // bisect switch for the white-frame hunt: an env var disables the
+        // whole post chain so the renderer can be isolated from the chain.
+        public static bool chain_disabled = System.Environment.GetEnvironmentVariable("UV2_NO_POSTFX") == "1";
+
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
+            if (chain_disabled) return;
             if (the_pass == null) the_pass = new pass(this);
             renderer.EnqueuePass(the_pass);
+            // the light-globals republish rides before every camera render.
+            if (the_light_pass == null) the_light_pass = new light_globals_pass();
+            renderer.EnqueuePass(the_light_pass);
         }
     }
 }

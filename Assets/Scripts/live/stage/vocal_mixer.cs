@@ -8,15 +8,11 @@ using UV2.Data;
 namespace UV2.Live
 {
     // per-character vocal stems mixed by the song's part table, using the
-    // game's own placement model (decoded from the IL2CPP dump; the tables
-    // below are heap-verified, see umadump/out/uv2_vocal_cue_decode.md).
-    // at open it decodes each cast member's vocal bank (main take plus the
-    // extra take when the bank carries one), then each frame it gates each
-    // stem on its part group flag, ranks the singing stems left to right,
-    // and applies the placement row's type gain, singer-count rate and pan.
-    // the part table (m<song>_part) is a per-time activation of five groups
-    // lleft..rright; the groups are stage columns, derived at runtime from
-    // the slot x positions so no song carries hardcoded positions.
+    // game's own placement model (heap-verified tables; umadump/out/
+    // uv2_vocal_cue_decode.md + uv2_vocal_lead_switch_decoded.md). each
+    // frame it gates stems on their part group flag, picks the take from
+    // the flag value, and applies gain/pan from the placement row and the
+    // csv's override columns.
     public class vocal_mixer : MonoBehaviour
     {
         private class stem
@@ -31,9 +27,13 @@ namespace UV2.Live
 
         private readonly List<stem> stems = new();
         private float[] part_times;
-        private int[][] part_rows;   // per row: 5 group flags (0 silent, 1 main, 2 extra)
+        private int[][] part_rows;   // per row: sing flags (0 silent, 1 main, 2 extra)
+        private float[][] part_vols; // per row: per-position volume overrides (>=900 unset)
+        private float[][] part_pans; // per row: per-position pan overrides (>=900 unset)
+        private float[] part_rates;  // per row: global volume-rate override (>=900 unset)
         private float last_volume = 1f;
         private const float fade_rate = 20f;  // ~50ms ramp between gain steps
+        private const float unset = 900f;     // the game's unset-override sentinel
 
         // the game's gain tables (AudioManager container +0x30/+0x40): gain
         // by placement type, and the rate by how many singers are active.
@@ -60,11 +60,9 @@ namespace UV2.Live
         private Transform[] stem_roots;   // chara roots, parallel to stems
         private int last_section = -1;
 
-        // decodes each member's vocal bank and starts it muted; volume and
-        // pan come from the part table every frame. members without a bank
-        // are skipped. the decode runs as a coroutine: 18 hca decodes take
-        // ~15s and concert open waits on this method, so the stems materialize
-        // after open returns (the part table gates them silent until then).
+        // decodes each member's bank as a coroutine (18 hca decodes take
+        // ~15s and open waits on this method); the part table gates stems
+        // silent until they materialize.
         public void open(timeline_clock clock_ref, IReadOnlyList<Transform> chara_roots,
             List<slot_pick> slots, int music_id)
         {
@@ -72,12 +70,14 @@ namespace UV2.Live
             var go = new GameObject("live_vocals");
             go.transform.SetParent(transform, false);
 
-            // the part csv: rows of time,lleft,left,center,right,rright.
             var rows = load_part_table(music_id);
             if (rows != null && rows.Count > 0)
             {
                 part_times = rows.Select(r => r.time).ToArray();
                 part_rows = rows.Select(r => r.flags).ToArray();
+                part_vols = rows.Select(r => r.vols).ToArray();
+                part_pans = rows.Select(r => r.pans).ToArray();
+                part_rates = rows.Select(r => r.rate).ToArray();
             }
             else
             {
@@ -100,10 +100,6 @@ namespace UV2.Live
                 if (root == null) continue;
                 roots_list.Add(root);
                 chara_ids.Add(slot.chara_id);
-                // the game maps stage POSITION id to a part column center-out
-                // (pos 1 = center, 2 = left, 3 = right, 4 = lleft, ...), matching
-                // the csv's lleft..rright column order. this is the authoring
-                // order, independent of the runtime x layout.
                 positions.Add(slot.position);
             }
             stem_roots = roots_list.ToArray();
@@ -113,12 +109,9 @@ namespace UV2.Live
 
         private readonly List<int> slot_positions = new();
 
-        // stage position id -> part-table column, center-out: pos 1 = center,
-        // then alternating left/right (2=left, 3=right, 4=lleft, 5=rright...).
-        // validated against the decode doc's solo sections (1004: the center
-        // solo at t=0 is position 1's chara, so pos 1 reads the center column).
-        // returns -1 when the position has no column in this song's part table
-        // (a backdancer) - those stems stay silent.
+        // stage position id -> part-table column, center-out (1 = center,
+        // 2 = left, 3 = right, 4 = lleft...), matching the csv's authoring
+        // order. -1 = no column (backdancer); those stems stay silent.
         private static int position_column(int position, int width)
         {
             if (position < 1 || position > width) return -1;
@@ -156,6 +149,20 @@ namespace UV2.Live
             int width = part_width();
             for (int i = 0; i < stems.Count && i < slot_positions.Count; i++)
                 stems[i].group = position_column(slot_positions[i], width);
+        }
+
+        // the csv's own column count tells the layout (the game's CsvLabel /
+        // CsvLabel7 enums, uv2_vocal_lead_switch_decoded.md §2): 5 sing
+        // columns (+ optional 5 volume + 5 pan = 15 value cols) or 7 sing
+        // columns (+ 7 volume + 7 pan + rate = 22 value cols). the sing
+        // region size is the stage-column width; the rest are overrides.
+        private static int sing_width(int csv_cols)
+        {
+            int values = csv_cols - 1;
+            if (values <= 0) return 0;
+            if (values <= 5) return values;             // bare 5-pos table
+            if (values <= 15) return 5;                 // + volume/pan overrides
+            return 7;                                    // 7-pos table (+rate)
         }
 
         // the part table's slot width, 0 with no table.
@@ -213,7 +220,7 @@ namespace UV2.Live
 
         // the part table from the meta manifest: m<song>_part, a csv text asset
         // inside a dat bundle. returns null when the song has none.
-        private List<(float time, int[] flags)> load_part_table(int music_id)
+        private List<(float time, int[] flags, float[] vols, float[] pans, float rate)> load_part_table(int music_id)
         {
             meta_reader.asset_row row;
             using (var meta = meta_reader.reader.open(config.meta_db_path))
@@ -235,24 +242,48 @@ namespace UV2.Live
             }
             if (string.IsNullOrEmpty(csv)) return null;
 
-            var out_rows = new List<(float, int[])>();
+            var out_rows = new List<(float, int[], float[], float[], float)>();
+            int width = 0;
             bool header = true;
             foreach (var line in csv.Split('\n'))
             {
                 var cols = line.Trim().Split(',');
-                if (header) { header = false; continue; }
+                if (header)
+                {
+                    header = false;
+                    width = sing_width(cols.Length);
+                    continue;
+                }
                 if (cols.Length < 2) continue;
                 if (!float.TryParse(cols[0], out float time)) continue;
-                // the csv's own width is the number of stage slots it addresses
-                // (5 for 1004, 16 for 1012, 23 for 1059). members beyond it are
+                // only the sing region gates stems; members beyond it are
                 // backdancers with no column.
-                int width = cols.Length - 1;
-                var flags = new int[width];
-                for (int g = 0; g < width; g++)
+                int w = width > 0 ? width : sing_width(cols.Length);
+                var flags = new int[w];
+                for (int g = 0; g < w; g++)
                     int.TryParse(cols[g + 1], out flags[g]);
-                out_rows.Add((time / 1000f, flags));
+                var vols = new float[w];
+                var pans = new float[w];
+                float rate = unset;
+                for (int g = 0; g < w; g++)
+                {
+                    vols[g] = unset;
+                    pans[g] = unset;
+                    int rest = w + 1 + g;   // volume block follows the sing block
+                    if (rest < cols.Length && float.TryParse(cols[rest], out float v))
+                        vols[g] = v;
+                    int prest = w + 1 + w + g; // then the pan block
+                    if (prest < cols.Length && float.TryParse(cols[prest], out float p))
+                        pans[g] = p;
+                }
+                // the 7-pos table's tail column: a global volume-rate override
+                // (CsvLabel7 col 22, e.g. 1059 carries 1 on 13 rows).
+                int ridx = w + 1 + 2 * w;
+                if (ridx < cols.Length && float.TryParse(cols[ridx], out float rt))
+                    rate = rt;
+                out_rows.Add((time / 1000f, flags, vols, pans, rate));
             }
-            trace_log.write($"vocals: part table {music_id}: {out_rows.Count} rows");
+            trace_log.write($"vocals: part table {music_id}: {out_rows.Count} rows, sing width {width}");
             return out_rows;
         }
 
@@ -272,8 +303,7 @@ namespace UV2.Live
                 if (s.group >= 0 && (uncut || active[s.group] > 0)) singing.Add(s);
             singing.Sort((a, b) => a.group.CompareTo(b.group));
 
-            // trace each section change so the bench can assert the ride:
-            // section index, singing count, per-stem (gain, pan).
+            // trace each section change so the bench can assert the ride.
             int section = part_section(t);
             if (section != last_section)
             {
@@ -295,6 +325,16 @@ namespace UV2.Live
             int n = Mathf.Clamp(singing.Count, 1, placement_rows.Length);
             var row = placement_rows[n - 1];
 
+            // the current section's override columns (>=900 = unset, the
+            // game's sentinel; uv2_vocal_lead_switch_decoded.md §4): a set
+            // volume replaces the placement gain, a set pan replaces the
+            // placement pan, and a set global rate replaces the singer-count
+            // rate term, per position.
+            int sec = part_section(t);
+            float[] vol_over = sec >= 0 && part_vols != null && sec < part_vols.Length ? part_vols[sec] : null;
+            float[] pan_over = sec >= 0 && part_pans != null && sec < part_pans.Length ? part_pans[sec] : null;
+            float rate_over = sec >= 0 && part_rates != null && sec < part_rates.Length ? part_rates[sec] : unset;
+
             foreach (var s in stems)
             {
                 bool on = s.group >= 0 && (uncut || active[s.group] > 0);
@@ -305,8 +345,13 @@ namespace UV2.Live
                 {
                     int rank = singing.IndexOf(s);
                     var slot = row[Mathf.Clamp(rank, 0, row.Length - 1)];
-                    target = part_type_gains[slot.type] * part_volume_rates[n];
+                    float rate = rate_over < unset ? rate_over : part_volume_rates[n];
+                    target = part_type_gains[slot.type] * rate;
                     pan = slot.pan;
+                    if (vol_over != null && s.group < vol_over.Length && vol_over[s.group] < unset)
+                        target = vol_over[s.group];
+                    if (pan_over != null && s.group < pan_over.Length && pan_over[s.group] < unset)
+                        pan = pan_over[s.group];
 
                     int wave = !uncut && active[s.group] == 2 && s.clips.Length > 1 ? 1 : 0;
                     if (!s.started && s.source != null && s.clips.Length > 0)
