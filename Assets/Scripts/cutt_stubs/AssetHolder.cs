@@ -17,7 +17,7 @@ namespace Gallop
     public class AssetTableEntry
     {
         public string Key = "";
-        public GameObject Value;
+        public UnityEngine.Object Value;
     }
 
     [Serializable]

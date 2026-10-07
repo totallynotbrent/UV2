@@ -28,6 +28,8 @@ namespace UV2.Live
         private live_worksheet ws;
         private timeline_clock clock;
         private readonly List<Transform> chara_roots = new();
+        // per-chara face morph databases loaded from the head bundles.
+        private readonly Dictionary<int, Gallop.FaceDrivenKeyTarget> face_targets = new();
         private camera_director director;
         private formation_driver formation;
         private bg_color1_director bg_color1;
@@ -104,7 +106,7 @@ namespace UV2.Live
             var clips = run_phase_clips(sel);
             if (clips == null) yield break;
 
-            wire_drivers(clips, sel.music_id);
+            wire_drivers(clips, sel.music_id, sel.slots.Select(x => x.chara_id).ToList());
             trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
 
             // the vocal stems: decode the banks but keep every stem silent
@@ -234,8 +236,9 @@ namespace UV2.Live
                 foreach (var entry in holder._assetTable.list)
                 {
                     if (entry?.Value == null) { trace_log.write("spotlight fixture: a table entry did not bind"); continue; }
-                    var piece = Instantiate(entry.Value, parent);
-                    piece.name = entry.Value.name;
+                    if (entry.Value is not GameObject entry_go) { trace_log.write($"spotlight fixture '{entry.Key}': not a prefab ({entry.Value.GetType().Name})"); continue; }
+                    var piece = Instantiate(entry_go, parent);
+                    piece.name = entry_go.name;
                     placed++;
                     foreach (var child in piece.GetComponentsInChildren<Transform>(true))
                         blink_lights.record_stage_child(child.name, child.gameObject);
@@ -691,6 +694,20 @@ namespace UV2.Live
             var head = Instantiate(prefab);
             int head_renderers = head.GetComponentsInChildren<Renderer>(true).Length;
 
+            // the face morph database rides the head as a ScriptableObject
+            // referenced by the root's AssetHolder table ('facial_target').
+            var holder = head.GetComponent<Gallop.AssetHolder>();
+            Gallop.FaceDrivenKeyTarget face_target = null;
+            if (holder?._assetTable?.list != null)
+                foreach (var entry in holder._assetTable.list)
+                    if (entry.Key == "facial_target" && entry.Value is Gallop.FaceDrivenKeyTarget ft)
+                    {
+                        face_target = ft;
+                        break;
+                    }
+            face_targets[chara_id] = face_target;
+            trace_log.write($"chara {chara_id}: face target {(face_target == null ? "MISS" : $"{face_target._mouthTarget.Count} mouth / {face_target._eyeTarget.Count} eye / {face_target._eyebrowTarget.Count} eyebrow")}");
+
             // remaps the head's skinned meshes onto the body's bones so they deform together.
             var body_bones = new Dictionary<string, Transform>();
             foreach (var smr in body_root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
@@ -820,7 +837,7 @@ namespace UV2.Live
             return rows?.GetValueOrDefault(name);
         }
 
-        private void wire_drivers(Dictionary<string, AnimationClip> clips, int music_id)
+        private void wire_drivers(Dictionary<string, AnimationClip> clips, int music_id, List<int> chara_ids)
         {
             var cam = FindObjectOfType<Camera>();
             if (cam == null)
@@ -847,7 +864,7 @@ namespace UV2.Live
             // phase 4: the facial director drives mouth weight + gaze from the cutt facial tracks.
             var facial_go = new GameObject("facial_director");
             var facial = facial_go.AddComponent<facial_director>();
-            facial.open(ws, clock, chara_roots);
+            facial.open(ws, clock, chara_roots, face_targets, chara_ids);
 
             var formation_go = new GameObject("formation_driver");
             formation = formation_go.AddComponent<formation_driver>();

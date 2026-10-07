@@ -55,8 +55,9 @@ namespace UV2.Live
                 foreach (var entry in holder._assetTable.list)
                 {
                     if (entry?.Value == null) continue;
-                    var piece = UnityEngine.Object.Instantiate(entry.Value, ctrl);
-                    piece.name = entry.Value.name.Replace("pfb_env_live_cmn_", "");
+                    if (entry.Value is not UnityEngine.GameObject entry_go) continue;
+                    var piece = UnityEngine.Object.Instantiate(entry_go, ctrl);
+                    piece.name = entry_go.name.Replace("pfb_env_live_cmn_", "");
                     spawned++;
                 }
             }
