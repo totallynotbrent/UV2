@@ -46,7 +46,8 @@ namespace UV2.Live
                 bool bloom_on = director.bloom_state_valid && director.bloom_state != null;
                 bool tilt_on = director.tilt_enabled;
                 bool grade_on = director.cc != null && director.cc.valid && director.cc_lut != null;
-                if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on && !tilt_on && !grade_on) return;
+                if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on && !tilt_on && !grade_on
+                    && !director.radial_enabled) return;
 
                 // blitting a target onto itself is undefined in urp: d3d unbinds
                 // the srv when the texture becomes the render target, so the
@@ -167,6 +168,13 @@ namespace UV2.Live
                 // plain copy; the visible output IS the blurred image).
                 if (tilt_on)
                     apply_tilt(cmd, renderingData, director, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
+
+                // the radial blur chain rides after tilt-shift: downsample to
+                // two temps, ping-pong the blur pass iteration times, then the
+                // composite pass folds _BlurTex back onto the chain (the
+                // game's RadialBlurPass::Execute blit order).
+                if (director.radial_enabled)
+                    apply_radial(cmd, renderingData, director, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
 
                 if (!cur_is_color)
                     cmd.Blit(cur, color);
@@ -400,6 +408,77 @@ namespace UV2.Live
                 cur = nxt; cur_is_color = false;
                 nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
             }
+            // the game's radial blur chain (RadialBlurPass::Execute blit order,
+            // uv2_radialblur_decoded.md): downsample the chain into two temps at
+            // size/downsample, run the blur pass ping-pong for iteration counts,
+            // then the composite pass mixes _BlurTex back by the area/depth
+            // factor. pass = 2*(type-1), composite = pass+1.
+            private Material radial_mat;
+            private RenderTexture radial_rt_a;
+            private RenderTexture radial_rt_b;
+
+            private void apply_radial(CommandBuffer cmd, RenderingData renderingData,
+                                       postfx_director director,
+                                       ref RenderTargetIdentifier cur, ref bool cur_is_color,
+                                       ref RenderTargetIdentifier nxt, ref bool nxt_is_a,
+                                       RenderTargetIdentifier tmp_a, RenderTargetIdentifier tmp_b)
+            {
+                if (radial_mat == null)
+                {
+                    var sh = Shader.Find("live/uv2_radialblur");
+                    if (sh == null) return;
+                    radial_mat = CoreUtils.CreateEngineMaterial(sh);
+                }
+                var desc = renderingData.cameraData.cameraTargetDescriptor;
+                desc.depthBufferBits = 0;
+                int ds = Mathf.Max(1, director.radial_downsample);
+                int rw = Mathf.Max(1, desc.width / ds), rh = Mathf.Max(1, desc.height / ds);
+                if (radial_rt_a == null || radial_rt_a.width != rw || radial_rt_a.height != rh)
+                {
+                    if (radial_rt_a != null) radial_rt_a.Release();
+                    if (radial_rt_b != null) radial_rt_b.Release();
+                    radial_rt_a = new RenderTexture(rw, rh, 0, desc.colorFormat)
+                        { filterMode = FilterMode.Bilinear };
+                    radial_rt_b = new RenderTexture(rw, rh, 0, desc.colorFormat)
+                        { filterMode = FilterMode.Bilinear };
+                }
+
+                // the publishes: _BlurParam/_BlurParamEx carry the cb rows 139/140.
+                radial_mat.SetVector("_BlurParam", director.radial_blur_param);
+                radial_mat.SetVector("_BlurParamEx", director.radial_blur_param_ex);
+                radial_mat.SetFloat("_BlurEndArea", director.radial_end_area);
+                radial_mat.SetVector("_DepthCancelRect", director.radial_cancel_rect);
+                radial_mat.SetFloat("_DepthCancelBlendLength",
+                    Mathf.Max(1e-5f, director.radial_blend_length));
+                // jitter seed: the game scrolls the uv by the global param each
+                // frame; the worksheet keys never author it, so keep zero.
+                radial_mat.SetVector("_GlobalScreenUVScrollParam", Vector4.zero);
+                // per-axis step scale: the game's UnityPerMaterial row carries the
+                // camera's texel scale; on the downsampled rt the blur step is
+                // relative to the source texel.
+                radial_mat.SetVector("_RadialBlurAxisScale",
+                    new Vector4(1f / rw, 1f / rh, 0f, 0f));
+                radial_mat.SetFloat("_RadialBlurSampleBias", -1f);
+
+                int blur_pass = 2 * (director.radial_type - 1);
+                // depth + rect gates only exist on the type 2 slot in the game's
+                // pass table; the others author them zero anyway.
+                cmd.Blit(cur, radial_rt_a, radial_mat, blur_pass);
+                var src = radial_rt_a;
+                var dst = radial_rt_b;
+                int iterations = Mathf.Max(1, director.radial_iteration);
+                for (int i = 1; i < iterations; i++)
+                {
+                    cmd.Blit(src, dst, radial_mat, blur_pass);
+                    var swap = src; src = dst; dst = swap;
+                }
+                radial_mat.SetTexture("_BlurTex", src);
+                cmd.Blit(cur, nxt, radial_mat, blur_pass + 1);
+                cur = nxt; cur_is_color = false;
+                nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
+            }
+
+
         }
 
         public Shader shader;
