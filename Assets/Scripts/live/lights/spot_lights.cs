@@ -27,7 +27,9 @@ namespace UV2.Live
             foreach (var t in tracks)
             {
                 if (string.IsNullOrEmpty(t.name)) continue;
-                var go = stage_object(t.asset_name);
+                // the fork strips the editor ordinal ('1st : x' -> 'x')
+                // and resolves the bare name first, then the asset.
+                var go = stage_object(strip_ordinal(t.name)) ?? stage_object(t.asset_name);
                 if (go == null)
                 {
                     missing.Add(t.name + " -> " + t.asset_name);
@@ -43,6 +45,20 @@ namespace UV2.Live
             foreach (var m in missing) trace_log.write($"spot light unresolved: {m}");
         }
 
+        // strips an editor ordinal head ('1st : name' -> 'name') like the
+        // fork's StripOrdinalPrefix.
+        private static string strip_ordinal(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
+            int idx = name.IndexOf(':');
+            if (idx < 0) return name.Trim();
+            string head = name.Substring(0, idx).Trim();
+            if (head.Length == 0) return name.Trim();
+            bool ordinal = head.EndsWith("st") || head.EndsWith("nd") ||
+                           head.EndsWith("rd") || head.EndsWith("th");
+            return ordinal ? name.Substring(idx + 1).Trim() : name.Trim();
+        }
+
         // resolves the asset name against the stage map, falling back to a live scene search.
         private static GameObject stage_object(string asset_name)
         {
@@ -52,6 +68,9 @@ namespace UV2.Live
         }
 
         // samples every container per frame; call from the loader's update.
+        // the fork's ApplySpotlight3d: the active flag gates the whole
+        // fixture (mesh included), the head hangs over the character
+        // slot (x/z from characterPosition, y from position).
         public static void update(float time_sec, List<spot_track_container> tracks, List<Transform> chara_roots)
         {
             if (tracks == null || containers.Count == 0) return;
@@ -59,9 +78,14 @@ namespace UV2.Live
             foreach (var t in tracks)
             {
                 if (!containers.TryGetValue(t.name, out var c) || c == null) continue;
-                var (position, rotation, scale, color, power, active) = t.sample(frame, chara_roots);
+                var (position, rotation, scale, color, power, active, char_pos) = t.sample(frame, chara_roots);
                 if (c.root == null) continue;
-                c.root.position = position;
+                // the game hides the entire fixture when the key is
+                // inactive: the mesh must not sit in frame glowing.
+                bool was_active = c.root.gameObject.activeSelf;
+                if (was_active != active) c.root.gameObject.SetActive(active);
+                if (!active) continue;
+                c.root.position = new Vector3(char_pos.x, position.y, char_pos.z);
                 c.root.rotation = Quaternion.Euler(rotation);
                 c.root.localScale = scale;
                 if (c.mpb == null) c.mpb = new MaterialPropertyBlock();
@@ -88,10 +112,10 @@ namespace UV2.Live
         public List<spot_key> keys = new();
 
         // brackets + lerps the key pair; position += the character anchor.
-        public (Vector3, Vector3, Vector3, Color, float, bool) sample(float frame, List<Transform> chara_roots)
+        public (Vector3, Vector3, Vector3, Color, float, bool, Vector3) sample(float frame, List<Transform> chara_roots)
         {
             if (keys == null || keys.Count == 0)
-                return (Vector3.zero, Vector3.zero, Vector3.one, Color.white, 1f, false);
+                return (Vector3.zero, Vector3.zero, Vector3.one, Color.white, 1f, false, Vector3.zero);
             spot_key a, b;
             float blend;
             if (frame <= keys[0].frame) { a = b = keys[0]; blend = 0f; }
@@ -118,22 +142,10 @@ namespace UV2.Live
             Color color = Color.Lerp(a.color, b.color, blend);
             float power = Mathf.Lerp(a.color_power, b.color_power, blend);
             bool active = (blend < 0.5f ? a.is_active : b.is_active) != 0;
-            // offset the position by the key's character anchor.
-            Vector3 anchor = chara_anchor(blend < 0.5f ? a : b, chara_roots);
-            pos += anchor;
-            return (pos, rot, scale, color, power, active);
-        }
-
-        // the key's characterIndex picks one character; -1 = no anchor.
-        private static Vector3 chara_anchor(spot_key k, List<Transform> chara_roots)
-        {
-            if (k.character_index < 0 || chara_roots == null) return Vector3.zero;
-            int idx = k.character_index;
-            if (idx >= chara_roots.Count) return Vector3.zero;
-            var head = chara_roots[idx];
-            foreach (var t in head.GetComponentsInChildren<Transform>(true))
-                if (t.name == "Head") return t.position + k.character_position;
-            return chara_roots[idx].position + k.character_position;
+            // the fork's ApplySpotlight3d: x/z from characterPosition,
+            // y from position (the hang height); no additive anchor.
+            Vector3 char_pos = Vector3.Lerp(a.character_position, b.character_position, blend);
+            return (pos, rot, scale, color, power, active, char_pos);
         }
     }
 

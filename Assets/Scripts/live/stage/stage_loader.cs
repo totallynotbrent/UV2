@@ -239,11 +239,14 @@ namespace UV2.Live
                     if (entry.Value is not GameObject entry_go) { trace_log.write($"spotlight fixture '{entry.Key}': not a prefab ({entry.Value.GetType().Name})"); continue; }
                     var piece = Instantiate(entry_go, parent);
                     piece.name = entry_go.name;
+                    // the game instances a fixture only when a spotlight3d
+                    // key activates it: pre-placed fixtures start hidden.
+                    piece.SetActive(false);
                     placed++;
                     foreach (var child in piece.GetComponentsInChildren<Transform>(true))
                         blink_lights.record_stage_child(child.name, child.gameObject);
                     blink_lights.record_stage_child(entry.Key, piece);
-                    trace_log.write($"spotlight fixture '{entry.Key}' -> '{entry.Value.name}' placed");
+                    trace_log.write($"spotlight fixture '{entry.Key}' -> '{entry.Value.name}' placed (hidden)");
                 }
             }
             else
@@ -1047,6 +1050,22 @@ namespace UV2.Live
                 var px = probe.GetPixel(0, 0);
                 trace_log.write($"px {px.r:0.00},{px.g:0.00},{px.b:0.00}");
                 Destroy(probe);
+                // a center hit naming its mesh separates a scene-geometry white
+                // from a material/texture bind failure. renderer bounds, not
+                // physics: the live scene carries no colliders.
+                string center = "none";
+                foreach (var r in FindObjectsOfType<Renderer>())
+                {
+                    if (!r.isVisible) continue;
+                    var b = r.bounds;
+                    var ro = new Ray(cam.transform.position, cam.transform.forward);
+                    if (b.IntersectRay(ro) && b.SqrDistance(cam.transform.position) < 400f)
+                    {
+                        center = r.name;
+                        break;
+                    }
+                }
+                trace_log.write($"center hit {center}");
 
                 // head-bone movement across beats proves the motion actually poses the cast.
                 string pose = "";

@@ -68,6 +68,64 @@ namespace UV2.Live
         }
 
         // decodes one hca wave into a unity clip; null on failure.
+        // pure decode (no unity api): the sample loop is threadable so the
+        // mixer can decode off the main thread and avoid load-phase hitches.
+        public static (float[] pcm, int channels, int rate) decode_wave_pcm(byte[] bank, awb_wave wave)
+        {
+            ushort subkey = BitConverter.ToUInt16(bank, 0x0e);
+            ulong key = derive_key(subkey);
+
+            var hca = new byte[wave.length];
+            Array.Copy(bank, wave.offset, hca, 0, (int)wave.length);
+
+            using var ms = new MemoryStream(hca);
+            var dec = new HcaDecoder(ms, key);
+            var info = dec.HcaInfo;
+            int channels = info.ChannelCount;
+            int spb = info.SamplesPerBlock;
+
+            int delay_blocks = info.EncoderDelay / spb;
+            for (int b = 0; b < delay_blocks; b++)
+            {
+                var skip = new byte[info.BlockSize];
+                int got = 0;
+                while (got < info.BlockSize)
+                {
+                    int n = ms.Read(skip, got, info.BlockSize - got);
+                    if (n <= 0) break;
+                    got += n;
+                }
+            }
+
+            int total_samples = (info.BlockCount - delay_blocks) * spb - info.EncoderDelay % spb;
+            var pcm = new float[total_samples * channels];
+            var block = new byte[info.BlockSize];
+            var chans = new short[channels][];
+            for (int c = 0; c < channels; c++) chans[c] = new short[spb];
+
+            int written = 0;
+            for (int b = delay_blocks; b < info.BlockCount; b++)
+            {
+                int got = 0;
+                while (got < info.BlockSize)
+                {
+                    int n = ms.Read(block, got, info.BlockSize - got);
+                    if (n <= 0) break;
+                    got += n;
+                }
+                if (got < info.BlockSize) break;
+                dec.DecodeBlock(block);
+                dec.ReadSamples16(chans);
+                for (int s = 0; s < spb; s++)
+                    for (int c = 0; c < channels; c++)
+                    {
+                        if (written < pcm.Length)
+                            pcm[written++] = chans[c][s] / 32768f;
+                    }
+            }
+            return (pcm, channels, info.SamplingRate);
+        }
+
         public static AudioClip decode_wave(byte[] bank, awb_wave wave, string clip_name)
         {
             ushort subkey = BitConverter.ToUInt16(bank, 0x0e);

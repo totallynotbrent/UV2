@@ -80,6 +80,20 @@ namespace UV2.Live
         public bool random_motion;
     }
 
+    // the auto lip-sync key (the game's LiveTimelineKeyLipSyncData): the
+    // same parts-blend shape as the mouth key, plus the character bitmask
+    // picking which slots sing the shape (bit k = slot k; 0x3ffff = all).
+    [Serializable]
+    public class facial_lip_key : live_key
+    {
+        public int facial_id;
+        public int weight;
+        public int speed;
+        public int time_frames;
+        public int character;
+        public List<facial_part> parts = new();
+    }
+
     // per-slot facial bundle: the game's LiveTimelineFacialData.
     [Serializable]
     public class facial_track_set
@@ -90,5 +104,8 @@ namespace UV2.Live
         public List<facial_eyebrow_key> eyebrow = new();
         public List<facial_eyetrack_key> eye_track = new();
         public List<facial_ear_key> ear = new();
+        // the auto lip-sync track (the game's ripSyncKeys): the singing
+        // mouth shapes, gated per chara by the key's character bitmask.
+        public List<facial_lip_key> lip = new();
     }
 }
