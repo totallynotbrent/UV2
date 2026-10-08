@@ -215,7 +215,14 @@ namespace UV2.Live
                 if (st.face_target != null)
                 {
                     var weights = new Dictionary<Transform, (Vector3 p, Vector3 s, Vector3 r)>();
-                    update_mouth(st, tracks, t, i, weights);
+                    // the game's mouth-key ride and the auto-lip ride share the
+                    // mouth category as exclusive writers per frame: the mouth
+                    // key's lock attribute (0 or 131072) gates the lips off, and
+                    // an active lip key for this slot replaces the mouth-key mix.
+                    bool lip_locked = mouth_lock(tracks, t);
+                    bool lip_active = !lip_locked && lip_active_for(st, t, i);
+                    if (!lip_active) update_mouth(st, tracks, t, i, weights);
+                    if (lip_active) update_lips(st, t, i, weights);
                     update_eyes(st, tracks, t, weights);
                     update_eyebrows(st, tracks, t, weights);
                     update_ears(st, tracks, t, weights);
@@ -223,6 +230,30 @@ namespace UV2.Live
                 }
                 update_gaze(st, tracks, t, i);
             }
+        }
+
+        // the mouth key's lock attribute (0 or 131072) pauses the auto-lips,
+        // per the fork's AlterUpdateFacialNew lockMouth handling.
+        private static bool mouth_lock(facial_track_set tracks, float t)
+        {
+            if (tracks.mouth.Count == 0) return false;
+            int bi = key_eval.bracket(tracks.mouth, t);
+            if (bi < 0) return false;
+            return tracks.mouth[bi].attribute == 0 || tracks.mouth[bi].attribute == 131072;
+        }
+
+        // a lip key covers this slot at t when the track is authored and the
+        // bracketed key's character bitmask selects the slot.
+        private bool lip_active_for(slot_state st, float t, int slot)
+        {
+            if (st.face_target == null || ws.facial_lips.Count == 0) return false;
+            int bi = key_eval.bracket(ws.facial_lips, t);
+            if (bi < 0) return false;
+            var k = ws.facial_lips[bi];
+            if (((k.character >> slot) & 1) == 0) return false;
+            // a key with only base parts holds the mouth neutral - the
+            // mouth-key mix stands instead.
+            return k.parts.Exists(p => p.parts_id != 0);
         }
 
         // mouth keys: the game's AlterUpdateFacialNew - the key's parts array
@@ -272,6 +303,51 @@ namespace UV2.Live
                 st.memo_mouth_mix = mix;
             }
         }
+
+        // the auto lip-sync ride (the game's AlterUpdateAutoLip): the
+        // singing mouth shapes from the song-global ripSync track, gated
+        // per slot by the key's character bitmask (bit k = slot k). the
+        // lip track re-zeroes the mouth weights like the game - it is the
+        // last writer of the mouth category while active.
+        private void update_lips(slot_state st, float t, int slot,
+            Dictionary<Transform, (Vector3 p, Vector3 s, Vector3 r)> weights)
+        {
+            if (st.face_target == null || ws.facial_lips.Count == 0) return;
+            int bi = key_eval.bracket(ws.facial_lips, t);
+            if (bi < 0) return;
+            var cur = ws.facial_lips[bi];
+            // the character bitmask gates who sings this shape.
+            if (((cur.character >> slot) & 1) == 0) return;
+            var prev = bi > 0 ? ws.facial_lips[bi - 1] : null;
+            // the game's lip ride always passes nextKey null: the ramp is the
+            // key's own inter-frame ease, never the gap to the next key.
+            float ratio = morph_ramp(t, cur.speed, cur.time_frames, cur.interpolate_type,
+                cur.frame, cur.time_frames);
+            float key_w = Mathf.Clamp(cur.weight * 0.01f, 0f, 1f);
+            if (prev != null && ratio < 1f)
+            {
+                float pw = Mathf.Clamp(prev.weight * 0.01f, 0f, 1f);
+                foreach (var part in prev.parts)
+                {
+                    if (part.parts_id == 0) continue;
+                    // the fork's prev-key blend is not filtered by the prev
+                    // key's own character flag.
+                    float w = part.weight_per * 0.01f * (1f - ratio) * pw;
+                    add_morph(st, weights, st.face_target._mouthTarget, part.parts_id, w);
+                }
+            }
+            foreach (var part in cur.parts)
+            {
+                if (part.parts_id == 0) continue;
+                float w = part.weight_per * 0.01f * ratio * key_w;
+                add_morph(st, weights, st.face_target._mouthTarget, part.parts_id, w);
+            }
+            if (trace_lip_tick++ % TRACE_EVERY == 0)
+                trace_log.write($"facial: slot{slot} lip id {cur.facial_id} parts " +
+                                string.Join("+", cur.parts.Select(p => $"#{p.parts_id}:{p.weight_per}")) +
+                                $" r {ratio:F2} t {t:F1}");
+        }
+        private int trace_lip_tick;
 
         // eye/eyebrow keys: the same parts blend as the mouth, per eye side.
         private void update_eyes(slot_state st, facial_track_set tracks, float t,

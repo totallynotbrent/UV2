@@ -128,13 +128,37 @@ namespace UV2.Live
             int width = part_width();
             for (int i = 0; i < chara_ids.Count; i++)
             {
-                var (source, clips) = start_stem(parent, music_id, chara_ids[i]);
-                if (source == null) continue;
+                // the hca decode runs on a worker (pure arrays, no unity api)
+                // and the AudioClip is created on the main thread when it
+                // lands: the load-phase frame hitches the main-thread decode
+                // caused (1s frames across the first 15s) are gone.
+                var bank_task = load_bank(music_id, chara_ids[i]);
+                if (bank_task.bank == null) { yield return null; continue; }
+                // decode up to two takes (0 = main, 1 = the lead-switch
+                // alternate) in the worker; AudioClip.Create stays on the
+                // main thread.
+                float t0 = Time.realtimeSinceStartup;
+                var pcm_task = System.Threading.Tasks.Task.Run(() =>
+                    bank_task.waves.Take(2).Select(w => live_audio.decode_wave_pcm(bank_task.bank, w)).ToArray());
+                while (!pcm_task.IsCompleted) yield return null;
+                trace_log.write($"vocals: stem {chara_ids[i]} decoded on worker in {Time.realtimeSinceStartup - t0:0.00}s");
+                var clips = new List<AudioClip>();
+                foreach (var (pcm, channels, rate) in pcm_task.Result)
+                {
+                    if (pcm == null || pcm.Length == 0) continue;
+                    var clip = AudioClip.Create($"voc_{chara_ids[i]}_{clips.Count}",
+                        pcm.Length / channels, channels, rate, false);
+                    clip.SetData(pcm, 0);
+                    clips.Add(clip);
+                }
+                if (clips.Count == 0) { yield return null; continue; }
+                var source = parent.gameObject.AddComponent<AudioSource>();
+                source.clip = clips[0];
+                source.loop = false;
+                source.volume = 0f;
                 stems.Add(new stem { source = source, group = position_column(positions[i], width),
-                    wave = 0, clips = clips, volume = 0f });
+                    wave = 0, clips = clips.ToArray(), volume = 0f });
                 slot_positions.Add(positions[i]);
-                // one frame between decodes keeps open-time frame hitches small
-                // while the whole bank still lands within a few seconds.
                 yield return null;
             }
             lock_positions();
@@ -142,6 +166,34 @@ namespace UV2.Live
                 string.Join(",", slot_positions) + ", waves " +
                 string.Join(",", stems.Select(s => s.clips.Length)));
             bound = stems.Count > 0;
+        }
+
+        // reads the member's bank with its wave list (takes 0/1).
+        private (byte[] bank, List<awb_wave> waves) load_bank(int music_id, int chara_id)
+        {
+            var candidates = new[]
+            {
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_chara_{chara_id}_01.awb",
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_chara_{chara_id}_02.awb",
+            };
+            meta_reader.asset_row row = null;
+            using (var meta = meta_reader.reader.open(config.meta_db_path))
+            {
+                var rows = meta?.lookup(new HashSet<string>(candidates));
+                foreach (var c in candidates)
+                {
+                    row = rows?.GetValueOrDefault(c);
+                    if (row != null) break;
+                }
+            }
+            if (row == null) return (null, null);
+            string path = System.IO.Path.Combine(config.data_root, "dat",
+                row.hash.Substring(0, 2), row.hash);
+            if (!System.IO.File.Exists(path)) return (null, null);
+            byte[] bank = System.IO.File.ReadAllBytes(path);
+            var waves = live_audio.parse_afs2(bank);
+            if (waves.Count == 0) return (null, null);
+            return (bank, waves);
         }
 
         private void lock_positions()
@@ -168,55 +220,6 @@ namespace UV2.Live
         // the part table's slot width, 0 with no table.
         private int part_width()
             => part_rows != null && part_rows.Length > 0 ? part_rows[0].Length : 0;
-
-        // decodes one member's vocal bank: one wave per take (0 = main,
-        // 1 = extra on songs that record both), and starts playback muted.
-        private (AudioSource source, AudioClip[] clips) start_stem(Transform parent,
-            int music_id, int chara_id)
-        {
-            var candidates = new[]
-            {
-                $"sound/l/{music_id}/snd_bgm_live_{music_id}_chara_{chara_id}_01.awb",
-                $"sound/l/{music_id}/snd_bgm_live_{music_id}_chara_{chara_id}_02.awb",
-            };
-            meta_reader.asset_row row = null;
-            using (var meta = meta_reader.reader.open(config.meta_db_path))
-            {
-                var rows = meta?.lookup(new HashSet<string>(candidates));
-                foreach (var c in candidates)
-                {
-                    row = rows?.GetValueOrDefault(c);
-                    if (row != null) break;
-                }
-            }
-            if (row == null) return (null, null);
-
-            string path = System.IO.Path.Combine(config.data_root, "dat",
-                row.hash.Substring(0, 2), row.hash);
-            if (!System.IO.File.Exists(path)) return (null, null);
-            byte[] bank = System.IO.File.ReadAllBytes(path);
-            var waves = live_audio.parse_afs2(bank);
-            if (waves.Count == 0) return (null, null);
-
-            var clips = new List<AudioClip>();
-            int take_count = Mathf.Min(waves.Count, 2);
-            for (int i = 0; i < take_count; i++)
-            {
-                var clip = live_audio.decode_wave(bank, waves[i], $"voc_{chara_id}_{i}");
-                if (clip != null) clips.Add(clip);
-            }
-            if (clips.Count == 0) return (null, null);
-
-            var source = parent.gameObject.AddComponent<AudioSource>();
-            source.clip = clips[0];
-            source.loop = false;
-            source.volume = 0f;
-            // do NOT Play() here: the stems decode staggered across many
-            // seconds while the bgm already runs; a free-running playhead
-            // lands each member at a different offset. the volume ride
-            // starts the stem aligned to the song clock on first unmute.
-            return (source, clips.ToArray());
-        }
 
         // the part table from the meta manifest: m<song>_part, a csv text asset
         // inside a dat bundle. returns null when the song has none.

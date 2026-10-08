@@ -747,6 +747,18 @@ namespace UV2.Live
                 }).ToList();
                 ws.facial_slots.Add(slot);
             }
+
+            // the auto lip-sync track is song-global (worksheet 0's
+            // ripSyncKeys): one key list for all slots, the character
+            // bitmask picking who sings each shape.
+            ws.facial_lips = (sheet.ripSyncKeys?.thisList ?? new()).Select(k => new facial_lip_key
+            {
+                frame = k.frame, attribute = k.attribute, interpolate_type = k.interpolateType,
+                facial_id = k.facialId, weight = k.weight, speed = k.speed, time_frames = k.time,
+                character = k.character,
+                parts = (k.facialPartsDataArray ?? new()).Select(p => new facial_part
+                    { parts_id = p.FacialPartsId, weight_per = p.WeightPer }).ToList(),
+            }).ToList();
             Debug.Log($"[worksheet_reader] facial slots: {ws.facial_slots.Count} " +
                       $"(keys: {string.Join(",", ws.facial_slots.Select(s => s.face.Count + s.mouth.Count + s.eye.Count + s.eyebrow.Count + s.eye_track.Count + s.ear.Count))})");
         }

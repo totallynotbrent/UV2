@@ -299,6 +299,8 @@ namespace UV2.Live
 
         // facial: facial1Set (slot 0) + other4FacialArray (slots 1..n), game-shaped.
         public List<facial_track_set> facial_slots = new();
+        // the song-global auto lip-sync track (ripSyncKeys).
+        public List<facial_lip_key> facial_lips = new();
     }
 
     // one prop's render/visibility track; settingFlags is the slot bit (1/2/4).
