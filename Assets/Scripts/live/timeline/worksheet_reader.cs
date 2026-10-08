@@ -608,6 +608,32 @@ namespace UV2.Live
                     blue_curve = k.blueCurve,
                 })).ToList();
 
+            // the radial blur track (uv2_radialblur_decoded.md): authored in
+            // every song; the game lerps offset/areas/power/ellipse/roll and
+            // the depth fields, copies type/downsample/iteration un-lerped.
+            ws.postfx.radial_blur = (sheet.radialBlurKeys?.thisList ?? new())
+                .Select(k => new radial_blur_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    move_blur_type = k.moveBlurType,
+                    offset = k.radialBlurOffset,
+                    downsample = k.radialBlurDownsample,
+                    start_area = k.radialBlurStartArea,
+                    end_area = k.radialBlurEndArea,
+                    power = k.radialBlurPower,
+                    iteration = k.radialBlurIteration,
+                    ellipse_dir = k.radialBlurEllipseDir,
+                    roll_euler_angles = k.radialBlurRollEulerAngles,
+                    depth_power_front = k.depthPowerFront,
+                    depth_power_back = k.depthPowerBack,
+                    depth_cancel_rect = k.depthCancelRect,
+                    depth_cancel_blend_length = k.depthCancelBlendLength,
+                }).ToList();
+
             ws.camera_motion = (sheet.cameraMotionKeys?.thisList ?? new())
                 .Select(k => new camera_motion_key
                 {

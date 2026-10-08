@@ -47,6 +47,23 @@ namespace UV2.Live
         [HideInInspector] public Vector2 tilt_offset;
         [HideInInspector] public float tilt_roll;
 
+        // the evaluated radial blur state, read by the render feature. mirrors
+        // the game's RadialBlurPass::OnRadialBlur publishes (property ids
+        // 212-217 + 188-191, uv2_radialblur_decoded.md).
+        [HideInInspector] public bool radial_enabled;
+        [HideInInspector] public int radial_type;
+        [HideInInspector] public int radial_downsample;
+        [HideInInspector] public int radial_iteration;
+        [HideInInspector] public Vector4 radial_blur_param;   // _BlurParam: offset.xy, ellipseDir.xy
+        [HideInInspector] public Vector4 radial_blur_param_ex; // _BlurParamEx: step, startArea, areaDiff, depthFront
+        [HideInInspector] public float radial_end_area;        // normalized depthBack
+        [HideInInspector] public bool radial_depth_on;
+        [HideInInspector] public bool radial_rect_on;
+        [HideInInspector] public Vector4 radial_cancel_rect;  // min.xy, max.xy
+        [HideInInspector] public float radial_blend_length;
+        // the game's BLURAREADIFF_MIN static (RadialBlurPass constant).
+        private const float blur_area_diff_min = 0.001f;
+
         // one film overlay layer's evaluated state.
         public class film_state
         {
@@ -91,6 +108,21 @@ namespace UV2.Live
             cc = eval_cc(t);
             eval_dof(t);
             eval_tilt(t);
+            eval_radial(t);
+
+            // edge-triggered radial trace: one line per enabled/type change so
+            // a bench proves engagement even when the throttled heartbeat
+            // samples a gap between key windows.
+            bool rb_now = radial_enabled;
+            if (rb_now != radial_was_on || (rb_now && radial_type != radial_was_type))
+            {
+                if (rb_now)
+                    trace_log.write($"radial: on t{radial_type} frame {(int)(t * 60f)} p{radial_blur_param_ex.x:0.00} it{radial_iteration} ds{radial_downsample} off{radial_blur_param.x:0.00},{radial_blur_param.y:0.00} a{radial_blur_param_ex.y:0.00}");
+                else
+                    trace_log.write($"radial: off frame {(int)(t * 60f)}");
+                radial_was_on = rb_now;
+                radial_was_type = radial_type;
+            }
 
             // one heartbeat every ~2s so the bench proves the chain engaged.
             if (trace_postfx_ticks++ % 120 == 0)
@@ -102,10 +134,13 @@ namespace UV2.Live
                 string d = dof_enabled ? $"dof {dof_focal_m:0.0}m f{dof_focal01:0.00} far{dof_far_blend:0.00}" : "dof off";
                 string ts = tilt_enabled ? $"tilt m{tilt_mode} a{tilt_blur_area:0.0} blur{tilt_max_blur:0.0} roll{tilt_roll:0.0}" : "tilt off";
                 string gr = cc != null && cc.valid ? $"grade sat{cc.saturation:0.00}" : "grade off";
-                trace_log.write($"postfx: bloom {b} fog {f} fade a {fade_color.a:0.00} {fl} {d} {ts} {gr}");
+                string rb = radial_enabled ? $"radial t{radial_type} p{radial_blur_param_ex.x:0.00} it{radial_iteration} ds{radial_downsample}" : "radial off";
+                trace_log.write($"postfx: bloom {b} fog {f} fade a {fade_color.a:0.00} {fl} {d} {ts} {gr} {rb}");
             }
         }
         private int trace_postfx_ticks;
+        private bool radial_was_on;
+        private int radial_was_type;
 
         // bloom: the game's FastBloom pyramid parameters from the authored
         // keys (GAME_BLOOM_PIPELINE_DECODED.md).
@@ -399,6 +434,92 @@ namespace UV2.Live
             tilt_roll = roll;
             tilt_pass = quality * 2 + (tilt_mode != 1 ? 1 : 0);
             tilt_enabled = tilt_mode > 0 && (tilt_blur_area > 0f || tilt_max_blur > 0f);
+        }
+
+        // radial blur: the game's OnRadialBlur publishes. type/downsample/
+        // iteration copy un-lerped; offset/areas/power/ellipse/roll and the
+        // depth fields lerp by the next-key rule; type 0 disables the pass.
+        // depth front/back normalize by (v-near)/(far-near) clamp01.
+        private void eval_radial(float t)
+        {
+            radial_enabled = false;
+            if (ws.postfx.radial_blur.Count == 0) return;
+            int i = key_eval.bracket(ws.postfx.radial_blur, t);
+            if (i < 0) return;
+            var cur = ws.postfx.radial_blur[i];
+            var next = i + 1 < ws.postfx.radial_blur.Count ? ws.postfx.radial_blur[i + 1] : null;
+
+            radial_type = cur.move_blur_type;
+            if (radial_type <= 0) return;
+            radial_downsample = cur.downsample;
+            radial_iteration = cur.iteration;
+
+            Vector2 offset = cur.offset;
+            float start = cur.start_area;
+            float end = cur.end_area;
+            float power = cur.power;
+            Vector2 ellipse = cur.ellipse_dir;
+            float roll = cur.roll_euler_angles;
+            float front = cur.depth_power_front;
+            float back = cur.depth_power_back;
+            Vector4 rect = cur.depth_cancel_rect;
+            float blend = cur.depth_cancel_blend_length;
+            if (next != null && next.interpolate_type != 0)
+            {
+                float k = key_eval.interp(cur, next, t);
+                offset = Vector2.Lerp(cur.offset, next.offset, k);
+                start = key_eval.lerp_f(cur.start_area, next.start_area, k);
+                end = key_eval.lerp_f(cur.end_area, next.end_area, k);
+                power = key_eval.lerp_f(cur.power, next.power, k);
+                ellipse = Vector2.Lerp(cur.ellipse_dir, next.ellipse_dir, k);
+                roll = key_eval.lerp_f(cur.roll_euler_angles, next.roll_euler_angles, k);
+                front = key_eval.lerp_f(cur.depth_power_front, next.depth_power_front, k);
+                back = key_eval.lerp_f(cur.depth_power_back, next.depth_power_back, k);
+                rect = Vector4.Lerp(cur.depth_cancel_rect, next.depth_cancel_rect, k);
+                blend = key_eval.lerp_f(cur.depth_cancel_blend_length, next.depth_cancel_blend_length, k);
+            }
+
+            // _BlurParam (id 212): offset.xy, ellipseDir.xy — the roll applies
+            // only to type 5, rotating the ellipse dir (the game composes
+            // Quaternion.Euler(0,0,-roll*Deg2Rad) with the camera rotation).
+            Vector2 dir = ellipse;
+            if (radial_type == 5 && roll != 0f)
+            {
+                float r = -roll * Mathf.Deg2Rad;
+                dir = new Vector2(
+                    ellipse.x * Mathf.Cos(r) - ellipse.y * Mathf.Sin(r),
+                    ellipse.x * Mathf.Sin(r) + ellipse.y * Mathf.Cos(r));
+            }
+            radial_blur_param = new Vector4(offset.x, offset.y, dir.x, dir.y);
+
+            // the game's blurAreaDiff clamp then step from power.
+            float area_diff = Mathf.Max(blur_area_diff_min, Mathf.Abs(end - start));
+            // _BlurParamEx (id 213): step, startArea, areaDiff, depthFront.
+            radial_blur_param_ex = new Vector4(power, start, area_diff, 0f);
+            radial_end_area = area_diff;
+
+            // depth gates: normalize front/back to the clip range clamp01.
+            float near = cam != null ? cam.nearClipPlane : 0.1f;
+            float far = cam != null ? cam.farClipPlane : 100f;
+            float range = Mathf.Max(1e-4f, far - near);
+            radial_depth_on = front != 0f || back != 0f;
+            if (radial_depth_on)
+            {
+                float f01 = Mathf.Clamp01((front - near) / range);
+                float b01 = Mathf.Clamp01((back - near) / range);
+                radial_blur_param_ex.w = f01;
+                radial_end_area = b01;
+            }
+
+            // the cancel rect: authored (x,y,w,h) -> min/max, expanded by
+            // blendLength when the key asks (expand bit mirrors the game's
+            // rect += ±blendLength on all sides).
+            radial_rect_on = rect.x != 0f || rect.y != 0f || rect.z != 0f || rect.w != 0f;
+            radial_cancel_rect = new Vector4(
+                rect.x - blend, rect.y - blend,
+                rect.x + rect.z + blend, rect.y + rect.w + blend);
+            radial_blend_length = blend;
+            radial_enabled = true;
         }
 
         // fade: the authored fadeColor's ALPHA is the quad opacity (1004 runs

@@ -103,6 +103,28 @@ namespace UV2.Live
         public AnimationCurve blue_curve = new();
     }
 
+    // the radial blur keys (worksheet radialBlurKeys). the game's
+    // RadialBlurPass::OnRadialBlur (0x7ff8e511e3f0) dispatches on
+    // moveBlurType: 0 off, 1 radial, 2 radial+depth, 3 x-only, 4 y-only,
+    // 5 ellipse-rotated; pass = 2*(type-1). (uv2_radialblur_decoded.md)
+    [Serializable]
+    public class radial_blur_key : live_key
+    {
+        public int move_blur_type;
+        public Vector2 offset;
+        public int downsample;
+        public float start_area;
+        public float end_area;
+        public float power;
+        public int iteration;
+        public Vector2 ellipse_dir;
+        public float roll_euler_angles;
+        public float depth_power_front;
+        public float depth_power_back;
+        public Vector4 depth_cancel_rect;
+        public float depth_cancel_blend_length;
+    }
+
     // the postfx worksheet lists, mirrored from the cutt stub sheet.
     public class postfx_worksheet
     {
@@ -115,5 +137,6 @@ namespace UV2.Live
         public List<fade_key> fade = new();
         public List<tiltshift_key> tiltshift = new();
         public List<color_correction_key> color_correction = new();
+        public List<radial_blur_key> radial_blur = new();
     }
 }
