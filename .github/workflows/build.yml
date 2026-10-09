@@ -63,6 +63,31 @@ jobs:
           restore-keys: |
             il2cpp-bee-${{ runner.os }}-Unity-2022.3.62f2-StandaloneWindows64
 
+      - name: Pre-pull Unity editor image (survives Docker Hub rate limits)
+        shell: pwsh
+        run: |
+          $img = "unityci/editor:windows-2022.3.62f2-windows-il2cpp-3"
+          # pull from the mirror (no auth.docker.io token round-trip) and
+          # retag under the canonical name; fall back to a direct pull.
+          $ok = $false
+          foreach ($i in 1..4) {
+            docker pull "mirror.gcr.io/$img"
+            if ($LASTEXITCODE -eq 0) { docker tag "mirror.gcr.io/$img" $img; $ok = $true; break }
+            $wait = 30 * $i
+            Write-Host "mirror pull attempt $i failed; retrying in $wait s"
+            Start-Sleep -Seconds $wait
+          }
+          if (-not $ok) {
+            foreach ($i in 1..4) {
+              docker pull $img
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+              $wait = 60 * $i
+              Write-Host "direct pull attempt $i failed; retrying in $wait s"
+              Start-Sleep -Seconds $wait
+            }
+          }
+          if (-not $ok) { Write-Error "could not pull $img from mirror or docker hub"; exit 1 }
+
       - name: Build Windows player with IL2CPP
         uses: game-ci/unity-builder@v4.8.2
         env:

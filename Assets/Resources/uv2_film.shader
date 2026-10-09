@@ -50,13 +50,19 @@ Shader "live/uv2_film"
                 return o;
             }
 
-            // the game's mask (film variant ps_4_0 @181622, register-exact):
+            // the game's mask (film variant ps_4_0 @90722, register-exact):
             //   p = ((uv*aspect - 0.5*aspect).xy * scale.xy), roll-rotated,
-            //       recentered (+0.5, x/aspect), + _PostFilmOffsetParam;
-            //   d2 = dot((p-0.5)*2, (p-0.5)*2) * optionParam.x
-            //   num = (optionParam.y <= 0) ? 1e-4 : d2      [GE 0,y -> z=1 when y<=0]
-            //   m   = num / (num + optionParam.y * (1 - num))
-            // y == 0 -> m = 1 everywhere (full-screen film); y > 0 -> vignette.
+            //       recentered (+0.5, x/aspect), + _PostFilmOffsetParam, -0.5;
+            //   d2 = dot(p, p) * optionParam.x
+            //   num = (optionParam.y > 0) ? d2 : 1e-4
+            //   m   = num / (d2 + optionParam.y * (1 - d2))
+            // y == 0 -> m = 1e-4/(d2+y) ~ tiny (near-black film); y > 0 -> vignette.
+            // the inverse flag tail (@90722 ops 41/46-48, with depthTerm=1 at
+            // DepthClip>=1.5 - every 1004 key): mask = inv*(-2*dt*pre) + dt*pre
+            // = -pre_mask. the game's inverse layers SUBTRACT the vignette at
+            // the frame edges; they never paint a center disc. all 177
+            // painting keys on 1004 carry the inverse flag, so our old 1-m
+            // flip added a hot saturated disc where the game darkens.
             float mask(float2 uv)
             {
                 float aspect = _MainTex_TexelSize.w > 0 ? _MainTex_TexelSize.z / _MainTex_TexelSize.w : 1.0;
@@ -71,13 +77,9 @@ Shader "live/uv2_film"
                 float2 d = (r - float2(0.5, 0.5)) * 2.0;
                 float d2 = dot(d, d) * _PostFilmOptionParam.x;
                 float b = _PostFilmOptionParam.y;
-                float num = b <= 0.0 ? 1e-4 : d2;
+                float num = b > 0.0 ? d2 : 1e-4;
                 float m = num / (num + b * (1.0 - num));
-                // the game's isUseTexMask flag (published as
-                // _PostFilmIsInverseVignette, id 223) swaps which side of the
-                // mask passes (uv2_timeline_attribute_gate_decoded.md §5):
-                // the authored inverse layers paint the complement.
-                return _PostFilmIsInverseVignette > 0.5 ? 1.0 - m : m;
+                return _PostFilmIsInverseVignette > 0.5 ? -m : m;
             }
 
             fixed4 frag(v2f i) : SV_Target

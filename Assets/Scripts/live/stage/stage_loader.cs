@@ -1106,10 +1106,14 @@ namespace UV2.Live
             diag_pass("shade", () =>
             {
                 global_shade.publish(FindObjectOfType<Camera>());
-                global_shade.publish_chara_block(chara_roots);
-                // bg_color1 publishes the worksheet's ambient + chara tint
-                // AFTER the fallback so the authored values win.
+                // bg_color1 first: its Chara* groups overwrite the whole
+                // property block on the character renderers, which wipes any
+                // earlier block. the game re-pins the toon-light state every
+                // frame AFTER every other writer (fork Director.cs: the
+                // global-light mpb is re-applied per frame so "any competing
+                // writer loses"), so the chara pin must be the last writer.
                 bg_color1?.update(clock?.time ?? 0f);
+                global_shade.publish_chara_block(chara_roots);
             });
 
             // foot lights run after the pose so they track the characters exactly.
