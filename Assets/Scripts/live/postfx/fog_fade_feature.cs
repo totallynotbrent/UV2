@@ -261,6 +261,7 @@ namespace UV2.Live
             private Material bloom_mat;
             private RenderTexture bloom_rt_a;
             private RenderTexture bloom_rt_b;
+            private RenderTexture bloom_rt_diffusion;
 
             private void apply_bloom(CommandBuffer cmd, RenderingData renderingData,
                                      postfx_director director,
@@ -281,9 +282,12 @@ namespace UV2.Live
                 {
                     if (bloom_rt_a != null) bloom_rt_a.Release();
                     if (bloom_rt_b != null) bloom_rt_b.Release();
+                    if (bloom_rt_diffusion != null) bloom_rt_diffusion.Release();
                     bloom_rt_a = new RenderTexture(bw, bh, 0, desc.colorFormat)
                         { filterMode = FilterMode.Bilinear };
                     bloom_rt_b = new RenderTexture(bw, bh, 0, desc.colorFormat)
+                        { filterMode = FilterMode.Bilinear };
+                    bloom_rt_diffusion = new RenderTexture(bw, bh, 0, desc.colorFormat)
                         { filterMode = FilterMode.Bilinear };
                 }
 
@@ -328,12 +332,24 @@ namespace UV2.Live
                 bloom_mat.SetFloat("_BloomShaping", 0f);
 
                 // diffusion sub-chain (Director.cs:1307, attribute bit
-                // 0x20000): a bright-pass blur mixed back over the frame -
-                // the game's PostDiffusionBloom_Rich spread/saturation/
-                // contrast shape approximated with the blur pyramid the
-                // bloom shader already exposes.
-                if (director.bloom_diffusion_enabled && b.diffusion_blur_size > 0f)
+                // 0x20000): the game's PostDiffusionBloom_Rich path runs a
+                // SECOND blur pyramid at the key's diffusion_blur_size, and
+                // the composite grades THAT texture. we build the wider
+                // pyramid from bloom_rt_b (the tight bloom) with its own H/V
+                // blur at the diffusion size, and fall back to the base bloom
+                // texture when the key's size rounds to zero.
+                bool diffusion_on = director.bloom_diffusion_enabled && b.diffusion_blur_size > 0f;
+                if (diffusion_on)
                 {
+                    bloom_mat.SetVector("_Parameter", new Vector4(
+                        b.diffusion_blur_size * Mathf.Pow(2f, -9f) / aspect,
+                        b.diffusion_blur_size * Mathf.Pow(2f, -9f),
+                        0f, 1f));
+                    // H then V into its own rt so the base bloom stays intact
+                    // for the composite's tight pass.
+                    cmd.Blit(bloom_rt_b, bloom_rt_a, bloom_mat, 2);
+                    cmd.Blit(bloom_rt_a, bloom_rt_diffusion, bloom_mat, 3);
+                    bloom_mat.SetTexture("_DiffusionTex", bloom_rt_diffusion);
                     bloom_mat.SetVector("_DiffusionParams", new Vector4(
                         b.diffusion_threshold, b.diffusion_bright,
                         b.diffusion_saturation, b.diffusion_contrast));
@@ -342,6 +358,7 @@ namespace UV2.Live
                 }
                 else
                 {
+                    bloom_mat.SetTexture("_DiffusionTex", bloom_rt_b);
                     bloom_mat.DisableKeyword("DIFFUSION_ON");
                 }
                 cmd.Blit(cur, nxt, bloom_mat, 0);
