@@ -16,6 +16,10 @@ namespace UV2.Live
         public float foreground_size;
         public float focal_point;
         public float smoothness;
+        public float ball_blur_power_factor;
+        public float ball_blur_brightness_threshold;
+        public float ball_blur_brightness_intensity;
+        public float ball_blur_spread;
     }
 
     [Serializable]
@@ -28,6 +32,9 @@ namespace UV2.Live
         public int blend_mode;
         public float diffusion_blur_size;
         public float diffusion_bright;
+        public float diffusion_threshold;
+        public float diffusion_saturation;
+        public float diffusion_contrast;
     }
 
     [Serializable]
@@ -47,6 +54,11 @@ namespace UV2.Live
         public float roll_angle;
         public Vector2 scale;
         public int layer_mode;
+
+        // film keys can couple this layer to a named blink container so the
+        // stage strobes pulse with the film; authored per key.
+        public string blink_light_name = "";
+        public float blink_light_brightness_power;
     }
 
     [Serializable]
@@ -138,5 +150,57 @@ namespace UV2.Live
         public List<tiltshift_key> tiltshift = new();
         public List<color_correction_key> color_correction = new();
         public List<radial_blur_key> radial_blur = new();
+        public List<chromatic_key> chromatic = new();
+        public List<lens_distortion_key> lens_distortion = new();
+        public List<fluctuation_key> fluctuation = new();
+        public List<vortex_key> vortex = new();
+    }
+
+    // fluctuation: a camera wobble the game maps onto the radial machinery
+    // (ApplyRadialBlur(MovePower*4, 0.25)); 43/51 songs author, 7 active.
+    [Serializable]
+    public class fluctuation_key : live_key
+    {
+        public byte is_enable;
+        public Vector2 move_direction;
+        public float move_power;
+        public float power;
+        public float depth_clip;
+    }
+
+    // vortex: mapped onto the tilt machinery (ApplyTiltShift(6, RotVolume*4,
+    // 0)); 33/51 author, 1 active (1037).
+    [Serializable]
+    public class vortex_key : live_key
+    {
+        public byte is_enable;
+        public Vector4 area;
+        public float rot_volume;
+        public float depth_clip;
+    }
+
+    // chromatic aberration: RGB-shift fringe, 16/51 songs with active keys.
+    [Serializable]
+    public class chromatic_key : live_key
+    {
+        public byte is_enable;
+        public Vector2 red_offset;
+        public Vector2 green_offset;
+        public Vector2 blue_offset;
+        public float power;
+        public float clip;
+        public int effect_type;
+    }
+
+    // lens distortion: barrel/pincushion warp, 9/51 songs.
+    [Serializable]
+    public class lens_distortion_key : live_key
+    {
+        public float intensity;
+        public float intensity_x;
+        public float intensity_y;
+        public float center_x;
+        public float center_y;
+        public float scale;
     }
 }

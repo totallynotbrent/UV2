@@ -107,7 +107,10 @@ namespace UV2.Live
             ws.song_id = music_id.ToString();
             ws.total_frames = sheet.TotalTimeLength * 60f;
 
-            ws.global_light = (sheet.globalLightDataLists?.FirstOrDefault()?.keys?.thisList ?? new())
+            // the fork processes only the entry NAMED GlobalLight (walker
+            // 2456-2459); other-named lists are variation sheets it skips.
+            ws.global_light = (sheet.globalLightDataLists?.FirstOrDefault(g => g?.name == "GlobalLight")?.keys?.thisList
+                ?? sheet.globalLightDataLists?.FirstOrDefault()?.keys?.thisList ?? new())
                 .Select(k => new global_light_key
                 {
                     frame = k.frame,
@@ -125,6 +128,13 @@ namespace UV2.Live
                     rim_feather2 = k.rimFeather2,
                     rim_spec_rate2 = k.rimSpecRate2,
                     rim_shadow_rate2 = k.globalRimShadowRate2,
+                    camera_follow = k.cameraFollow,
+                    flags = k.flags,
+                    rim_horizon_offset = k.RimHorizonOffset,
+                    rim_vertical_offset = k.RimVerticalOffset,
+                    rim_horizon_offset2 = k.RimHorizonOffset2,
+                    rim_vertical_offset2 = k.RimVerticalOffset2,
+                    blink_light_name = k.BlinkLightName,
                 }).ToList();
 
             // bgColor1: the ambient + chara tint track, one entry per named group.
@@ -210,7 +220,7 @@ namespace UV2.Live
                 .Select(b => new blink_track_container
                 {
                     name = b.name,
-                    keys = (b.keys?.thisList ?? new()).Select(k => new blink_key
+                    keys = (b.keys?.thisList ?? new()).Select((k, idx) => new blink_key
                     {
                         frame = k.frame,
                         attribute = k.attribute,
@@ -218,19 +228,34 @@ namespace UV2.Live
                         power_array = (k.powerArray ?? new()).ToList(),
                         color0_array = (k.color0Array ?? new()).ToList(),
                         color1_array = (k.color1Array ?? new()).ToList(),
+                        is_reverse_hue = (k.isReverseHueArray ?? new()).ToList(),
                         light_blend_mode = k.LightBlendMode,
+                        pattern = k.pattern,
+                        color_type = k.colorType,
+                        power_min = k.powerMin,
+                        power_max = k.powerMax,
+                        loop_count = k.loopCount,
+                        wait_time = k.waitTime,
+                        turn_on_time = k.turnOnTime,
+                        turn_off_time = k.turnOffTime,
+                        keep_time = k.keepTime,
+                        interval_time = k.intervalTime,
+                        key_index = idx,
                     }).ToList(),
-                    pattern = (b.keys?.thisList ?? new()).FirstOrDefault()?.pattern ?? 0,
-                    color_type = (b.keys?.thisList ?? new()).FirstOrDefault()?.colorType ?? 0,
-                    power_min = (b.keys?.thisList ?? new()).FirstOrDefault()?.powerMin ?? 0f,
-                    power_max = (b.keys?.thisList ?? new()).FirstOrDefault()?.powerMax ?? 1f,
-                    loop_count = (b.keys?.thisList ?? new()).FirstOrDefault()?.loopCount ?? 0,
-                    wait_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.waitTime ?? 0f,
-                    turn_on_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.turnOnTime ?? 0f,
-                    turn_off_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.turnOffTime ?? 0f,
-                    keep_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.keepTime ?? 0f,
-                    interval_time = (b.keys?.thisList ?? new()).FirstOrDefault()?.intervalTime ?? 0f,
-                }).ToList();
+                })
+                .Select(t =>
+                {
+                    // slot count: the longest authored array, capped like the
+                    // game's fixture maximum of 10.
+                    t.slot_count = Mathf.Clamp(new[]
+                    {
+                        t.keys.Count > 0 ? t.keys.Max(k => k.power_array.Count) : 0,
+                        t.keys.Count > 0 ? t.keys.Max(k => k.color0_array.Count) : 0,
+                        t.keys.Count > 0 ? t.keys.Max(k => k.color1_array.Count) : 0,
+                    }.DefaultIfEmpty(0).Max(), 0, 10);
+                    return t;
+                })
+                .ToList();
 
             ws.laser_tracks = (sheet.laserList ?? new())
                 .Select(l => new laser_track_container
@@ -238,11 +263,11 @@ namespace UV2.Live
                     name = l.name,
                     object_index = l._objectIndex,
                     material_index = l._materialIndex,
-                    blink = (l.keys?.thisList ?? new()).FirstOrDefault()?.blink ?? 0,
-                    blink_period = (l.keys?.thisList ?? new()).FirstOrDefault()?.blinkPeriod ?? 0f,
                     keys = (l.keys?.thisList ?? new()).Select(k => new laser_key
                     {
                         frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
                         object_position = k.objectPosition,
                         object_rotate = k.objectRotate,
                         object_scale = k.objectScale,
@@ -253,6 +278,7 @@ namespace UV2.Live
                         pos_interval = k.posInterval,
                         blink = k.blink,
                         blink_period = k.blinkPeriod,
+                        raycast_distance = k.RaycastDistance,
                     }).ToList(),
                 }).ToList();
 
@@ -398,6 +424,7 @@ namespace UV2.Live
                         scroll_offset_y = k.scrollOffsetY,
                         scroll_speed_x = k.scrollSpeedX,
                         scroll_speed_y = k.scrollSpeedY,
+                        texture = k.texture,
                     }).ToList(),
                 }).ToList();
 
@@ -443,6 +470,84 @@ namespace UV2.Live
                     }).ToList(),
                 }).ToList();
 
+            // lightProjection: gobo/mirror-ball floor projectors.
+            ws.light_projection = (sheet.lightProjectionList ?? new())
+                .Select(p => new light_projection_track
+                {
+                    name = p.name,
+                    keys = (p.keys?.thisList ?? new()).Select(k => new light_projection_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        curve = read_curve(k.curve),
+                        is_enable = k.IsEnable,
+                        texture_id = k.TextureId,
+                        color = k.Color,
+                        position = k.Position,
+                        angle = k.Angle,
+                        scale = k.Scale,
+                        orthographic = k.Orthographic,
+                        ortho_size = k.OrthographicSize,
+                        near_clip = k.NearClipPlane,
+                        far_clip = k.FarClipPlane,
+                        fov = k.FieldOfView,
+                        color_power = k.ColorPower,
+                        mirror_ball_rotate_axis = k.MirrorBallRotateAxis,
+                        mirror_ball_rotate_value = k.MirrorBallRotateValue,
+                        mirror_ball_projection_radius = k.MirrorBallProjectionRadius,
+                        mirror_ball_fall_off_power = k.MirrorBallFallOffPower,
+                        mirror_ball_is_loop_rotation = k.MirrorBallIsLoopRotation,
+                        mirror_ball_loop_rotation_speed = k.MirrorBallLoopRotationSpeed,
+                    }).ToList(),
+                })
+                .Where(t => t.keys.Count > 0)
+                .ToList();
+
+            // lightShafts: god-ray shafts; the fork publishes verbatim.
+            ws.shafts_tracks = (sheet.lightShaftsKeysLine ?? new())
+                .Select(s => new shafts_track_container
+                {
+                    name = s.name,
+                    keys = (s.keys?.thisList ?? new()).Select(k => new shafts_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        curve = read_curve(k.curve),
+                        enabled = k.enabled,
+                        speed = k.speed,
+                        angle = k.angle,
+                        offset = k.offset,
+                        alpha = k.alpha,
+                        alpha2 = k.alpha2,
+                        mask_alpha = k.maskAlpha,
+                        mask_anime_time = k.maskAnimeTime,
+                        mask_alpha_range = k.maskAlphaRange,
+                        scale = k.scale,
+                    }).ToList(),
+                })
+                .Where(t => t.keys.Count > 0)
+                .ToList();
+
+            // TransmittedLight: the subsurface glow pass, flat key list.
+            ws.transmitted = (sheet.TransmittedLightKeys?.thisList ?? new())
+                .Select(k => new transmitted_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    curve = read_curve(k.curve),
+                    iterations = k.Iterations,
+                    intensity = k.Intensity,
+                    threshold = k.Threshold,
+                    blur_spread = k.BlurSpread,
+                    blend_mode = k.BlendMode,
+                }).ToList();
+
             ws.camera_layer = (sheet.cameraLayerKeys?.thisList ?? new())
                 .Select(k => new camera_layer_key
                 {
@@ -473,6 +578,7 @@ namespace UV2.Live
                     power = k.power,
                     frequency = k.frequency,
                     rate = k.Rate,
+                    use_fixed_shake_pattern = sheet.handShakeCameraKeys._useFixedShakePattern,
                 }).ToList();
 
             // the postfx tracks: dof, bloom/diffusion, three film layers, fog, fade.
@@ -492,6 +598,10 @@ namespace UV2.Live
                     foreground_size = k.dofForegroundSize,
                     focal_point = k.dofFocalPoint,
                     smoothness = k.dofSmoothness,
+                    ball_blur_power_factor = k.BallBlurPowerFactor,
+                    ball_blur_brightness_threshold = k.BallBlurBrightnessThreshhold,
+                    ball_blur_brightness_intensity = k.BallBlurBrightnessIntensity,
+                    ball_blur_spread = k.BallBlurSpread,
                 }).ToList();
 
             ws.postfx.bloom = (sheet.postEffectBloomDiffusionKeys?.thisList ?? new())
@@ -509,6 +619,9 @@ namespace UV2.Live
                     blend_mode = k.BloomBlendMode,
                     diffusion_blur_size = k.diffusionBlurSize,
                     diffusion_bright = k.diffusionBright,
+                    diffusion_threshold = k.diffusionThreshold,
+                    diffusion_saturation = k.diffusionSaturation,
+                    diffusion_contrast = k.diffusionContrast,
                 }).ToList();
 
             Func<Cutt.LiveTimelineKeyPostFilmDataList, List<film_key>> read_film = list =>
@@ -533,6 +646,8 @@ namespace UV2.Live
                     roll_angle = k.RollAngle,
                     scale = k.FilmScale,
                     layer_mode = k.layerMode,
+                    blink_light_name = k.BlinkLightName,
+                    blink_light_brightness_power = k.BlinkLightBrightnessPower,
                 }).ToList();
             ws.postfx.film1 = read_film(sheet.postFilmKeys);
             ws.postfx.film2 = read_film(sheet.postFilm2Keys);
@@ -632,6 +747,73 @@ namespace UV2.Live
                     depth_power_back = k.depthPowerBack,
                     depth_cancel_rect = k.depthCancelRect,
                     depth_cancel_blend_length = k.depthCancelBlendLength,
+                }).ToList();
+
+            // chromaticAberrationList: named entries; the fork's consumer is
+            // SetChromaticAberration(clamp01(power*0.05)).
+            ws.postfx.chromatic = (sheet.chromaticAberrationList ?? new())
+                .SelectMany(c => (c.keys?.thisList ?? new()).Select(k => new chromatic_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    is_enable = k.isEnable,
+                    red_offset = k.redOffset,
+                    green_offset = k.greenOffset,
+                    blue_offset = k.blueOffset,
+                    power = k.power,
+                    clip = k.clip,
+                    effect_type = k.effectType,
+                }))
+                .OrderBy(k => k.frame)
+                .ToList();
+
+            // FluctuationKeys: the camera wobble; the game maps it onto the
+            // radial machinery (ApplyRadialBlur(MovePower*4, 0.25)).
+            ws.postfx.fluctuation = (sheet.FluctuationKeys?.thisList ?? new())
+                .Select(k => new fluctuation_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    is_enable = k.IsEnable,
+                    move_direction = k.MoveDirection,
+                    move_power = k.MovePower,
+                    power = k.Power,
+                    depth_clip = k.DepthClip,
+                }).ToList();
+
+            // VortexKeys: mapped onto the tilt machinery (ApplyTiltShift(6,
+            // RotVolume*4, 0)).
+            ws.postfx.vortex = (sheet.VortexKeys?.thisList ?? new())
+                .Select(k => new vortex_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    is_enable = k.IsEnable,
+                    area = k.Area,
+                    rot_volume = k.RotVolume,
+                    depth_clip = k.DepthClip,
+                }).ToList();
+
+            // LensDistortionKeys: the barrel/pincushion warp.
+            ws.postfx.lens_distortion = (sheet.LensDistortionKeys?.thisList ?? new())
+                .Select(k => new lens_distortion_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    intensity = k.Intensity,
+                    intensity_x = k.IntensityX,
+                    intensity_y = k.IntensityY,
+                    center_x = k.CenterX,
+                    center_y = k.CenterY,
+                    scale = k.Scale,
                 }).ToList();
 
             ws.camera_motion = (sheet.cameraMotionKeys?.thisList ?? new())
