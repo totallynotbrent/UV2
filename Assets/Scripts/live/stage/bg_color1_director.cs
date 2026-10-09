@@ -105,21 +105,15 @@ namespace UV2.Live
 
                 if (chara_group_names.Contains(track.name))
                 {
-                    mpb.SetColor(id_chara_color, c);
-                    // the game's chara "ambient": UpdateCharaColor1 publishes the
-                    // bgColor1 key color as _LightProbeColor (propid 41,
-                    // ModelController::SetLightProbeColor 0x7ff8e51a3320) and
-                    // the chara PS multiplies the WHOLE final color by it.
-                    // without this, chars render at full albedo - the washed-out
-                    // look. (uv2_chara_texture_color_decoded.md §4 fix #1)
-                    mpb.SetColor(id_light_probe, c);
-                    mpb.SetColor(id_toon_dark, lerp_color(cur.toon_dark_color, next?.toon_dark_color, blend));
-                    mpb.SetColor(id_toon_bright, lerp_color(cur.toon_bright_color, next?.toon_bright_color, blend));
-                    mpb.SetColor(id_outline_color, lerp_color(cur.outline_color, next?.outline_color, blend));
-                    mpb.SetFloat(id_saturation, lerp_f(cur.saturation, next?.saturation, blend));
+                    cur_chara_color = c;
+                    cur_light_probe = c;
+                    cur_toon_dark = lerp_color(cur.toon_dark_color, next?.toon_dark_color, blend);
+                    cur_toon_bright = lerp_color(cur.toon_bright_color, next?.toon_bright_color, blend);
+                    cur_outline_color = lerp_color(cur.outline_color, next?.outline_color, blend);
+                    cur_saturation = lerp_f(cur.saturation, next?.saturation, blend);
                     // the game's tint block carries the outline width scaled
                     // from the key's outlineWidthPower (fork + gap doc §2.3b).
-                    mpb.SetFloat(id_outline_width, Mathf.Max(0f, lerp_f(cur.outline_width_power, next?.outline_width_power, blend)) * 0.325f);
+                    cur_outline_width = Mathf.Max(0f, lerp_f(cur.outline_width_power, next?.outline_width_power, blend)) * 0.325f;
                     chara_dirty = true;
                 }
                 else if (part_sets.TryGetValue(track.name, out var renderers) && renderers.Count > 0)
@@ -229,17 +223,55 @@ namespace UV2.Live
         private void apply_chara_block()
         {
             if (chara_roots == null) return;
+            if (mpb == null) mpb = new MaterialPropertyBlock();
             foreach (var root in chara_roots)
             {
                 if (root == null) continue;
                 foreach (var r in root.GetComponentsInChildren<Renderer>())
                 {
                     if (r == null) continue;
-                    try { r.SetPropertyBlock(mpb); }
+                    // setpropertyblock replaces wholesale, and global_shade
+                    // pins the toon-light/rim block on these same renderers
+                    // every frame. read the live block back and extend it so
+                    // the authored tint and the light state coexist - the
+                    // fork's facial handler documents the same pattern.
+                    try
+                    {
+                        r.GetPropertyBlock(mpb);
+                        apply_tint_fields(mpb);
+                        r.SetPropertyBlock(mpb);
+                    }
                     catch { /* destroyed mid-shutdown */ }
                 }
             }
         }
+
+        // writes the tint fields onto whichever block is handed in.
+        private void apply_tint_fields(MaterialPropertyBlock block)
+        {
+            block.SetColor(id_chara_color, cur_chara_color);
+            // the game's chara "ambient": UpdateCharaColor1 publishes the
+            // bgColor1 key color as _LightProbeColor (propid 41,
+            // ModelController::SetLightProbeColor 0x7ff8e51a3320) and
+            // the chara PS multiplies the WHOLE final color by it.
+            // without this, chars render at full albedo - the washed-out
+            // look. (uv2_chara_texture_color_decoded.md §4 fix #1)
+            block.SetColor(id_light_probe, cur_light_probe);
+            block.SetColor(id_toon_dark, cur_toon_dark);
+            block.SetColor(id_toon_bright, cur_toon_bright);
+            block.SetColor(id_outline_color, cur_outline_color);
+            block.SetFloat(id_outline_width, cur_outline_width);
+            block.SetFloat(id_saturation, cur_saturation);
+        }
+
+        // last computed chara tint state (merged with the light block).
+        private Color cur_chara_color = Color.white;
+        private Color cur_light_probe = Color.white;
+        private Color cur_toon_dark = Color.white;
+        private Color cur_toon_bright = Color.white;
+        private Color cur_outline_color = Color.white;
+        private float cur_outline_width;
+        private float cur_saturation = 1f;
 
         // one trace line every 5s of song time keeps the bench readable.
         private void maybe_log(string part, Color tint, float song_time)

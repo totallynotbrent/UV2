@@ -206,7 +206,29 @@ namespace UV2.Live
                 string rb = radial_enabled ? $"radial t{radial_type} p{radial_blur_param_ex.x:0.00} it{radial_iteration} ds{radial_downsample}" : "radial off";
                 trace_log.write($"postfx: bloom {b} fog {f} fade a {fade_color.a:0.00} {fl} {d} {ts} {gr} {rb}");
             }
+
+            // leave rendered frames on disk at known points in the song.
+            // CaptureScreenshot runs after every post pass completes, on the
+            // real gpu, so this is what the user sees. one shot per window,
+            // not per frame.
+            int song_frame = (int)Mathf.RoundToInt(t * 60f);
+            // the capture set: the three originals plus the dark cutaway
+            // stretch (~f2400-3300), a mid-song bright, and the orange-hue
+            // window the user flagged near f5700.
+            int[] snap_frames = { 1780, 2400, 2840, 3300, 3580, 5700, 5960 };
+            bool hit = false;
+            for (int i = 0; i < snap_frames.Length; i++)
+                if (song_frame == snap_frames[i]) { hit = true; break; }
+            if (hit && song_frame != snap_pumped)
+            {
+                snap_pumped = song_frame;
+                var file = $"snap_f{song_frame}_t{t:0.0}.png";
+                ScreenCapture.CaptureScreenshot(file);
+                trace_log.write($"snap: captured {file}");
+            }
         }
+
+        private int snap_pumped = -1;
         private int trace_postfx_ticks;
         private bool radial_was_on;
         private int radial_was_type;

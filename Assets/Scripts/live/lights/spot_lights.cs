@@ -135,7 +135,11 @@ namespace UV2.Live
                     fixture_beams[t.name] = beam;
                 }
                 beam.color = new Color(color.r, color.g, color.b, 1f);
-                beam.intensity = Mathf.Max(1.2f, 4f * Mathf.Max(power, 0.35f));
+                // drop the inner power floor: max(1.2, 4*max(power, 0.35))
+                // made 1.4 the lowest possible intensity even when the key
+                // authored power 0 (off). with the floor at 0 the true
+                // minimum is 1.2, which is what the decoded comment says.
+                beam.intensity = Mathf.Max(1.2f, 4f * Mathf.Max(power, 0f));
                 beam.enabled = active;
                 var aim = new Vector3(char_pos.x, 1.2f, char_pos.z);
                 beam.transform.rotation = Quaternion.LookRotation(aim - beam.transform.position);

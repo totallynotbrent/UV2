@@ -243,7 +243,44 @@ namespace UV2.Live
                 cmd.ReleaseTemporaryRT(tmp_b_id);
                 context.ExecuteCommandBuffer(cmd);
                 CommandBufferPool.Release(cmd);
+
+                // snapshot the final frame at a few song points so the llvmpipe
+                // bench leaves a PNG we can inspect. blocking ReadPixels against
+                // the camera's color target — slow but we only fire 3 frames.
+                int song_frame = (int)Mathf.RoundToInt(director.clock.time * 60f);
+                if ((song_frame >= 1780 && song_frame <= 1810) || (song_frame >= 3580 && song_frame <= 3610))
+                {
+                    Debug.Log($"snap probe: f={song_frame} t={director.clock.time:0.0}");
+                    if (snap_fired != song_frame)
+                    {
+                        snap_fired = song_frame;
+                        Debug.Log($"snap: capturing frame {song_frame} t={director.clock.time:0.00}");
+                        var rt = RenderTexture.GetTemporary(
+                            renderingData.cameraData.cameraTargetDescriptor.width,
+                            renderingData.cameraData.cameraTargetDescriptor.height,
+                            24);
+                        var snap_cmd = CommandBufferPool.Get("uv2_snap");
+                        snap_cmd.Blit(color, rt);
+                        context.ExecuteCommandBuffer(snap_cmd);
+                        CommandBufferPool.Release(snap_cmd);
+                        RenderTexture.active = rt;
+                        var tex = new Texture2D(rt.width, rt.height, TextureFormat.RGBA32, false);
+                        tex.ReadPixels(new Rect(0, 0, rt.width, rt.height), 0, 0);
+                        tex.Apply(false, false);
+                        RenderTexture.active = null;
+                        RenderTexture.ReleaseTemporary(rt);
+                        var bytes = ImageConversion.EncodeToPNG(tex);
+                        UnityEngine.Object.Destroy(tex);
+                        var snap_dir = "/work/UmaViewer2/Logs";
+                        System.IO.Directory.CreateDirectory(snap_dir);
+                        var path = $"{snap_dir}/uv2_snap_f{song_frame}_t{director.clock.time:0.0}.png";
+                        System.IO.File.WriteAllBytes(path, bytes);
+                        Debug.Log($"snap wrote {path}");
+                    }
+                }
             }
+
+            private int snap_fired = -1;
 
             private static readonly int tmp_a_id = Shader.PropertyToID("_uv2_postfx_tmp_a");
             private static readonly int tmp_b_id = Shader.PropertyToID("_uv2_postfx_tmp_b");
@@ -297,8 +334,8 @@ namespace UV2.Live
                 // blit A (pass 1 DownSample): _Parameter = (1/srcW, 1/srcH,
                 // threshold, intensity); blits C/D (passes 2+3):
                 // (blur*2^-9/aspect, blur*2^-9, threshold, intensity).
-                // intensity folds into the downsample and the horizontal
-                // blur only; the vertical blur never multiplies it.
+                // intensity folds at the downsample only; the blur passes
+                // fold the threshold per tap and carry no intensity scale.
                 // the game's CreateBloomTexture (fastbloom_disasm.json
                 // insns 381-442): downsample(1) -> downsample-neutral(1 with
                 // _Parameter.z=0, w=1) -> blurH(2) -> blurV(3), and the

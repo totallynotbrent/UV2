@@ -46,12 +46,18 @@ Shader "live/uv2_chromatic_lens"
 
             float4 frag_chroma(v2f i) : SV_Target
             {
+                // clamp clamps to (0, _ChromaClip); authored 1004 keys carry
+                // clip 0, which would pin every sample to (0,0) = one texel
+                // smeared over the frame. use (0, 1) as the floor so the
+                // authored clamp only kills offsets >1 and clip==0 passes uv
+                // through untouched.
                 float2 off_r = i.uv + _ChromaR.xy * _ChromaAmount;
                 float2 off_g = i.uv + _ChromaG.xy * _ChromaAmount;
                 float2 off_b = i.uv + _ChromaB.xy * _ChromaAmount;
-                off_r = clamp(off_r, 0.0, _ChromaClip);
-                off_g = clamp(off_g, 0.0, _ChromaClip);
-                off_b = clamp(off_b, 0.0, _ChromaClip);
+                float clip_hi = _ChromaClip > 0.0 ? _ChromaClip : 1.0;
+                off_r = clamp(off_r, 0.0, clip_hi);
+                off_g = clamp(off_g, 0.0, clip_hi);
+                off_b = clamp(off_b, 0.0, clip_hi);
                 float4 src = tex2D(_MainTex, i.uv);
                 float r = tex2D(_MainTex, off_r).r;
                 float g = tex2D(_MainTex, off_g).g;

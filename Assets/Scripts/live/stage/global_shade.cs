@@ -99,12 +99,16 @@ namespace UV2.Live
                 dir = -(rot * Vector3.forward).normalized;
             }
 
-            if ((dir - _last_light_dir).sqrMagnitude < 1e-10f) return;
-            _last_light_dir = dir;
-            _pin_log_pending = true;
-
+            // the game re-applies this block EVERY frame (fork Director.cs
+            // OnUpdateGlobalLight: mpb cleared + republished per frame so any
+            // competing writer loses). the direction-delta early-out let
+            // bg_color1's per-frame Chara* tint wipe the toon-light state
+            // after the first frame it settled, so the body fell back to the
+            // serialized defaults (hot) for the rest of the song - the
+            // white-body wash. republish unconditionally.
             _chara_mpb.SetFloat(id_use_orig_light, 1f);
             _chara_mpb.SetVector(id_orig_light_dir, dir);
+            _pin_log_pending = true;
 
             // the game publishes the toon light direction via Material::SetInt/SetVector
             // (ModelController::UpdateBodyLightDir 0x7ff8e51a8010) with NO HasProperty
@@ -158,29 +162,9 @@ namespace UV2.Live
                 }
             }
 
-            if (k != null)
-            {
-                var nx = _light_next ?? k;
-                float b = _light_next != null ? _light_blend : 0f;
-                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor"), lerp_c(k.rim_color, nx.rim_color, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep"), lerp_f(k.rim_step, nx.rim_step, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather"), lerp_f(k.rim_feather, nx.rim_feather, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate"), lerp_f(k.rim_spec_rate, nx.rim_spec_rate, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate"), lerp_f(k.rim_shadow_rate, nx.rim_shadow_rate, b));
-                _chara_mpb.SetColor(Shader.PropertyToID("_RimColor2"), lerp_c(k.rim_color2, nx.rim_color2, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep2"), lerp_f(k.rim_step2, nx.rim_step2, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather2"), lerp_f(k.rim_feather2, nx.rim_feather2, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate2"), lerp_f(k.rim_spec_rate2, nx.rim_spec_rate2, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate2"), lerp_f(k.rim_shadow_rate2, nx.rim_shadow_rate2, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset"),
-                    lerp_f(k.rim_horizon_offset, nx.rim_horizon_offset, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset"),
-                    lerp_f(k.rim_vertical_offset, nx.rim_vertical_offset, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset2"),
-                    lerp_f(k.rim_horizon_offset2, nx.rim_horizon_offset2, b));
-                _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset2"),
-                    lerp_f(k.rim_vertical_offset2, nx.rim_vertical_offset2, b));
-            }
+            // rim values are merged per-renderer in the apply loop below
+            // (after the GetPropertyBlock read-back) so both the tint block
+            // and the light state survive on the same renderer.
 
             // per-character gate: only slots whose standing position is in
             // the key's flags get the block (fork 451-464); flags==0 (or all
@@ -195,7 +179,43 @@ namespace UV2.Live
                 foreach (var r in root.GetComponentsInChildren<Renderer>())
                 {
                     if (r == null) continue;
-                    try { r.SetPropertyBlock(_chara_mpb); }
+                    // setpropertyblock replaces wholesale. bg_color1's Chara*
+                    // groups write the tint block on these same renderers
+                    // every frame, so read the current block back and extend
+                    // it with the light state instead of clobbering (the
+                    // fork's facial handler documents this exact pattern).
+                    // the rim lerps are recomputed into the block AFTER the
+                    // read-back so they survive the merge.
+                    try
+                    {
+                        r.GetPropertyBlock(_chara_mpb);
+                        if (k != null)
+                        {
+                            var nx = _light_next ?? k;
+                            float b = _light_next != null ? _light_blend : 0f;
+                            _chara_mpb.SetColor(Shader.PropertyToID("_RimColor"), lerp_c(k.rim_color, nx.rim_color, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep"), lerp_f(k.rim_step, nx.rim_step, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather"), lerp_f(k.rim_feather, nx.rim_feather, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate"), lerp_f(k.rim_spec_rate, nx.rim_spec_rate, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate"), lerp_f(k.rim_shadow_rate, nx.rim_shadow_rate, b));
+                            _chara_mpb.SetColor(Shader.PropertyToID("_RimColor2"), lerp_c(k.rim_color2, nx.rim_color2, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep2"), lerp_f(k.rim_step2, nx.rim_step2, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather2"), lerp_f(k.rim_feather2, nx.rim_feather2, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate2"), lerp_f(k.rim_spec_rate2, nx.rim_spec_rate2, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate2"), lerp_f(k.rim_shadow_rate2, nx.rim_shadow_rate2, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset"),
+                                lerp_f(k.rim_horizon_offset, nx.rim_horizon_offset, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset"),
+                                lerp_f(k.rim_vertical_offset, nx.rim_vertical_offset, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset2"),
+                                lerp_f(k.rim_horizon_offset2, nx.rim_horizon_offset2, b));
+                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset2"),
+                                lerp_f(k.rim_vertical_offset2, nx.rim_vertical_offset2, b));
+                        }
+                        _chara_mpb.SetFloat(id_use_orig_light, 1f);
+                        _chara_mpb.SetVector(id_orig_light_dir, dir);
+                        r.SetPropertyBlock(_chara_mpb);
+                    }
                     catch { /* destroyed mid-shutdown */ }
                 }
             }

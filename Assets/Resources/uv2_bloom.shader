@@ -61,21 +61,16 @@ Shader "live/uv2_bloom"
             {
                 float4 src = tex2D(_MainTex, i.uv);
                 float4 bloom = tex2D(_BloomTex, i.uv);
-                // the game's dof-bloom composite (PostDofBloom_Rich PS#1,
-                // dofbloomblob_ps.txt): output = src * (1 + bloom - k) where
-                // k is the material's shaping constant row - a source-scaled
-                // add, not a plain add. ours previously ran saturate(src +
-                // bloom), which overbrightens every mid-luminance surface:
-                // at src 0.3 / bloom 0.2 the game adds 0.015, we added 0.2.
-                // k is the material's serialized shaping row, live value
-                // undecoded; 0 is the only defensible default - it keeps
-                // bloom-off at identity and dims the add by src exactly
-                // like the game dims mid-luminance surfaces.
-                float k = _BloomShaping;
-                float4 shaped = src * (1.0 + bloom - k);
-                // mode 0 = screen blend family, unchanged.
-                float4 screen = 1.0 - (1.0 - src) * (1.0 - bloom);
-                float4 col = lerp(screen, saturate(shaped), _BloomBlendMode);
+                // the game's PostBloom/PostDofBloom composite is a SCREEN blend
+                // (postbloom_composite_pass0_math.md §4: r = 1-(1-bloom*139)(1-src*139),
+                // then * _DimmerColor). the bloom pyramid already carries the key's
+                // intensity (pass 2 multiplies it in), so the composite does NOT
+                // scale by intensity again. our earlier shaped add
+                // `src*(1+bloom-k)` multiplies bloom into every pixel and saturates
+                // the whole frame under the intensity-hot tail keys (i=5.0 on film
+                // m5, 1.5 on m6) — that is the white wash. returning the screen
+                // branch only.
+                float4 col = 1.0 - (1.0 - saturate(src)) * (1.0 - saturate(bloom));
 
 #ifdef DIFFUSION_ON
                 // the diffusion chain grades a WIDER blur than the base
@@ -130,8 +125,14 @@ Shader "live/uv2_bloom"
                 s += tex2D(_MainTex, i.uv + float2(tx.x, tx.y));
                 s += tex2D(_MainTex, i.uv + float2(-tx.x, tx.y));
                 s += tex2D(_MainTex, i.uv + float2(tx.x, -tx.y));
+                s += tex2D(_MainTex, i.uv + float2(-tx.x, -tx.y));
                 s *= 0.25;
-                // the decode: max(avg - threshold, 0) * intensity.
+                // the game's downsample (@3302): max(avg + _Parameter.x, 0)
+                // * scale - the threshold folds HERE as the negative offset and
+                // the intensity multiplies HERE (audience_props_bloom_answers
+                // Q3: 'threshold as -threshold offset applies at EVERY pyramid
+                // level, per TAP, BEFORE the blur weights. there is NO separate
+                // intensity multiply at the composite').
                 return max(s - _Parameter.z, 0.0) * _Parameter.w;
             }
             ENDCG
@@ -171,17 +172,21 @@ Shader "live/uv2_bloom"
             float4 frag_blur_h(v2f i) : SV_Target
             {
                 float2 step_h = float2(_Parameter.x, 0.0);
-                float4 sum = 0;
+                // the game's 9-tap kernel samples the CENTER once (weight
+                // 0.225) plus each offset once per side; the weights sum to
+                // exactly 1.0. folding the center into the (t0+t1) pair
+                // doubled it and left the pyramid at 1.225 total gain - the
+                // over-bright bloom. the threshold fold applies to EVERY
+                // tap including the center (fastbloom decode: per-tap
+                // max(sample + offset, 0) before the weights).
+                float4 sum = max(tex2D(_MainTex, i.uv) - _Parameter.z, 0.0) * WEIGHTS[0];
                 [unroll]
-                for (int s = 0; s < 5; s++)
+                for (int s = 1; s < 5; s++)
                 {
                     float4 t0 = tex2D(_MainTex, i.uv + step_h * TAPS[s]);
                     float4 t1 = tex2D(_MainTex, i.uv - step_h * TAPS[s]);
-                    if (s > 0)
-                    {
-                        t0 = max(t0 - _Parameter.z, 0.0);
-                        t1 = max(t1 - _Parameter.z, 0.0);
-                    }
+                    t0 = max(t0 - _Parameter.z, 0.0);
+                    t1 = max(t1 - _Parameter.z, 0.0);
                     sum += (t0 + t1) * WEIGHTS[s];
                 }
                 return sum;
@@ -189,8 +194,8 @@ Shader "live/uv2_bloom"
             ENDCG
         }
 
-        // pass 3: VERTICAL blur — same taps on y, no fold, intensity ONCE at
-        // the end: o = weighted * w.
+        // pass 3: VERTICAL blur — same taps on y, no threshold fold (the H
+        // pass folded it), no intensity (the downsample folded it).
         Pass
         {
             CGPROGRAM
@@ -221,15 +226,21 @@ Shader "live/uv2_bloom"
             float4 frag_blur_v(v2f i) : SV_Target
             {
                 float2 step_v = float2(0.0, _Parameter.y);
-                float4 sum = 0;
+                // same center-once kernel as the H pass; weights sum to 1.0.
+                float4 sum = max(tex2D(_MainTex, i.uv) - _Parameter.z, 0.0) * WEIGHTS[0];
                 [unroll]
-                for (int s = 0; s < 5; s++)
+                for (int s = 1; s < 5; s++)
                 {
                     float4 t0 = tex2D(_MainTex, i.uv + step_v * TAPS[s]);
                     float4 t1 = tex2D(_MainTex, i.uv - step_v * TAPS[s]);
+                    t0 = max(t0 - _Parameter.z, 0.0);
+                    t1 = max(t1 - _Parameter.z, 0.0);
                     sum += (t0 + t1) * WEIGHTS[s];
                 }
-                return sum * _Parameter.w;
+                // the blur passes carry no intensity scale: the game folds
+                // intensity at the downsample only (audience doc Q3); the
+                // threshold folds per tap at every pyramid level (@5346).
+                return sum;
             }
             ENDCG
         }
