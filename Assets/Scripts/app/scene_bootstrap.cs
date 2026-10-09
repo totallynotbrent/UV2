@@ -26,6 +26,16 @@ namespace UV2.App
                     as UnityEngine.Rendering.Universal.UniversalRenderPipelineAsset;
                 if (urp != null)
                     urp.supportsHDR = true;
+                // zero-engine ambient: the game's stage shaders must read
+                // _AmbientColor from the worksheet (1004 authors near-black
+                // there), not Unity's default sky probe at intensity 1.
+                // custom mode + black everywhere, ambient intensity 0.
+                RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Custom;
+                RenderSettings.ambientSkyColor = Color.black;
+                RenderSettings.ambientEquatorColor = Color.black;
+                RenderSettings.ambientGroundColor = Color.black;
+                RenderSettings.ambientIntensity = 0f;
+                RenderSettings.ambientLight = Color.black;
                 var cam_go = new GameObject("main_camera", typeof(Camera));
                 var cam = cam_go.GetComponent<Camera>();
                 cam.depthTextureMode = UnityEngine.DepthTextureMode.Depth;
