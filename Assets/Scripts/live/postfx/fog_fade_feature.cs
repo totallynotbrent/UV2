@@ -364,9 +364,16 @@ namespace UV2.Live
                 bloom_mat.SetFloat("_BloomBlendMode", b.blend_mode == 1 ? 1f : 0f);
                 bloom_mat.SetFloat("_bloomDofWeight", b.bloom_dof_weight);
                 bloom_mat.SetFloat("_BloomIsScreenBlend", b.blend_mode == 1 ? 0f : 1f);
-                // the composite's shaping row: live serialized value not
-                // decoded yet; 0 keeps identity at bloom-off.
-                bloom_mat.SetFloat("_BloomShaping", 0f);
+                // the composite's shaping row cb0[139].y = _PostFilmPower =
+                // the live film layer's authored power (draw helper id192,
+                // fog_fade publish line ~545). the game scales the source by
+                // filmPower before adding bloom (@51362 r2 = t2*139.y + r4);
+                // with no valid film layer the composite path is the plain
+                // bloom variant and the source passes unscaled, so gate on
+                // film validity the same way.
+                bool film_shapes_src = director.film1_state != null && director.film1_state.valid;
+                float shaping = film_shapes_src ? director.film1_state.power : 1f;
+                bloom_mat.SetFloat("_BloomShaping", shaping);
 
                 // diffusion sub-chain (Director.cs:1307, attribute bit
                 // 0x20000): the game's PostDiffusionBloom_Rich path runs a

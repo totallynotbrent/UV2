@@ -61,16 +61,15 @@ Shader "live/uv2_bloom"
             {
                 float4 src = tex2D(_MainTex, i.uv);
                 float4 bloom = tex2D(_BloomTex, i.uv);
-                // the game's PostBloom/PostDofBloom composite is a SCREEN blend
-                // (postbloom_composite_pass0_math.md §4: r = 1-(1-bloom*139)(1-src*139),
-                // then * _DimmerColor). the bloom pyramid already carries the key's
-                // intensity (pass 2 multiplies it in), so the composite does NOT
-                // scale by intensity again. our earlier shaped add
-                // `src*(1+bloom-k)` multiplies bloom into every pixel and saturates
-                // the whole frame under the intensity-hot tail keys (i=5.0 on film
-                // m5, 1.5 on m6) — that is the white wash. returning the screen
-                // branch only.
-                float4 col = 1.0 - (1.0 - saturate(src)) * (1.0 - saturate(bloom));
+                // the game's film-variant composite (postbloom_composite_
+                // pass0_math.md §4 @51362 + audience doc Q3): C = t2(rgb
+                // source) * cb0[139].y (filmPower) + bloom - ADDITIVE, not
+                // screen. the screen form lifts every midtone; the additive
+                // form is why the official concert's stage falls to near
+                // black in cutaways (filmPower 0) and stays dim through mid
+                // scenes. the fork ran the real game shader with
+                // OutputDimmer 1 and its look matched.
+                float4 col = saturate(src) * _BloomShaping + bloom;
 
 #ifdef DIFFUSION_ON
                 // the diffusion chain grades a WIDER blur than the base
