@@ -35,6 +35,7 @@ Shader "live/uv2_bloom"
 
             sampler2D _MainTex;
             sampler2D _BloomTex;
+            sampler2D _DiffusionTex;
             float _BloomBlendMode;   // authored BloomBlendMode: 1 = additive
             float _bloomDofWeight;   // the game publishes id 179 pre-composite
             float _BloomIsScreenBlend;  // id 225: 0 for the Add family
@@ -77,14 +78,17 @@ Shader "live/uv2_bloom"
                 float4 col = lerp(screen, saturate(shaped), _BloomBlendMode);
 
 #ifdef DIFFUSION_ON
-                // the diffusion chain: lift the bright band, grade it, mix
-                // back - the game's PostDiffusionBloom_Rich consumer
-                // approximated with the composite's own bloom texture.
-                float lum = dot(src.rgb, float3(0.299, 0.587, 0.114));
-                float bright = max(lum - _DiffusionParams.x, 0.0) * _DiffusionParams.y;
-                float3 graded = saturate(col.rgb + bloom.rgb * bright);
-                float luma = dot(graded, float3(0.299, 0.587, 0.114));
-                graded = lerp(float3(luma, luma, luma), graded, _DiffusionParams.z);
+                // the diffusion chain grades a WIDER blur than the base
+                // bloom texture (the game's PostDiffusionBloom_Rich path):
+                // bright-pass lift, saturation/contrast grading, additive mix.
+                // falls back to the bloom texture when no diffusion pyramid
+                // was rendered (the blurred source carries the same energy).
+                float4 diff_src = tex2D(_DiffusionTex, i.uv);
+                float diff_lum = dot(diff_src.rgb, float3(0.299, 0.587, 0.114));
+                float bright = max(diff_lum - _DiffusionParams.x, 0.0) * _DiffusionParams.y;
+                float3 graded = saturate(col.rgb + diff_src.rgb * bright);
+                float grad_luma = dot(graded, float3(0.299, 0.587, 0.114));
+                graded = lerp(float3(grad_luma, grad_luma, grad_luma), graded, _DiffusionParams.z);
                 graded = (graded - 0.5) * _DiffusionParams.w + 0.5;
                 col.rgb = saturate(graded);
 #endif

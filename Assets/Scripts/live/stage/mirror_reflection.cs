@@ -230,9 +230,7 @@ namespace UV2.Live
             _mirror_camera.allowMSAA = false;
             _mirror_camera.depth = (_base_camera ? _base_camera.depth : 0f) + MIRROR_CAMERA_DEPTH_OFFSET;
             _mirror_camera.clearFlags = CameraClearFlags.Color;
-            // drop the receiving mesh's own layer from the mirror pass so the
-            // reflective floor doesn't see itself and recursively re-render.
-            _final_render_layers = _render_layers & ~(1 << _object_layer);
+            _final_render_layers = _render_layers;
             _mirror_camera.cullingMask = _final_render_layers;
             if (_log_debug) Debug.Log($"uv2 mirror '{name}': camera created");
         }
