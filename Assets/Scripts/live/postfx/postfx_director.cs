@@ -31,6 +31,15 @@ namespace UV2.Live
 
         // the evaluated dof state, read by the render feature.
         [HideInInspector] public bool dof_enabled;
+        // the current key's authored chain type (dofBlurType).
+        [HideInInspector] public int dof_chain_type;
+
+        // ball blur state (1004/1151 author it; 1001/1032 zero).
+        [HideInInspector] public bool ball_blur_enabled;
+        [HideInInspector] public float ball_blur_power;
+        [HideInInspector] public float ball_blur_threshold;
+        [HideInInspector] public float ball_blur_intensity;
+        [HideInInspector] public float ball_blur_spread;
         [HideInInspector] public float dof_focal_m;
         [HideInInspector] public float dof_focal01;
         [HideInInspector] public float dof_far_blend;
@@ -82,6 +91,10 @@ namespace UV2.Live
             public int layer_mode;
             public bool inverse;
             public bool valid;
+
+            // blink-container coupling authored on the current key.
+            public string blink_light_name = "";
+            public float blink_light_brightness_power;
         }
 
         public void open(live_worksheet worksheet, timeline_clock timeline, Camera target, List<Transform> characters = null)
@@ -105,10 +118,66 @@ namespace UV2.Live
             film1_state = eval_film(ws.postfx.film1, t);
             film2_state = eval_film(ws.postfx.film2, t);
             film3_state = eval_film(ws.postfx.film3, t);
+
+            // film keys can couple a layer to a named blink container so the
+            // stage strobes pulse with the film; the game clears then sets per
+            // key (Director's SetFilmCoupling path), strongest authoring wins.
+            blink_lights.clear_film_coupling();
+            foreach (var fs in new[] { film1_state, film2_state, film3_state })
+            {
+                if (fs == null) continue;
+                if (!string.IsNullOrEmpty(fs.blink_light_name) &&
+                    fs.blink_light_brightness_power > 0f)
+                    blink_lights.set_film_coupling(fs.blink_light_name, fs.blink_light_brightness_power);
+            }
             cc = eval_cc(t);
             eval_dof(t);
             eval_tilt(t);
             eval_radial(t);
+            eval_chromatic(t);
+            eval_lens_distortion(t);
+
+            // the game's family cousins (Director 1747/1753): an enabled
+            // Fluctuation key drives the radial machinery with
+            // power=MovePower*4, startArea=0.25; an enabled Vortex key
+            // drives the tilt machinery at mode 6, vol=RotVolume*4. the
+            // fork's OnUpdateFluctuation/OnUpdateVortex dispatch.
+            var fluc = ws.postfx.fluctuation;
+            if (fluc != null && fluc.Count > 0)
+            {
+                int fi = key_eval.bracket(fluc, t);
+                if (fi >= 0 && fluc[fi].is_enable != 0)
+                {
+                    float move_power = fluc[fi].move_power;
+                    var fnext = fi + 1 < fluc.Count ? fluc[fi + 1] : null;
+                    if (fnext != null && fnext.interpolate_type != 0)
+                        move_power = key_eval.lerp_f(fluc[fi].move_power, fnext.move_power,
+                            key_eval.interp(fluc[fi], fnext, t));
+                    radial_enabled = true;
+                    if (radial_type <= 0) radial_type = 1;
+                    radial_blur_param = Vector4.zero;
+                    radial_blur_param_ex = new Vector4(Mathf.Clamp01(move_power * 4f) * 8f, 0.25f, 0.75f, 0f);
+                    radial_downsample = Mathf.Max(1, radial_downsample);
+                    trace_log.write($"fluctuation: on frame {(int)(t * 60f)} move{move_power:0.00} -> radial p{radial_blur_param_ex.x:0.00}");
+                }
+            }
+            var vx = ws.postfx.vortex;
+            if (vx != null && vx.Count > 0)
+            {
+                int vi = key_eval.bracket(vx, t);
+                if (vi >= 0 && vx[vi].is_enable != 0)
+                {
+                    float rot = vx[vi].rot_volume;
+                    var vnext = vi + 1 < vx.Count ? vx[vi + 1] : null;
+                    if (vnext != null && vnext.interpolate_type != 0)
+                        rot = key_eval.lerp_f(vx[vi].rot_volume, vnext.rot_volume,
+                            key_eval.interp(vx[vi], vnext, t));
+                    tilt_enabled = true;
+                    tilt_mode = 6;
+                    tilt_max_blur = rot * 4f;
+                    trace_log.write($"vortex: on frame {(int)(t * 60f)} rot{rot:0.00} -> tilt m6 blur{tilt_max_blur:0.00}");
+                }
+            }
 
             // edge-triggered radial trace: one line per enabled/type change so
             // a bench proves engagement even when the throttled heartbeat
@@ -172,9 +241,36 @@ namespace UV2.Live
                 blur_size = Mathf.Max(0f, blur),
                 threshold = Mathf.Max(0f, threshold),
                 blend_mode = cur.blend_mode,
+                bloom_dof_weight = cur.bloom_dof_weight,
+                diffusion_blur_size = cur.diffusion_blur_size,
+                diffusion_bright = cur.diffusion_bright,
+                diffusion_threshold = cur.diffusion_threshold,
+                diffusion_saturation = cur.diffusion_saturation,
+                diffusion_contrast = cur.diffusion_contrast,
             };
-            bloom_state_valid = bloom_state.intensity > 0f;
+            // the game's attribute gates (Director.cs:1307): bit 0x10000 =
+            // IsEnableBloom, 0x20000 = IsEnableDiffusion; 1004 authors
+            // 0x30000 (both), 1151 0x20000 (diffusion only).
+            bloom_diffusion_enabled = (cur.attribute & 0x20000) != 0;
+            bloom_state_valid = bloom_state.intensity > 0f || bloom_diffusion_enabled;
         }
+
+        // whether the current bloom key enables the diffusion sub-chain.
+        [HideInInspector] public bool bloom_diffusion_enabled;
+
+        // chromatic aberration state (the fork: clamp01(power*0.05)).
+        [HideInInspector] public bool chromatic_enabled;
+        [HideInInspector] public float chromatic_amount;
+        // the current chromatic key's channel offsets + clip, for the blit.
+        public (Vector2 red, Vector2 green, Vector2 blue, float clip) chromatic_key_offsets
+            = (Vector2.zero, Vector2.zero, Vector2.zero, 1f);
+
+        // lens distortion state (the fork: enabled = |intensity|>0.001).
+        [HideInInspector] public bool lens_distortion_enabled;
+        [HideInInspector] public float lens_intensity;
+        [HideInInspector] public float lens_center_x;
+        [HideInInspector] public float lens_center_y;
+        [HideInInspector] public float lens_scale;
 
         // the color-correction state the feature samples: per-channel curves
         // blended between cur/next keys, baked into a 256x1 LUT.
@@ -325,6 +421,8 @@ namespace UV2.Live
                 // it into the layer param and the draw helper publishes it as
                 // _PostFilmIsInverseVignette - the shader inverts the mask.
                 inverse = (cur.attribute & 0x100000) != 0,
+                blink_light_name = cur.blink_light_name,
+                blink_light_brightness_power = cur.blink_light_brightness_power,
             };
             if (next != null && next.interpolate_type != 0)
             {
@@ -387,7 +485,14 @@ namespace UV2.Live
             float far_near = Mathf.Max(1e-4f, far - near);
             Vector3 world_pos = cam.transform.position + (fp - near) * cam.transform.forward;
             float focal01 = Mathf.Max(0f, cam.WorldToViewportPoint(world_pos).z / far_near);
-            dof_enabled = focal_size > 0f && fp > 0f;
+            // the chain selector (uv2_postfx_chain_divergence_audit §2.2):
+            // dofBlurType is the game's Execute dispatch, per key. 0 = None,
+            // 3 = Bloom (pyramid only, no DOF blur), 1/2/4 fused composites,
+            // 5/6 pure DOF chains. UV2's chain implements 1's shape; every
+            // blur-bearing type runs it, 0/3 do not.
+            dof_chain_type = cur.blur_type;
+            bool chain_runs_dof = cur.blur_type != 0 && cur.blur_type != 3;
+            dof_enabled = chain_runs_dof && focal_size > 0f && fp > 0f;
             // the coc pass wants eye meters; reconstruct the meters of the
             // resolved focal01 (inverse of WorldToViewportPoint().z/(far-near)).
             dof_focal_m = focal01 * far_near + near;
@@ -396,6 +501,29 @@ namespace UV2.Live
             dof_blur_spread = blur;
             dof_foreground_size = fg;
             dof_smoothness = Mathf.Max(0.1f, smooth);
+
+            // ball blur rides the same key (the audit: gate on
+            // BallBlurBrightnessIntensity > 0, 1004 up to 8.09 factor).
+            float bb_power = cur.ball_blur_power_factor;
+            float bb_thresh = cur.ball_blur_brightness_threshold;
+            float bb_int = cur.ball_blur_brightness_intensity;
+            float bb_spread = cur.ball_blur_spread;
+            if (next != null && next.interpolate_type != 0)
+            {
+                float k = key_eval.interp(cur, next, t);
+                bb_power = key_eval.lerp_f(cur.ball_blur_power_factor, next.ball_blur_power_factor, k);
+                bb_int = key_eval.lerp_f(cur.ball_blur_brightness_intensity, next.ball_blur_brightness_intensity, k);
+            }
+            ball_blur_power = bb_power;
+            ball_blur_threshold = bb_thresh;
+            ball_blur_intensity = bb_int;
+            ball_blur_spread = bb_spread;
+            // the ball blur passes live on the game's WeightedBlur (type 5)
+            // material family only (dof_pipeline_decoded.md: PASS_BALL_BLUR_*
+            // on the pure-DOF shader); type 1/3 chains never paint them even
+            // when the fields are authored nonzero (1004 authors factor 6.4
+            // on type 1/3 keys and the game shows no halo).
+            ball_blur_enabled = bb_int > 0f && dof_chain_type == 5;
         }
 
         // the character roots for focal resolution, wired at open.
@@ -520,6 +648,44 @@ namespace UV2.Live
                 rect.x + rect.z + blend, rect.y + rect.w + blend);
             radial_blend_length = blend;
             radial_enabled = true;
+        }
+
+        // chromatic aberration: the fork's consumer is
+        // SetChromaticAberration(clamp01(power * 0.05)); gate on is_enable.
+        private void eval_chromatic(float t)
+        {
+            var keys = ws.postfx.chromatic;
+            if (keys == null || keys.Count == 0) { chromatic_enabled = false; return; }
+            int i = key_eval.bracket(keys, t);
+            if (i < 0) { chromatic_enabled = false; return; }
+            var cur = keys[i];
+            var next = i + 1 < keys.Count ? keys[i + 1] : null;
+            float power = cur.power;
+            if (next != null && next.interpolate_type != 0)
+                power = key_eval.lerp_f(cur.power, next.power, key_eval.interp(cur, next, t));
+            chromatic_enabled = cur.is_enable != 0;
+            chromatic_amount = Mathf.Clamp01(power * 0.05f);
+            chromatic_key_offsets = (cur.red_offset, cur.green_offset, cur.blue_offset,
+                cur.clip != 0f ? cur.clip : 1f);
+        }
+
+        // lens distortion: enabled when |intensity| > 0.001 (the fork's gate).
+        private void eval_lens_distortion(float t)
+        {
+            var keys = ws.postfx.lens_distortion;
+            if (keys == null || keys.Count == 0) { lens_distortion_enabled = false; return; }
+            int i = key_eval.bracket(keys, t);
+            if (i < 0) { lens_distortion_enabled = false; return; }
+            var cur = keys[i];
+            var next = i + 1 < keys.Count ? keys[i + 1] : null;
+            float intensity = cur.intensity;
+            if (next != null && next.interpolate_type != 0)
+                intensity = key_eval.lerp_f(cur.intensity, next.intensity, key_eval.interp(cur, next, t));
+            lens_distortion_enabled = Mathf.Abs(intensity) > 0.001f;
+            lens_intensity = intensity;
+            lens_center_x = cur.center_x;
+            lens_center_y = cur.center_y;
+            lens_scale = cur.scale;
         }
 
         // fade: the authored fadeColor's ALPHA is the quad opacity (1004 runs

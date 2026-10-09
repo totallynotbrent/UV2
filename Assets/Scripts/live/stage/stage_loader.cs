@@ -71,7 +71,7 @@ namespace UV2.Live
 
             blink_lights.bind(ws?.blink_tracks, null);
             spot_lights.bind(ws?.spot_tracks);
-            laser_lights.bind(ws?.laser_tracks);
+            laser_lights.bind(ws?.laser_tracks, Camera.main);
             foot_light.reset();
             foot_light.bind(ws?.foot_light);
             volume_uv_scroll.bind(ws?.volume_tracks, ws?.uv_scroll_tracks);
@@ -170,6 +170,88 @@ namespace UV2.Live
         }
 
         // clones the controller's loose laser fixtures, one per distinct worksheet entry.
+        // logs the live render state of the beam/mirror/floor meshes a frame
+        // after stage bind so a gpu log can distinguish "not bound" from
+        // "bound but not rendered" on dx11.
+        private System.Collections.IEnumerator probe_beam_after_frame(Transform root)
+        {
+            yield return null;
+            probe_beam_render_state(root);
+        }
+
+        private void probe_beam_render_state(Transform root)
+        {
+            if (root == null) return;
+            var cam = Camera.main;
+            int probed = 0;
+            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null) continue;
+                string n = r.gameObject.name.ToLowerInvariant();
+                if (!n.Contains("uv_light") && !n.Contains("beam") && !n.Contains("mirror")
+                    && !n.Contains("ground") && !n.Contains("monitor")) continue;
+                probed++;
+                bool in_frustum = false;
+                if (cam != null)
+                {
+                    var planes = GeometryUtility.CalculateFrustumPlanes(cam);
+                    in_frustum = GeometryUtility.TestPlanesAABB(planes, r.bounds);
+                }
+                var mats = new System.Text.StringBuilder();
+                foreach (var m in r.sharedMaterials)
+                {
+                    if (m == null) { mats.Append(" null"); continue; }
+                    mats.Append(" ").Append(m.name).Append("[").Append(m.shader != null ? m.shader.name : "NULLSHADER").Append("]");
+                }
+                trace_log.write($"render probe '{r.gameObject.name}' layer={r.gameObject.layer} enabled={r.enabled} active={r.gameObject.activeInHierarchy} frustum={in_frustum} mats={mats.ToString().Trim()}");
+            }
+            trace_log.write($"render probe complete: {probed} meshes");
+        }
+
+        // auto-attaches mirror_reflection to renderers that carry mirror
+        // geometry or reflection-aware materials; the game's stage prefab
+        // expects us to do this (the fork does the same pass via
+        // StageController.AutoAttachMirrorReflectionComponents).
+        private void attach_mirror_reflections(Transform root)
+        {
+            if (root == null) return;
+            int attached = 0;
+            var rends = root.GetComponentsInChildren<Renderer>(true);
+            foreach (var r in rends)
+            {
+                if (r == null) continue;
+                string path = "";
+                var t = r.transform;
+                while (t != null)
+                {
+                    path = "/" + t.name + path;
+                    t = t.parent;
+                }
+                string lower = path.ToLowerInvariant();
+                bool wants_mirror = lower.Contains("mirror");
+                if (!wants_mirror)
+                {
+                    var mats = r.sharedMaterials;
+                    foreach (var m in mats)
+                    {
+                        if (m == null) continue;
+                        if (m.HasProperty("_ReflectionTex") || m.HasProperty("_ReflectionRate"))
+                        {
+                            wants_mirror = true;
+                            break;
+                        }
+                    }
+                }
+                if (!wants_mirror) continue;
+                if (r.GetComponent<mirror_reflection>() != null) continue;
+                var mr = r.gameObject.AddComponent<mirror_reflection>();
+                var cam = Camera.main;
+                if (cam != null) mr.ConfigureFor(cam);
+                attached++;
+            }
+            trace_log.write($"mirror reflections attached: {attached}");
+        }
+
         private System.Collections.IEnumerator instantiate_laser_fixtures()
         {
             var ctrl = _stage_controller;
@@ -339,6 +421,13 @@ namespace UV2.Live
 
                             Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
                             trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
+            // one-shot render-state probe of the beams + mirror + floor so a
+            // user's gpu log tells us whether those meshes sit culled, hidden,
+            // or shader-fallbacked on dx11.
+            // deferred probe: run it one frame later so culling and camera
+            // state reflect the live render, not the freshly-instantiated pose.
+            StartCoroutine(probe_beam_after_frame(geo_root.transform));
+            attach_mirror_reflections(geo_root.transform);
                             volume_uv_scroll.record_stage_materials(geo_root.transform);
                             // spawns the cyalume rig before the crowd records it.
                             crowd_rig.start_stage_animations(geo_root.transform);
@@ -1000,10 +1089,13 @@ namespace UV2.Live
             diag_pass("blink", () => blink_lights.update(clock?.time ?? 0f, ws?.blink_tracks));
             diag_pass("spot", () => spot_lights.update(clock?.time ?? 0f, ws?.spot_tracks, chara_roots));
             diag_pass("laser", () => laser_lights.update(clock?.time ?? 0f, ws?.laser_tracks, chara_roots));
+            diag_pass("shafts", () => shafts_lights.update(clock?.time ?? 0f, ws?.shafts_tracks));
             diag_pass("volume", () => volume_uv_scroll.update_volume(clock?.time ?? 0f, ws?.volume_tracks));
             diag_pass("uvscroll", () => volume_uv_scroll.update_uv_scroll(clock?.time ?? 0f, ws?.uv_scroll_tracks));
             diag_pass("wash", () => wash_light.update(clock?.time ?? 0f, ws?.wash_tracks));
             diag_pass("additional", () => additional_light.update(clock?.time ?? 0f, ws?.additional_tracks));
+            diag_pass("lightproj", () => light_projection_lights.update(clock?.time ?? 0f, ws?.light_projection));
+            diag_pass("transmitted", () => transmitted_light.update(clock?.time ?? 0f, ws?.transmitted));
             diag_pass("crowd", () =>
             {
                 crowd_rig.update(clock?.time ?? 0f, ws?.audience_tracks);
@@ -1156,3 +1248,4 @@ namespace UV2.Live
         }
     }
 }
+

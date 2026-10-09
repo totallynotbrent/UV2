@@ -26,8 +26,9 @@ namespace UV2.Live
             var host = new GameObject($"foot_light_{index}");
             host.transform.SetParent(chara_roots[index], false);
             host.transform.localPosition = Vector3.zero;
-            // aim the spot straight up from the floor.
-            host.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
+            // the fork parents the spot with no rotation: it inherits the
+            // character's facing like the game's foot light does.
+            host.transform.localRotation = Quaternion.identity;
             var light = host.AddComponent<Light>();
             light.type = LightType.Spot;
             light.shadows = LightShadows.None;
@@ -62,24 +63,43 @@ namespace UV2.Live
                 }
             }
 
-            // walk the 20 position slots, gated by the key's positionFlag bits.
+            // the fork's dispatch (Director.OnUpdateCharaFootLight): element[0]
+            // of the arrays drives ONE character per key - the first set bit
+            // of the position flag - with no up-aim rotation (the spot rides
+            // the character's facing). multi-slot glow over-lights the stage
+            // vs the game, so match the fork exactly.
+            int slot = first_flag_bit(a.position_flag);
+            if (slot >= 0)
+            {
+                var light = ensure_light(slot, chara_roots);
+                if (light != null)
+                {
+                    float height = Mathf.Lerp(a.height(0), b.height(0), blend);
+                    Color color = Color.Lerp(a.color(0), b.color(0), blend);
+                    light.color = color;
+                    light.intensity = Mathf.Clamp01(height) * 2f;
+                    light.range = 3f;
+                    light.enabled = height > 0.001f;
+                }
+            }
+
+            // every other previously-lit slot must go dark this frame: the
+            // game's single-slot dispatch means a stale slot from an earlier
+            // key keeps burning otherwise.
             for (int i = 0; i < slot_count; i++)
             {
-                if ((a.position_flag & (1 << i)) == 0) continue;
-                // shutdown can destroy a slot light mid-update; skip and move on.
-                var light = slots[i];
-                if (light == null && (chara_roots == null || i >= chara_roots.Count || chara_roots[i] == null))
-                    continue;
-                light = ensure_light(i, chara_roots);
-                if (light == null) continue;
-
-                float height = Mathf.Lerp(a.height(i), b.height(i), blend);
-                Color color = Color.Lerp(a.color(i), b.color(i), blend);
-                light.color = color;
-                light.intensity = Mathf.Clamp01(height) * 2f;
-                light.range = 3f;
-                light.enabled = height > 0.001f;
+                if (i == slot) continue;
+                if (slots[i] != null) slots[i].enabled = false;
             }
+        }
+
+        // the fork's PositionFlagToIndex: the first set bit of the flag.
+        private static int first_flag_bit(long flag)
+        {
+            if (flag == 0) return -1;
+            for (int i = 0; i < slot_count; i++)
+                if ((flag & (1L << i)) != 0) return i;
+            return -1;
         }
 
         // the bind report: slots claimed across the whole track + key count.

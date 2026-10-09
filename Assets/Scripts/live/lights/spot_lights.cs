@@ -17,6 +17,12 @@ namespace UV2.Live
         }
         private static readonly Dictionary<string, spot_container> containers = new();
 
+        // the fork's per-fixture caches: one dedicated beam light + a
+        // one-shot material tint (Director 2307-2326: later keys with new
+        // colors never re-tint - the cache is per GameObject).
+        private static readonly Dictionary<string, Light> fixture_beams = new();
+        private static readonly Dictionary<string, bool> fixture_tinted = new();
+
         // binds the containers from the spotlight tracks against the recorded stage children.
         public static void bind(List<spot_track_container> tracks)
         {
@@ -59,6 +65,16 @@ namespace UV2.Live
             return ordinal ? name.Substring(idx + 1).Trim() : name.Trim();
         }
 
+        // clears the per-fixture caches (a new song rebinds).
+        public static void reset()
+        {
+            foreach (var beam in fixture_beams.Values)
+                if (beam != null) UnityEngine.Object.Destroy(beam.gameObject);
+            fixture_beams.Clear();
+            fixture_tinted.Clear();
+            containers.Clear();
+        }
+
         // resolves the asset name against the stage map, falling back to a live scene search.
         private static GameObject stage_object(string asset_name)
         {
@@ -85,22 +101,49 @@ namespace UV2.Live
                 bool was_active = c.root.gameObject.activeSelf;
                 if (was_active != active) c.root.gameObject.SetActive(active);
                 if (!active) continue;
+                // the fork's hang math ONLY: x/z from characterPosition, y
+                // from position; the key's rotation is never applied to the
+                // fixture (Director 2287-2299).
                 c.root.position = new Vector3(char_pos.x, position.y, char_pos.z);
-                c.root.rotation = Quaternion.Euler(rotation);
                 c.root.localScale = scale;
-                if (c.mpb == null) c.mpb = new MaterialPropertyBlock();
-                c.mpb.SetColor(id_color, color * power);
-                foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
-                foreach (var l in c.lights)
+
+                // one-shot material tint per fixture: _Color = color,
+                // _EmissionColor = color * max(1, colorPower) (Director
+                // 2307-2326); the cache is never invalidated mid-song.
+                if (!fixture_tinted.TryGetValue(t.name, out bool tinted) || !tinted)
                 {
-                    l.color = color;
-                    l.intensity = power;
-                    l.enabled = active;
+                    fixture_tinted[t.name] = true;
+                    if (c.mpb == null) c.mpb = new MaterialPropertyBlock();
+                    c.mpb.SetColor(id_color, color);
+                    c.mpb.SetColor(id_emission_color, color * Mathf.Max(1f, power));
+                    foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
                 }
+
+                // the dedicated beam: one Spot light per fixture (34deg,
+                // range 30, shadows none), intensity floor 1.2 with the 4x
+                // power scale, aimed at the character slot at height 1.2
+                // (DriveRealSpotlight 2330-2368).
+                if (!fixture_beams.TryGetValue(t.name, out var beam) || beam == null)
+                {
+                    var host = new GameObject($"spotlight_beam_{t.name}");
+                    host.transform.SetParent(c.root, false);
+                    beam = host.AddComponent<Light>();
+                    beam.type = LightType.Spot;
+                    beam.spotAngle = 34f;
+                    beam.range = 30f;
+                    beam.shadows = LightShadows.None;
+                    fixture_beams[t.name] = beam;
+                }
+                beam.color = new Color(color.r, color.g, color.b, 1f);
+                beam.intensity = Mathf.Max(1.2f, 4f * Mathf.Max(power, 0.35f));
+                beam.enabled = active;
+                var aim = new Vector3(char_pos.x, 1.2f, char_pos.z);
+                beam.transform.rotation = Quaternion.LookRotation(aim - beam.transform.position);
             }
         }
 
         private static readonly int id_color = Shader.PropertyToID("_Color");
+        private static readonly int id_emission_color = Shader.PropertyToID("_EmissionColor");
     }
 
     // one worksheet spotlight3d container: name + key track.
@@ -141,7 +184,9 @@ namespace UV2.Live
             Vector3 scale = Vector3.Lerp(a.scale, b.scale, blend);
             Color color = Color.Lerp(a.color, b.color, blend);
             float power = Mathf.Lerp(a.color_power, b.color_power, blend);
-            bool active = (blend < 0.5f ? a.is_active : b.is_active) != 0;
+            // the fork publishes the CUR key's isActive verbatim (walker
+            // 5165) - no blend midpoint pick.
+            bool active = a.is_active != 0;
             // the fork's ApplySpotlight3d: x/z from characterPosition,
             // y from position (the hang height); no additive anchor.
             Vector3 char_pos = Vector3.Lerp(a.character_position, b.character_position, blend);

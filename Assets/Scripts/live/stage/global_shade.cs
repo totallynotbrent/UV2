@@ -67,7 +67,9 @@ namespace UV2.Live
         private static global_light_key _light_next;
         private static float _light_blend;
 
-        private static float lerp_f(float a, float b, float blend) => Mathf.Lerp(a, b, blend);
+        // LerpWithoutClamp semantics (the fork's rim lerp extrapolates
+        // past the key pair; Mathf.Lerp clamps).
+        private static float lerp_f(float a, float b, float blend) => a + (b - a) * blend;
         private static Color lerp_c(Color a, Color b, float blend) => Color.Lerp(a, b, blend);
 
         // the assembled character mpb: rebuilt when the light track moves.
@@ -89,7 +91,12 @@ namespace UV2.Live
                 Vector3 euler = k.light_dir;
                 if (n != null && n.light_dir.sqrMagnitude > 1e-06f)
                     euler = Vector3.Lerp(k.light_dir, n.light_dir, _light_blend);
-                dir = -(Quaternion.Euler(euler) * Vector3.forward).normalized;
+                var rot = Quaternion.Euler(euler);
+                // the fork's cameraFollow (walker 2466-2469): the camera
+                // rotation multiplies into the light rotation.
+                if (k.camera_follow != 0 && Camera.main != null)
+                    rot = rot * Camera.main.transform.rotation;
+                dir = -(rot * Vector3.forward).normalized;
             }
 
             if ((dir - _last_light_dir).sqrMagnitude < 1e-10f) return;
@@ -165,12 +172,26 @@ namespace UV2.Live
                 _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather2"), lerp_f(k.rim_feather2, nx.rim_feather2, b));
                 _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate2"), lerp_f(k.rim_spec_rate2, nx.rim_spec_rate2, b));
                 _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate2"), lerp_f(k.rim_shadow_rate2, nx.rim_shadow_rate2, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset"),
+                    lerp_f(k.rim_horizon_offset, nx.rim_horizon_offset, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset"),
+                    lerp_f(k.rim_vertical_offset, nx.rim_vertical_offset, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset2"),
+                    lerp_f(k.rim_horizon_offset2, nx.rim_horizon_offset2, b));
+                _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset2"),
+                    lerp_f(k.rim_vertical_offset2, nx.rim_vertical_offset2, b));
             }
 
-            foreach (var root in chara_roots)
+            // per-character gate: only slots whose standing position is in
+            // the key's flags get the block (fork 451-464); flags==0 (or all
+            // set) applies to every root like the game's default.
+            bool gate_all = k == null || k.flags == 0;
+            for (int ci = 0; ci < chara_roots.Count; ci++)
             {
+                var root = chara_roots[ci];
                 // shutdown can destroy a root or renderer mid-update; the rest still publish.
                 if (root == null) continue;
+                if (!gate_all && ((k.flags & (1 << ci)) == 0)) continue;
                 foreach (var r in root.GetComponentsInChildren<Renderer>())
                 {
                     if (r == null) continue;

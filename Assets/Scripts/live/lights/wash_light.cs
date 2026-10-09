@@ -85,6 +85,13 @@ namespace UV2.Live
                 var (raycast, side, color_power) = t.sample(frame);
 
                 float wash = Mathf.Clamp01(color_power);
+                // the fork's consumer applies CameraProjectionSide/ColorPower
+                // through the WashLightController's camera-projection pass;
+                // UV2 publishes them as globals so the wash shaders can take
+                // the camera-relative side wash, and clamps each spot's range
+                // by the authored raycast distance.
+                Shader.SetGlobalFloat(id_wash_color_power, wash);
+                Shader.SetGlobalFloat(id_wash_side, side);
                 foreach (var kv in containers)
                 {
                     // one entry drives its exact-name container plus its 'entry:fixture' fan-out keys.
@@ -95,12 +102,17 @@ namespace UV2.Live
                     c.mpb.SetFloat(id_emission_power, wash);
                     foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
                     foreach (var l in c.lights)
+                    {
                         l.intensity = wash * 2f;
+                        if (raycast > 0f) l.range = Mathf.Min(l.range, raycast);
+                    }
                 }
             }
         }
 
         private static readonly int id_emission_power = Shader.PropertyToID("_EmissionPower");
+        private static readonly int id_wash_color_power = Shader.PropertyToID("_WashLightColorPower");
+        private static readonly int id_wash_side = Shader.PropertyToID("_WashLightCameraProjectionSide");
     }
 
     // one worksheet wash-light entry: name + raw-key handoff fields.

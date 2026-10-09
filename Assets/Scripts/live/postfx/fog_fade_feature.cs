@@ -47,7 +47,9 @@ namespace UV2.Live
                 bool tilt_on = director.tilt_enabled;
                 bool grade_on = director.cc != null && director.cc.valid && director.cc_lut != null;
                 if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on && !tilt_on && !grade_on
-                    && !director.radial_enabled) return;
+                    && !director.radial_enabled
+                    && !director.lens_distortion_enabled && !director.chromatic_enabled
+                    && !director.ball_blur_enabled) return;
 
                 // blitting a target onto itself is undefined in urp: d3d unbinds
                 // the srv when the texture becomes the render target, so the
@@ -148,6 +150,26 @@ namespace UV2.Live
                 if (dof_on)
                     apply_dof(cmd, ref renderingData, director, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
 
+                // ball blur (the dof key's own family, 1004/1151): the
+                // extraction/spread/add halo after the dof composite.
+                if (director.ball_blur_enabled)
+                {
+                    if (ballblur_mat == null)
+                    {
+                        var sh = Shader.Find("live/uv2_ballblur");
+                        if (sh != null) ballblur_mat = CoreUtils.CreateEngineMaterial(sh);
+                    }
+                    if (ballblur_mat != null)
+                    {
+                        ballblur_mat.SetVector("_BallBlurParams", new Vector4(
+                            director.ball_blur_power, director.ball_blur_threshold,
+                            director.ball_blur_intensity, director.ball_blur_spread));
+                        cmd.Blit(cur, nxt, ballblur_mat, 0);
+                        cur = nxt; cur_is_color = false;
+                        nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
+                    }
+                }
+
                 // the film overlays: each valid layer blits on top in order,
                 // exactly the game's PostFilmBlit layer chain.
                 if (film_valid(director.film1_state))
@@ -176,6 +198,44 @@ namespace UV2.Live
                 if (director.radial_enabled)
                     apply_radial(cmd, renderingData, director, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
 
+                // lens distortion rides before the chromatic fringe; chromatic
+                // is the chain's last blit (the game draws the fringe at the
+                // very end, uv2_postfx_chain_divergence_audit §2.12).
+                if (director.lens_distortion_enabled || director.chromatic_enabled)
+                {
+                    if (chroma_mat == null)
+                    {
+                        var sh = Shader.Find("live/uv2_chromatic_lens");
+                        if (sh != null) chroma_mat = CoreUtils.CreateEngineMaterial(sh);
+                    }
+                    if (chroma_mat != null)
+                    {
+                        if (director.lens_distortion_enabled)
+                        {
+                            chroma_mat.SetFloat("_LensIntensity", director.lens_intensity);
+                            chroma_mat.SetVector("_LensCenter",
+                                new Vector4(director.lens_center_x, director.lens_center_y, 0, 0));
+                            chroma_mat.SetFloat("_LensScale",
+                                director.lens_scale != 0f ? director.lens_scale : 1f);
+                            cmd.Blit(cur, nxt, chroma_mat, 1);
+                            cur = nxt; cur_is_color = false;
+                            nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
+                        }
+                        if (director.chromatic_enabled)
+                        {
+                            chroma_mat.SetFloat("_ChromaAmount", director.chromatic_amount);
+                            var ck = director.chromatic_key_offsets;
+                            chroma_mat.SetFloat("_ChromaClip", ck.clip);
+                            chroma_mat.SetVector("_ChromaR", new Vector4(ck.red.x, ck.red.y, 0, 0));
+                            chroma_mat.SetVector("_ChromaG", new Vector4(ck.green.x, ck.green.y, 0, 0));
+                            chroma_mat.SetVector("_ChromaB", new Vector4(ck.blue.x, ck.blue.y, 0, 0));
+                            cmd.Blit(cur, nxt, chroma_mat, 0);
+                            cur = nxt; cur_is_color = false;
+                            nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
+                        }
+                    }
+                }
+
                 if (!cur_is_color)
                     cmd.Blit(cur, color);
 
@@ -189,6 +249,8 @@ namespace UV2.Live
             private static readonly int tmp_b_id = Shader.PropertyToID("_uv2_postfx_tmp_b");
 
             private Material dof_mat;
+            private Material chroma_mat;
+            private Material ballblur_mat;
             private RenderTexture dof_rt_a;
             private RenderTexture dof_rt_b;
 
@@ -233,19 +295,55 @@ namespace UV2.Live
                 // (blur*2^-9/aspect, blur*2^-9, threshold, intensity).
                 // intensity folds into the downsample and the horizontal
                 // blur only; the vertical blur never multiplies it.
+                // the game's CreateBloomTexture (fastbloom_disasm.json
+                // insns 381-442): downsample(1) -> downsample-neutral(1 with
+                // _Parameter.z=0, w=1) -> blurH(2) -> blurV(3), and the
+                // composite binds the pass-3 RT. UV2 previously skipped the
+                // neutral second downsample (bloom read smaller and hotter)
+                // and ran the blurs V-then-H.
                 bloom_mat.SetVector("_Parameter", new Vector4(
                     1f / desc.width, 1f / desc.height, b.threshold, b.intensity));
                 cmd.Blit(cur, bloom_rt_a, bloom_mat, 1);
+                // neutral second downsample: threshold 0, intensity 1.
+                bloom_mat.SetVector("_Parameter", new Vector4(
+                    1f / bw, 1f / bh, 0f, 1f));
+                cmd.Blit(bloom_rt_a, bloom_rt_b, bloom_mat, 1);
                 bloom_mat.SetVector("_Parameter", new Vector4(
                     b.blur_size * Mathf.Pow(2f, -9f) / aspect,
                     b.blur_size * Mathf.Pow(2f, -9f),
                     b.threshold, b.intensity));
-                cmd.Blit(bloom_rt_a, bloom_rt_b, bloom_mat, 2);
-                cmd.Blit(bloom_rt_b, bloom_rt_a, bloom_mat, 3);
+                cmd.Blit(bloom_rt_b, bloom_rt_a, bloom_mat, 2);
+                cmd.Blit(bloom_rt_a, bloom_rt_b, bloom_mat, 3);
                 // composite (pass 0 Bloom): additive for authored mode 1, the
                 // screen-blend family otherwise; never an intensity scale.
-                bloom_mat.SetTexture("_BloomTex", bloom_rt_a);
+                // the game publishes _bloomDofWeight (id 179) and
+                // _BloomIsScreenBlend (id 225, 0 for mode-1 Add) before the
+                // PostFilmBlit composite (fastbloom decode).
+                bloom_mat.SetTexture("_BloomTex", bloom_rt_b);
                 bloom_mat.SetFloat("_BloomBlendMode", b.blend_mode == 1 ? 1f : 0f);
+                bloom_mat.SetFloat("_bloomDofWeight", b.bloom_dof_weight);
+                bloom_mat.SetFloat("_BloomIsScreenBlend", b.blend_mode == 1 ? 0f : 1f);
+                // the composite's shaping row: live serialized value not
+                // decoded yet; 0 keeps identity at bloom-off.
+                bloom_mat.SetFloat("_BloomShaping", 0f);
+
+                // diffusion sub-chain (Director.cs:1307, attribute bit
+                // 0x20000): a bright-pass blur mixed back over the frame -
+                // the game's PostDiffusionBloom_Rich spread/saturation/
+                // contrast shape approximated with the blur pyramid the
+                // bloom shader already exposes.
+                if (director.bloom_diffusion_enabled && b.diffusion_blur_size > 0f)
+                {
+                    bloom_mat.SetVector("_DiffusionParams", new Vector4(
+                        b.diffusion_threshold, b.diffusion_bright,
+                        b.diffusion_saturation, b.diffusion_contrast));
+                    bloom_mat.SetFloat("_DiffusionBlur", b.diffusion_blur_size);
+                    bloom_mat.EnableKeyword("DIFFUSION_ON");
+                }
+                else
+                {
+                    bloom_mat.DisableKeyword("DIFFUSION_ON");
+                }
                 cmd.Blit(cur, nxt, bloom_mat, 0);
                 cur = nxt; cur_is_color = false;
                 nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
@@ -275,7 +373,13 @@ namespace UV2.Live
                         { filterMode = FilterMode.Bilinear };
                 }
 
-                dof_mat.SetVector("_DofCurveParams", new Vector4(1f, 1f, director.dof_far_blend, 0f));
+                // the decode (dof_pipeline_decoded.md): _CurveParams =
+                // (1, 1, farBlend, offsetY) - the game's two Pow calls with
+                // base 1.0 publish 1.0 into x/y (curve left linear; the
+                // 1/(focal01*smoothness) claim in the audit doc is wrong at
+                // register level); offsetY = invRT.y * aspect.
+                dof_mat.SetVector("_DofCurveParams", new Vector4(1f, 1f, director.dof_far_blend,
+                    (1f / Mathf.Max(1, desc.height)) * (desc.width / Mathf.Max(1f, desc.height))));
                 dof_mat.SetVector("_DofFocusParams", new Vector4(
                     director.dof_focal01, director.dof_blur_spread,
                     director.dof_foreground_size, director.dof_smoothness));
@@ -395,9 +499,19 @@ namespace UV2.Live
                 film_mat.SetColor("_PostFilmColor1", s.color1);
                 film_mat.SetColor("_PostFilmColor2", s.color2);
                 film_mat.SetColor("_PostFilmColor3", s.color3);
+                // the game's packing (ScreenOverlayRender Render.Blit):
+                // roll = (sin, cos, width/height aspect, 1) and scale =
+                // (1/scale.x, 1/scale.y, 0, 0) reciprocals - the audit's
+                // film uv-warp divergence (§2.4): UV2 previously published
+                // (sin, cos, 0, 0) and raw scale, so the warp was wrong.
                 float rad = s.roll_angle * Mathf.Deg2Rad;
-                film_mat.SetVector("_PostFilmRollParameter", new Vector4(Mathf.Sin(rad), Mathf.Cos(rad), 0, 0));
-                film_mat.SetVector("_PostFilmScaleParameter", new Vector4(s.scale.x, s.scale.y, 0, 0));
+                var fd = renderingData.cameraData.cameraTargetDescriptor;
+                float aspect = (float)fd.width / Mathf.Max(1, fd.height);
+                film_mat.SetVector("_PostFilmRollParameter", new Vector4(Mathf.Sin(rad), Mathf.Cos(rad), aspect, 1f));
+                film_mat.SetVector("_PostFilmScaleParameter", new Vector4(
+                    s.scale.x != 0f ? 1f / s.scale.x : 1f,
+                    s.scale.y != 0f ? 1f / s.scale.y : 1f,
+                    0f, 0f));
                 // the game's draw helper publishes isUseTexMask as
                 // _PostFilmIsInverseVignette (id 223) - the shader's mask
                 // inversion flag. ignoring it made every authored inverse

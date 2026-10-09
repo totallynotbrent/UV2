@@ -38,6 +38,7 @@ namespace UV2.Live
         public float power;      // shake amplitude
         public float frequency;  // noise cycles per second
         public float rate;       // noise evolution speed
+        public byte use_fixed_shake_pattern;  // perlin-deterministic rolls (1193 only)
     }
 
     // camera position key (worksheet cameraPosKeys entries).
@@ -163,6 +164,13 @@ namespace UV2.Live
         public float rim_feather2;
         public float rim_spec_rate2;
         public float rim_shadow_rate2;
+        public byte camera_follow;
+        public int flags;
+        public float rim_horizon_offset;
+        public float rim_vertical_offset;
+        public float rim_horizon_offset2;
+        public float rim_vertical_offset2;
+        public string blink_light_name = "";
     }
 
     // one bgColor1 key: the concert's ambient + character tint track.
@@ -301,6 +309,80 @@ namespace UV2.Live
         public List<facial_track_set> facial_slots = new();
         // the song-global auto lip-sync track (ripSyncKeys).
         public List<facial_lip_key> facial_lips = new();
+
+        // lightProjection: gobo/mirror-ball floor projectors, 30/51 songs.
+        public List<light_projection_track> light_projection = new();
+        // TransmittedLight: the subsurface glow pass, 16/51 songs, flat keys.
+        public List<transmitted_key> transmitted = new();
+        // lightShafts: god-ray shafts, 26/51 songs.
+        public List<shafts_track_container> shafts_tracks = new();
+    }
+
+    // one projector entry: name + keys.
+    [Serializable]
+    public class light_projection_track
+    {
+        public string name;
+        public List<light_projection_key> keys = new();
+    }
+
+    [Serializable]
+    public class light_projection_key : live_key
+    {
+        public byte is_enable;
+        public int texture_id;
+        public Color color;
+        public Vector3 position;
+        public Vector3 angle;
+        public Vector3 scale;
+        public byte orthographic;
+        public float ortho_size;
+        public float near_clip;
+        public float far_clip;
+        public float fov;
+        public float color_power;
+        public Vector3 mirror_ball_rotate_axis;
+        public float mirror_ball_rotate_value;
+        public float mirror_ball_projection_radius;
+        public float mirror_ball_fall_off_power;
+        public byte mirror_ball_is_loop_rotation;
+        public float mirror_ball_loop_rotation_speed;
+    }
+
+    // one shafts entry (lightShaftsKeysLine): the god-ray track. the fork
+    // publishes verbatim, no lerp; the consumer is a bloom lift.
+    [Serializable]
+    public class shafts_track_container
+    {
+        public string name;
+        public List<shafts_key> keys = new();
+    }
+
+    [Serializable]
+    public class shafts_key : live_key
+    {
+        public byte enabled;
+        public Vector4 speed;
+        public Vector4 angle;
+        public Vector4 offset;
+        public Vector4 alpha;
+        public Vector4 alpha2;
+        public Vector4 mask_alpha;
+        public float mask_anime_time;
+        public Vector2 mask_alpha_range;
+        public float scale;
+    }
+
+    // transmitted light: one flat key list (no named containers), the
+    // subsurface glow pass; the walker publishes verbatim, no lerp.
+    [Serializable]
+    public class transmitted_key : live_key
+    {
+        public int iterations;
+        public float intensity;
+        public float threshold;
+        public float blur_spread;
+        public int blend_mode;
     }
 
     // one prop's render/visibility track; settingFlags is the slot bit (1/2/4).

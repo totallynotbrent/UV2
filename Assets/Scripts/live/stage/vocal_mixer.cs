@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using UnityEngine;
 using UV2.App;
@@ -17,10 +18,10 @@ namespace UV2.Live
     {
         private class stem
         {
-            public AudioSource source;
+            public AudioSource[] sources;  // one per take, all rolling in sync
             public int group;
-            public int wave;          // 0 = main take, 1 = extra take
-            public AudioClip[] clips; // [main, extra?]
+            public int wave;          // the currently-audible take
+            public int wave_target;    // the flag-selected take
             public float volume;
             public bool started;
         }
@@ -59,6 +60,7 @@ namespace UV2.Live
         private bool bound;
         private Transform[] stem_roots;   // chara roots, parallel to stems
         private int last_section = -1;
+        private int last_override_sec = -2;
 
         // decodes each member's bank as a coroutine (18 hca decodes take
         // ~15s and open waits on this method); the part table gates stems
@@ -132,14 +134,20 @@ namespace UV2.Live
                 // and the AudioClip is created on the main thread when it
                 // lands: the load-phase frame hitches the main-thread decode
                 // caused (1s frames across the first 15s) are gone.
+                // backdancer columns are known before the bank loads: skip
+                // their ~15s decodes entirely — the mix gates them silent
+                // anyway (audit 4.2 cost note).
+                int col = position_column(positions[i], width);
+                if (col < 0) { trace_log.write($"vocals: stem {chara_ids[i]} backdancer column {col} skipped"); yield return null; continue; }
                 var bank_task = load_bank(music_id, chara_ids[i]);
                 if (bank_task.bank == null) { yield return null; continue; }
-                // decode up to two takes (0 = main, 1 = the lead-switch
-                // alternate) in the worker; AudioClip.Create stays on the
-                // main thread.
+                // decode every take (0 = main, n-1 = the lead-switch
+                // SelectorLabel_{n-1} alternates; 1059's banks carry 3 waves)
+                // in the worker; AudioClip.Create stays on the main thread
+                // (uv2_vocal_generality_audit.md 4.5).
                 float t0 = Time.realtimeSinceStartup;
                 var pcm_task = System.Threading.Tasks.Task.Run(() =>
-                    bank_task.waves.Take(2).Select(w => live_audio.decode_wave_pcm(bank_task.bank, w)).ToArray());
+                    bank_task.waves.Select(w => live_audio.decode_wave_pcm(bank_task.bank, w)).ToArray());
                 while (!pcm_task.IsCompleted) yield return null;
                 trace_log.write($"vocals: stem {chara_ids[i]} decoded on worker in {Time.realtimeSinceStartup - t0:0.00}s");
                 var clips = new List<AudioClip>();
@@ -152,19 +160,28 @@ namespace UV2.Live
                     clips.Add(clip);
                 }
                 if (clips.Count == 0) { yield return null; continue; }
-                var source = parent.gameObject.AddComponent<AudioSource>();
-                source.clip = clips[0];
-                source.loop = false;
-                source.volume = 0f;
-                stems.Add(new stem { source = source, group = position_column(positions[i], width),
-                    wave = 0, clips = clips.ToArray(), volume = 0f });
+                // the game decodes every take into parallel wave streams and
+                // the lead switch only flips which buffer is audible
+                // (uv2_vocal_lead_switch_decoded.md): one source per take,
+                // all rolling from the same playhead, never re-seeked.
+                var sources = new AudioSource[clips.Count];
+                for (int c = 0; c < clips.Count; c++)
+                {
+                    var source = parent.gameObject.AddComponent<AudioSource>();
+                    source.clip = clips[c];
+                    source.loop = false;
+                    source.volume = 0f;
+                    sources[c] = source;
+                }
+                stems.Add(new stem { sources = sources, group = position_column(positions[i], width),
+                    wave = -1, wave_target = 0, volume = 0f });
                 slot_positions.Add(positions[i]);
                 yield return null;
             }
             lock_positions();
             trace_log.write($"vocals: {stems.Count} stems bound, positions " +
                 string.Join(",", slot_positions) + ", waves " +
-                string.Join(",", stems.Select(s => s.clips.Length)));
+                string.Join(",", stems.Select(s => s.sources.Length)));
             bound = stems.Count > 0;
         }
 
@@ -258,7 +275,10 @@ namespace UV2.Live
                     continue;
                 }
                 if (cols.Length < 2) continue;
-                if (!float.TryParse(cols[0], out float time)) continue;
+                // invariant culture: comma-decimal locales would silently
+                // fail every 0.56-style value into unset (audit 4.1).
+                if (!float.TryParse(cols[0], NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out float time)) continue;
                 // only the sing region gates stems; members beyond it are
                 // backdancers with no column.
                 int w = width > 0 ? width : sing_width(cols.Length);
@@ -273,16 +293,19 @@ namespace UV2.Live
                     vols[g] = unset;
                     pans[g] = unset;
                     int rest = w + 1 + g;   // volume block follows the sing block
-                    if (rest < cols.Length && float.TryParse(cols[rest], out float v))
+                    if (rest < cols.Length && float.TryParse(cols[rest], NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out float v))
                         vols[g] = v;
                     int prest = w + 1 + w + g; // then the pan block
-                    if (prest < cols.Length && float.TryParse(cols[prest], out float p))
+                    if (prest < cols.Length && float.TryParse(cols[prest], NumberStyles.Float,
+                            CultureInfo.InvariantCulture, out float p))
                         pans[g] = p;
                 }
                 // the 7-pos table's tail column: a global volume-rate override
                 // (CsvLabel7 col 22, e.g. 1059 carries 1 on 13 rows).
                 int ridx = w + 1 + 2 * w;
-                if (ridx < cols.Length && float.TryParse(cols[ridx], out float rt))
+                if (ridx < cols.Length && float.TryParse(cols[ridx], NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out float rt))
                     rate = rt;
                 out_rows.Add((time / 1000f, flags, vols, pans, rate));
             }
@@ -337,6 +360,23 @@ namespace UV2.Live
             float[] vol_over = sec >= 0 && part_vols != null && sec < part_vols.Length ? part_vols[sec] : null;
             float[] pan_over = sec >= 0 && part_pans != null && sec < part_pans.Length ? part_pans[sec] : null;
             float rate_over = sec >= 0 && part_rates != null && sec < part_rates.Length ? part_rates[sec] : unset;
+            // override columns are silent in the placement trace; log the
+            // composed targets once per override section so benches can
+            // assert the game's vol x rate product (audit 4.4).
+            if ((vol_over != null || rate_over < unset) && sec != last_override_sec)
+            {
+                last_override_sec = sec;
+                var od = new List<string>();
+                foreach (var s in stems)
+                    if (s.group >= 0 && (uncut || active[s.group] > 0))
+                    {
+                        string v = vol_over != null && s.group < vol_over.Length && vol_over[s.group] < unset
+                            ? vol_over[s.group].ToString("0.000") : "-";
+                        od.Add($"g{s.group}:{v}x{rate_over:0.00}");
+                    }
+                if (od.Count > 0)
+                    trace_log.write($"vocals: t={t:0.0} override section={sec} rate={rate_over:0.00} " + string.Join(" ", od));
+            }
 
             foreach (var s in stems)
             {
@@ -349,45 +389,61 @@ namespace UV2.Live
                     int rank = singing.IndexOf(s);
                     var slot = row[Mathf.Clamp(rank, 0, row.Length - 1)];
                     float rate = rate_over < unset ? rate_over : part_volume_rates[n];
-                    target = part_type_gains[slot.type] * rate;
-                    pan = slot.pan;
+                    // the game's UpdatePartParamer applies the per-slot vol
+                    // override to the gain and THEN multiplies by the rate —
+                    // the override never replaces the rate factor
+                    // (uv2_vocal_generality_audit.md 4.4).
+                    float gain = part_type_gains[slot.type];
                     if (vol_over != null && s.group < vol_over.Length && vol_over[s.group] < unset)
-                        target = vol_over[s.group];
+                        gain = vol_over[s.group];
+                    target = gain * rate;
+                    pan = slot.pan;
                     if (pan_over != null && s.group < pan_over.Length && pan_over[s.group] < unset)
                         pan = pan_over[s.group];
 
-                    int wave = !uncut && active[s.group] == 2 && s.clips.Length > 1 ? 1 : 0;
-                    if (!s.started && s.source != null && s.clips.Length > 0)
+                    // flag n selects wave n-1 (SelectorLabel_{n-1}); the length
+                    // guard keeps 1-wave banks on the main take, the game's
+                    // no-op selector behavior (uv2_vocal_generality_audit.md
+                    // 4.5, uv2_vocal_lead_switch_decoded.md 3-4).
+                    int wave = !uncut ? Mathf.Clamp(active[s.group] - 1, 0, s.sources.Length - 1) : 0;
+                    s.wave_target = wave;
+                    if (!s.started && s.sources.Length > 0)
                     {
-                        play_wave(s, wave, t);
+                        // every take starts together at the song playhead and
+                        // rolls unbroken for the whole song; the switch below
+                        // only moves the volume, so both takes stay sample
+                        // aligned across the switch like the game's two
+                        // always-running wave streams.
+                        start_stem(s, t);
                         s.started = true;
-                    }
-                    else if (s.started && wave != s.wave)
-                    {
-                        // main <-> extra take switch, playhead kept on the clock.
-                        play_wave(s, wave, t);
                     }
                 }
 
                 s.volume = Mathf.MoveTowards(s.volume, target * last_volume, fade_rate * Time.deltaTime);
-                if (s.source != null)
+                if (s.wave_target != s.wave && s.wave >= 0)
+                    trace_log.write($"vocals: take switch g{s.group} {s.wave} -> {s.wave_target} at t={t:0.0}s");
+                s.wave = s.wave_target;
+                for (int w = 0; w < s.sources.Length; w++)
                 {
-                    s.source.volume = s.volume;
-                    s.source.panStereo = pan;
+                    var src_audio = s.sources[w];
+                    if (src_audio == null) continue;
+                    src_audio.volume = w == s.wave ? s.volume : 0f;
+                    src_audio.panStereo = pan;
                 }
             }
         }
 
-        // swaps the stem onto the given take, playhead synced to the song
-        // clock (wrapping when the song outlasts the clip).
-        private void play_wave(stem s, int wave, float t)
+        // starts every take at the song playhead, once per song (the clips
+        // are full-length takes that wrap when the song outlasts them).
+        private void start_stem(stem s, float t)
         {
-            if (s.source == null || s.clips.Length == 0) return;
-            var clip = s.clips[Mathf.Clamp(wave, 0, s.clips.Length - 1)];
-            if (clip.length > 0f) s.source.time = t % clip.length;
-            s.source.clip = clip;
-            s.source.Play();
-            s.wave = wave;
+            for (int w = 0; w < s.sources.Length; w++)
+            {
+                var src_audio = s.sources[w];
+                if (src_audio == null || src_audio.clip == null) continue;
+                if (src_audio.clip.length > 0f) src_audio.time = t % src_audio.clip.length;
+                src_audio.Play();
+            }
         }
 
         // binary-search the part row at time t; the row holds until the next.
