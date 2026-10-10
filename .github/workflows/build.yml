@@ -115,8 +115,14 @@ jobs:
       - name: Package Windows build
         shell: pwsh
         run: |
-          Copy-Item -Path "launcher_out/*" -Destination "build/StandaloneWindows64/" -Recurse -Force
-          Get-ChildItem -Path "build/StandaloneWindows64" -Exclude "UV2_BackUpThisFolder_ButDontShipItWithYourGame","GameAssembly.pdb" | Compress-Archive -DestinationPath "UV2-Windows-x64.zip" -Force
+          $stage = "build/stage_uv2"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item -Path "build/StandaloneWindows64/*" -Destination $stage -Recurse -Force
+          Remove-Item -Path "$stage/UV2_BackUpThisFolder_ButDontShipItWithYourGame" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$stage/GameAssembly.pdb" -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path "launcher_out/*" -Destination $stage -Recurse -Force
+          Copy-Item -Path "Tools/benchmark-postfx.ps1" -Destination $stage -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath "UV2-Windows-x64.zip" -Force
 
       - name: Write release digest
         shell: pwsh

@@ -79,19 +79,25 @@ Shader "live/uv2_bloom"
                 //   B = src + diff*fp*(1 - lever*src)   (add vs screen lever)
                 //   C = B*B*(2-bloom) + bloom + lift
                 //   out = max(B, max(C, 0))
-                // the square compresses the diffused energy, the (2-bloom)
-                // screen term adds bloom, the lift term keeps a faint floor
-                // (the game's barely-visible background in dark scenes), and
-                // the max against B never lets the result fall under the
-                // linear base. the old invented form was a threshold
-                // bright-pass that over-brightened lit frames.
-                // fp/lever/lift are serialized material defaults in the game
-                // (rows 139.y/163.w/151.x - not runtime-published); the
-                // worksheet's diffusion keys carry no direct counterpart so
-                // they stay uniforms with decode-derived defaults.
+                // the square compresses the diffused energy and the (2-bloom)
+                // screen term adds bloom; the max against B never lets the
+                // result fall under the linear base.
+                // fp/lever/lift are rows 139.y/163.w/151.x - NOT runtime
+                // published by the diffusion C# (it only publishes ids
+                // 179/185/183/172/225/204/182) and NOT material-facing props
+                // (catalog: only _MainTex/_DimmerColor), so at runtime they
+                // bind ZERO. with fp=0 the form collapses to
+                // out = max(src, src*src*(2-bloom) + bloom) - bloom only lifts
+                // pixels where it beats the source, which is the game's
+                // subtle glow. the earlier fp=1/lift=0.1/lever=1 guesses made
+                // this a full screen-blend toward the diffusion texture plus
+                // a square lift - the +0.23 mean-luminance bloom-step residual
+                // measured in bench_20261010_1611. there is also NO filmPower
+                // multiply on the source in this variant (@54922 samples t1
+                // straight), so the shaping row does not apply here - only in
+                // the non-diffusion postbloom composite (@51362).
                 float4 diff = tex2D(_DiffusionTex, i.uv);
-                float3 shaped = saturate(src).rgb * _BloomShaping;
-                float3 B = shaped + diff.rgb * _DiffusionParams.w * (1.0 - _DiffusionScreen.w * shaped);
+                float3 B = src.rgb + diff.rgb * _DiffusionParams.w * (1.0 - _DiffusionScreen.w * src.rgb);
                 float3 C = B * B * (2.0 - bloom.rgb) + bloom.rgb + _DiffusionParams.x;
                 col.rgb = max(B, max(C, 0.0));
 #endif

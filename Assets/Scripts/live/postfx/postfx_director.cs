@@ -205,13 +205,28 @@ namespace UV2.Live
                 string gr = cc != null && cc.valid ? $"grade sat{cc.saturation:0.00}" : "grade off";
                 string rb = radial_enabled ? $"radial t{radial_type} p{radial_blur_param_ex.x:0.00} it{radial_iteration} ds{radial_downsample}" : "radial off";
                 trace_log.write($"postfx: bloom {b} fog {f} fade a {fade_color.a:0.00} {fl} {d} {ts} {gr} {rb}");
+                // the active mask and the resolved per-stage gates: the sweep
+                // steps share png filenames, so a step's trace must prove which
+                // stages actually ran. the lut samples catch a stale or broken
+                // bake (identity rows read 64/128/192 back as the same values).
+                string m = fog_fade_feature.feature_mask;
+                trace_log.write($"postfx mask '{m}' fade{m.Contains("o")} fog{m.Contains("o")} film{m.Contains("f")} dof{m.Contains("d")} bloom{m.Contains("b")} tilt{m.Contains("t")} grade{m.Contains("g")} radial{m.Contains("r")} lens{m.Contains("l")} ball{m.Contains("c")}");
+                if (cc_lut != null && cc != null && cc.valid)
+                {
+                    var px = cc_lut.GetPixels32();
+                    trace_log.write($"cc lut px64 {px[64].r},{px[64].g},{px[64].b} px128 {px[128].r},{px[128].g},{px[128].b} px192 {px[192].r},{px[192].g},{px[192].b}");
+                }
             }
 
             // leave rendered frames on disk at known points in the song.
             // CaptureScreenshot runs after every post pass completes, on the
             // real gpu, so this is what the user sees. one shot per window,
-            // not per frame.
+            // not per frame. the path is ABSOLUTE next to the exe: a relative
+            // filename resolves against the process working directory, which
+            // differs between a double-clicked exe and a scripted launch,
+            // and the sweep's collector then finds nothing to move.
             int song_frame = (int)Mathf.RoundToInt(t * 60f);
+            string snap_dir = System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory);
             // the capture set: the three originals plus the dark cutaway
             // stretch (~f2400-3300), a mid-song bright, and the orange-hue
             // window the user flagged near f5700.
@@ -222,8 +237,9 @@ namespace UV2.Live
             if (hit && song_frame != snap_pumped)
             {
                 snap_pumped = song_frame;
-                var file = $"snap_f{song_frame}_t{t:0.0}.png";
+                var file = System.IO.Path.Combine(snap_dir, $"snap_f{song_frame}_t{t:0.0}.png");
                 ScreenCapture.CaptureScreenshot(file);
+                pending_captures.Add((file, Time.realtimeSinceStartup));
                 trace_log.write($"snap: captured {file}");
             }
 
@@ -239,11 +255,34 @@ namespace UV2.Live
             {
                 ab_pumped = ab_frame;
                 fog_fade_feature.ab_raw_frame = true;
-                var file = $"snapraw_f{ab_frame + 1}_t{t:0.0}.png";
+                var file = System.IO.Path.Combine(snap_dir, $"snapraw_f{ab_frame + 1}_t{t:0.0}.png");
                 ScreenCapture.CaptureScreenshot(file);
+                pending_captures.Add((file, Time.realtimeSinceStartup));
                 trace_log.write($"snapraw: captured {file}");
             }
+            // capture verification: CaptureScreenshot queues the write to the
+            // end of the NEXT frame, so a capture requested last frame should
+            // exist on disk now. one trace line per new file proves the
+            // write landed (or exposes its absence) without touching unity's
+            // silent failure mode.
+            for (int i = pending_captures.Count - 1; i >= 0; i--)
+            {
+                var (path, requested_at) = pending_captures[i];
+                if (System.IO.File.Exists(path))
+                {
+                    pending_captures.RemoveAt(i);
+                    trace_log.write($"snap verified: {System.IO.Path.GetFileName(path)} ({new System.IO.FileInfo(path).Length} bytes)");
+                }
+                else if (Time.realtimeSinceStartup - requested_at > 5f)
+                {
+                    pending_captures.RemoveAt(i);
+                    trace_log.write($"snap MISSING after 5s: {System.IO.Path.GetFileName(path)}");
+                }
+            }
         }
+
+        private readonly System.Collections.Generic.List<(string path, float requested_at)> pending_captures
+            = new System.Collections.Generic.List<(string, float)>();
 
         private int snap_pumped = -1;
         private int ab_pumped = -1;
