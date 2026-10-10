@@ -30,6 +30,14 @@ namespace UV2.Live
 
             public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
             {
+                // the ab-test raw frame: every post stage stays bypassed and
+                // the camera color passes through untouched, so the snap
+                // captured this frame is the scene as the renderer drew it.
+                if (ab_raw_frame)
+                {
+                    ab_raw_frame = false;
+                    return;
+                }
                 ensure_mat();
                 if (director == null)
                     director = UnityEngine.Object.FindObjectOfType<postfx_director>();
@@ -713,6 +721,13 @@ namespace UV2.Live
         // bisect switch for the white-frame hunt: an env var disables the
         // whole post chain so the renderer can be isolated from the chain.
         public static bool chain_disabled = System.Environment.GetEnvironmentVariable("UV2_NO_POSTFX") == "1";
+
+        // ab-test switch for the snapshot pairs: the director's snap hook
+        // raises this for one frame so the same song point renders raw
+        // (every post stage bypassed) right after the full-chain capture.
+        // reading it at Execute time - not AddRenderPasses - because unity
+        // calls AddRenderPasses before the director's tick for the frame.
+        public static bool ab_raw_frame = false;
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
