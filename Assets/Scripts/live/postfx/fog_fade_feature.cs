@@ -54,10 +54,24 @@ namespace UV2.Live
                 bool bloom_on = director.bloom_state_valid && director.bloom_state != null;
                 bool tilt_on = director.tilt_enabled;
                 bool grade_on = director.cc != null && director.cc.valid && director.cc_lut != null;
+
+                // the re-enable mask gates each stage independently; the
+                // chain starts dark (all features off) and each letter
+                // turns its stage back on for the isolation tests.
+                string m = feature_mask;
+                fade_on &= m.Contains("o");
+                fog_on &= m.Contains("o");
+                film_on &= m.Contains("f");
+                dof_on &= m.Contains("d");
+                bloom_on &= m.Contains("b");
+                tilt_on &= m.Contains("t");
+                grade_on &= m.Contains("g");
+                bool radial_on = director.radial_enabled && m.Contains("r");
+                bool lens_on = (director.lens_distortion_enabled || director.chromatic_enabled) && m.Contains("l");
+                bool clarity_on = director.ball_blur_enabled && m.Contains("c");
+
                 if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on && !tilt_on && !grade_on
-                    && !director.radial_enabled
-                    && !director.lens_distortion_enabled && !director.chromatic_enabled
-                    && !director.ball_blur_enabled) return;
+                    && !radial_on && !lens_on && !clarity_on) return;
 
                 // blitting a target onto itself is undefined in urp: d3d unbinds
                 // the srv when the texture becomes the render target, so the
@@ -160,7 +174,7 @@ namespace UV2.Live
 
                 // ball blur (the dof key's own family, 1004/1151): the
                 // extraction/spread/add halo after the dof composite.
-                if (director.ball_blur_enabled)
+                if (clarity_on)
                 {
                     if (ballblur_mat == null)
                     {
@@ -179,18 +193,23 @@ namespace UV2.Live
                 }
 
                 // the film overlays: each valid layer blits on top in order,
-                // exactly the game's PostFilmBlit layer chain.
-                if (film_valid(director.film1_state))
+                // exactly the game's PostFilmBlit layer chain. gated by
+                // film_on - the mask's film gate - so a single-letter sweep
+                // step never runs the layers behind the mask's back (the
+                // grade-only step rendered byte-identical to the film-only
+                // step because these call sites tested film_valid directly).
+                if (film_on && film_valid(director.film1_state))
                     apply_film(cmd, renderingData, director.film1_state, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
-                if (film_valid(director.film2_state))
+                if (film_on && film_valid(director.film2_state))
                     apply_film(cmd, renderingData, director.film2_state, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
-                if (film_valid(director.film3_state))
+                if (film_on && film_valid(director.film3_state))
                     apply_film(cmd, renderingData, director.film3_state, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
 
                 // the color-correction grade rides after the film layers and
                 // before the tilt-shift overlay (the game's ColorCorrectionPass
                 // runs in its post-bloom chain before the final overlay).
-                if (director.cc != null && director.cc.valid && director.cc_lut != null)
+                // gated by grade_on so the mask's letter owns this stage too.
+                if (grade_on)
                     apply_colorgrade(cmd, director, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
 
                 // the tilt-shift overlay runs last — the game's Execute flow
@@ -203,13 +222,13 @@ namespace UV2.Live
                 // two temps, ping-pong the blur pass iteration times, then the
                 // composite pass folds _BlurTex back onto the chain (the
                 // game's RadialBlurPass::Execute blit order).
-                if (director.radial_enabled)
+                if (radial_on)
                     apply_radial(cmd, renderingData, director, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
 
                 // lens distortion rides before the chromatic fringe; chromatic
                 // is the chain's last blit (the game draws the fringe at the
                 // very end, uv2_postfx_chain_divergence_audit §2.12).
-                if (director.lens_distortion_enabled || director.chromatic_enabled)
+                if (lens_on)
                 {
                     if (chroma_mat == null)
                     {
@@ -402,16 +421,18 @@ namespace UV2.Live
                     cmd.Blit(bloom_rt_b, bloom_rt_a, bloom_mat, 2);
                     cmd.Blit(bloom_rt_a, bloom_rt_diffusion, bloom_mat, 3);
                     bloom_mat.SetTexture("_DiffusionTex", bloom_rt_diffusion);
-                    // the decoded composite reads three serialized material
-                    // defaults (@54922 rows 139.y/151.x/163.w): fp = the
-                    // diffusion power (1 = identity), lift = the additive
-                    // dark floor (the worksheet's diffusion 0.1), lever = the
-                    // add-vs-screen blend (1 = screen). published as (lift,
-                    // -, -, fp) with the lever in _DiffusionScreen.
+                    // the decoded composite reads three $Globals rows that
+                    // the game's diffusion C# never publishes (ids published
+                    // are 179/185/183/172/225/204/182 - none lands in rows
+                    // 139/151/163) and that are not material-facing props,
+                    // so at runtime they bind zero: fp (139.y) = 0,
+                    // lift (151.x) = 0, screen lever (163.w) = 0. with fp=0
+                    // the diffusion texture drops out and the composite
+                    // collapses to max(src, src*src*(2-bloom) + bloom).
                     bloom_mat.SetVector("_DiffusionParams", new Vector4(
-                        0.1f, 0f, 0f, 1f));
+                        0f, 0f, 0f, 0f));
                     bloom_mat.SetVector("_DiffusionScreen", new Vector4(
-                        0f, 0f, 0f, 1f));
+                        0f, 0f, 0f, 0f));
                     bloom_mat.SetFloat("_DiffusionBlur", b.diffusion_blur_size);
                     bloom_mat.EnableKeyword("DIFFUSION_ON");
                 }
@@ -728,6 +749,16 @@ namespace UV2.Live
         // bisect switch for the white-frame hunt: an env var disables the
         // whole post chain so the renderer can be isolated from the chain.
         public static bool chain_disabled = System.Environment.GetEnvironmentVariable("UV2_NO_POSTFX") == "1";
+
+        // per-feature re-enable mask (UV2_POSTFX_MASK). after the
+        // postfx regression pileup the chain now starts fully OFF and
+        // each stage comes back one letter at a time so every
+        // feature's contribution is measured in isolation against
+        // the game. letters: b=bloom, d=dof, f=film, g=grade,
+        // t=tilt, o=fog+fade, r=radial, l=lens+chromatic, c=clarity
+        // (ball blur). the string "bd" runs ONLY bloom and dof.
+        // empty or unset = the whole chain bypassed (raw render).
+        public static string feature_mask = System.Environment.GetEnvironmentVariable("UV2_POSTFX_MASK") ?? "";
 
         // ab-test switch for the snapshot pairs: the director's snap hook
         // raises this for one frame so the same song point renders raw
