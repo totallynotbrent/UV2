@@ -402,9 +402,16 @@ namespace UV2.Live
                     cmd.Blit(bloom_rt_b, bloom_rt_a, bloom_mat, 2);
                     cmd.Blit(bloom_rt_a, bloom_rt_diffusion, bloom_mat, 3);
                     bloom_mat.SetTexture("_DiffusionTex", bloom_rt_diffusion);
+                    // the decoded composite reads three serialized material
+                    // defaults (@54922 rows 139.y/151.x/163.w): fp = the
+                    // diffusion power (1 = identity), lift = the additive
+                    // dark floor (the worksheet's diffusion 0.1), lever = the
+                    // add-vs-screen blend (1 = screen). published as (lift,
+                    // -, -, fp) with the lever in _DiffusionScreen.
                     bloom_mat.SetVector("_DiffusionParams", new Vector4(
-                        b.diffusion_threshold, b.diffusion_bright,
-                        b.diffusion_saturation, b.diffusion_contrast));
+                        0.1f, 0f, 0f, 1f));
+                    bloom_mat.SetVector("_DiffusionScreen", new Vector4(
+                        0f, 0f, 0f, 1f));
                     bloom_mat.SetFloat("_DiffusionBlur", b.diffusion_blur_size);
                     bloom_mat.EnableKeyword("DIFFUSION_ON");
                 }
