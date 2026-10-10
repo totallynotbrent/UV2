@@ -226,9 +226,27 @@ namespace UV2.Live
                 ScreenCapture.CaptureScreenshot(file);
                 trace_log.write($"snap: captured {file}");
             }
+
+            // ab-test pair: the frame AFTER a full-chain capture renders the
+            // same song point with the whole post chain bypassed, so each
+            // snap point lands as a (chain, raw) pair on disk. comparing the
+            // two isolates chain damage from scene content per moment.
+            int ab_frame = song_frame - 1;
+            bool ab_hit = false;
+            for (int i = 0; i < snap_frames.Length; i++)
+                if (ab_frame == snap_frames[i]) { ab_hit = true; break; }
+            if (ab_hit && ab_frame != ab_pumped)
+            {
+                ab_pumped = ab_frame;
+                fog_fade_feature.ab_raw_frame = true;
+                var file = $"snapraw_f{ab_frame + 1}_t{t:0.0}.png";
+                ScreenCapture.CaptureScreenshot(file);
+                trace_log.write($"snapraw: captured {file}");
+            }
         }
 
         private int snap_pumped = -1;
+        private int ab_pumped = -1;
         private int trace_postfx_ticks;
         private bool radial_was_on;
         private int radial_was_type;
