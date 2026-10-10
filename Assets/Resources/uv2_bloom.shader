@@ -39,7 +39,8 @@ Shader "live/uv2_bloom"
             float _BloomBlendMode;   // authored BloomBlendMode: 1 = additive
             float _bloomDofWeight;   // the game publishes id 179 pre-composite
             float _BloomIsScreenBlend;  // id 225: 0 for the Add family
-            float4 _DiffusionParams;  // (threshold, bright, saturation, contrast)
+            float4 _DiffusionParams;  // (lift, -, -, fp)
+            float4 _DiffusionScreen;  // (-, -, -, lever: add vs screen)
             float _DiffusionBlur;
             float _BloomShaping;   // the composite's shaping constant row
 
@@ -72,19 +73,27 @@ Shader "live/uv2_bloom"
                 float4 col = saturate(src) * _BloomShaping + bloom;
 
 #ifdef DIFFUSION_ON
-                // the diffusion chain grades a WIDER blur than the base
-                // bloom texture (the game's PostDiffusionBloom_Rich path):
-                // bright-pass lift, saturation/contrast grading, additive mix.
-                // falls back to the bloom texture when no diffusion pyramid
-                // was rendered (the blurred source carries the same energy).
-                float4 diff_src = tex2D(_DiffusionTex, i.uv);
-                float diff_lum = dot(diff_src.rgb, float3(0.299, 0.587, 0.114));
-                float bright = max(diff_lum - _DiffusionParams.x, 0.0) * _DiffusionParams.y;
-                float3 graded = saturate(col.rgb + diff_src.rgb * bright);
-                float grad_luma = dot(graded, float3(0.299, 0.587, 0.114));
-                graded = lerp(float3(grad_luma, grad_luma, grad_luma), graded, _DiffusionParams.z);
-                graded = (graded - 0.5) * _DiffusionParams.w + 0.5;
-                col.rgb = saturate(graded);
+                // the game's diffusion composite (PostDiffusionBloom_Rich
+                // pass-0 PS @54922, uv2_diffusion_composite_decoded.md):
+                //   A = src + diff*fp
+                //   B = src + diff*fp*(1 - lever*src)   (add vs screen lever)
+                //   C = B*B*(2-bloom) + bloom + lift
+                //   out = max(B, max(C, 0))
+                // the square compresses the diffused energy, the (2-bloom)
+                // screen term adds bloom, the lift term keeps a faint floor
+                // (the game's barely-visible background in dark scenes), and
+                // the max against B never lets the result fall under the
+                // linear base. the old invented form was a threshold
+                // bright-pass that over-brightened lit frames.
+                // fp/lever/lift are serialized material defaults in the game
+                // (rows 139.y/163.w/151.x - not runtime-published); the
+                // worksheet's diffusion keys carry no direct counterpart so
+                // they stay uniforms with decode-derived defaults.
+                float4 diff = tex2D(_DiffusionTex, i.uv);
+                float3 shaped = saturate(src).rgb * _BloomShaping;
+                float3 B = shaped + diff.rgb * _DiffusionParams.w * (1.0 - _DiffusionScreen.w * shaped);
+                float3 C = B * B * (2.0 - bloom.rgb) + bloom.rgb + _DiffusionParams.x;
+                col.rgb = max(B, max(C, 0.0));
 #endif
                 return col;
             }
