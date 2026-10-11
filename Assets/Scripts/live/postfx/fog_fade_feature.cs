@@ -758,7 +758,13 @@ namespace UV2.Live
         // t=tilt, o=fog+fade, r=radial, l=lens+chromatic, c=clarity
         // (ball blur). the string "bd" runs ONLY bloom and dof.
         // empty or unset = the whole chain bypassed (raw render).
-        public static string feature_mask = System.Environment.GetEnvironmentVariable("UV2_POSTFX_MASK") ?? "";
+        // postfx is fully retired (user decision 10-10, after the one-by-one
+        // sweep isolated every stage and the full chain still failed the
+        // eyeball test): the chain stays bypassed in every build regardless of
+        // the environment, so a stale UV2_POSTFX_MASK on a test machine can
+        // never re-engage it. the stage code stays for the decode agent's
+        // salvage pass; reopen by restoring the env read below.
+        public static string feature_mask = "";
 
         // ab-test switch for the snapshot pairs: the director's snap hook
         // raises this for one frame so the same song point renders raw
