@@ -38,6 +38,7 @@ uv2/
 WORKLOG.md
 AGENT_HANDOFF.md
 Config.json
+.hermes/
 
 # launcher build outputs
 Tools/UmaLauncher/bin/
