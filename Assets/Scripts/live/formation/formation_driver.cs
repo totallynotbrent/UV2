@@ -12,6 +12,7 @@ namespace UV2.Live
         private live_worksheet ws;
         private timeline_clock clock;
         private readonly Dictionary<int, Transform> slots = new();
+        private bool recaptured;
 
         public void open(live_worksheet worksheet, timeline_clock timeline, List<Transform> chara_roots)
         {
@@ -59,6 +60,16 @@ namespace UV2.Live
                     if (next != null) visible = next.visible != 0 || visible;
                     tr.gameObject.SetActive(visible);
                 }
+            }
+
+            // the game captures the camera anchors' standing positions once the
+            // cast stands in formation (SetupCharacterLocator runs after stage
+            // placement); re-read them the frame after the first placement.
+            if (!recaptured)
+            {
+                recaptured = true;
+                foreach (var skv in slots)
+                    if (skv.Value != null) chara_parts.recapture_initial(skv.Value);
             }
         }
 
