@@ -79,7 +79,7 @@ flowchart LR
 ## Building
 
 Unity 2022.3.62f2, IL2CPP, Windows x64. CI builds the exe on every push to
-`experimental` and on version tags.
+`physics` and on version tags.
 
 ## License
 
