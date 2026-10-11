@@ -17,59 +17,29 @@ namespace UV2.Live
         // the clock frame of the previous update, for the camera-delay window.
         private float prev_frame;
 
-        // handshake state: the game's Work struct from
-        // uv2_handshake_math_decoded.md - a 2d screen-space random walk with a
-        // persistent orbit angle, screen point, chase target and reseed timer.
-        private int live_seed;
+        // handshake state: the authored key params + the running noise time.
+        private Vector2 n0, n1, n2;
+        private float time_pos;
+        private Vector3 shake_offset_pos;
+        private float shake_offset_roll;
 
-        // rolls a chase target in the [-power, power]^2 square; the fixed
-        // pattern swaps the perlin args between the components.
-        private Vector2 roll_target(float power, byte fixed_pattern)
+        // the centered 2-octave perlin fbm the game's noise engine uses.
+        private static float fbm_centered(float x, float y)
         {
-            float x, y;
-            if (fixed_pattern == 0)
-            {
-                x = UnityEngine.Random.Range(-1f, 1f);
-                y = UnityEngine.Random.Range(-1f, 1f);
-            }
-            else
-            {
-                x = (Mathf.PerlinNoise(hs_prev_time, live_seed) - 0.5f) * 2f;
-                y = (Mathf.PerlinNoise(live_seed, hs_prev_time) - 0.5f) * 2f;
-            }
-            return new Vector2(x * power, y * power);
+            float sum = (Mathf.PerlinNoise(x, y) - 0.5f);
+            sum += 0.5f * (Mathf.PerlinNoise(x * 2f, y * 2f) - 0.5f);
+            return sum;
         }
 
-        // the game's angle helper: asin(y/|d|) in degrees, x<0 wraps to
-        // 360-deg, nan guards to zero.
-        private static float angle_deg(Vector2 d)
+        // seeds the noise direction vectors once per camera, like the game's AlterAwake.
+        private void seed_noise()
         {
-            float mag = d.magnitude;
-            if (mag <= 1e-5f) return 0f;
-            float deg = Mathf.Asin(d.y / mag) * Mathf.Rad2Deg;
-            if (float.IsNaN(deg)) return 0f;
-            if (d.x < 0f) deg = 360f - deg;
-            return deg;
+            var r = new System.Random(GetInstanceID());
+            Vector2 rand_dir() => new Vector2(Mathf.Cos((float)r.NextDouble() * Mathf.PI * 2f),
+                                               Mathf.Sin((float)r.NextDouble() * Mathf.PI * 2f));
+            n0 = rand_dir(); n1 = rand_dir(); n2 = rand_dir();
+            time_pos = (float)r.NextDouble() * 10f;
         }
-
-        // move-towards in degree space with the (−180, 180] wrap.
-        private static float move_towards_angle(float current, float target, float max_delta)
-        {
-            float delta = target - current;
-            while (delta < 0f) delta += 360f;
-            while (delta >= 360f) delta -= 360f;
-            if (delta > 180f) delta -= 360f;
-            if (Mathf.Abs(delta) <= max_delta) return target;
-            return current + Mathf.Sign(delta) * max_delta;
-        }
-
-        private float hs_current_angle;
-        private Vector2 hs_screen_position;
-        private Vector2 hs_next_target;
-        private float hs_duration;
-        private Vector3 hs_offset;
-        private float hs_prev_time;
-        private bool hs_active;
 
         // height-band constants: rate = (avg_height - 130) / 60 over the flagged characters.
         private const float LAYER_HEIGHT_MIN = 130f;
@@ -81,20 +51,23 @@ namespace UV2.Live
             clock = timeline;
             chara_roots = characters;
             cam = target;
-            // the deterministic per-live seed, like the game's LiveSettings.Id.
-            var sel = UV2.App.selection_store.load();
-            live_seed = sel != null ? sel.music_id : 0;
-            hs_prev_time = 0f;
+            seed_noise();
         }
 
-        // applies the shake additively to the camera's localPosition in the
-        // late pass, like the game's Director.AlterLateUpdate: the authored
-        // transform is re-evaluated from the keys every frame, so the noise
-        // never accumulates and never survives a key change.
-        private void apply_shake()
+        // the game applies the handshake as a render-time view-matrix shake, so
+        // the authored transform is never polluted by the noise.
+        private void OnPreCull()
         {
-            if (!hs_active) return;
-            cam.transform.localPosition += hs_offset;
+            if (shake_offset_pos == Vector3.zero && shake_offset_roll == 0f) return;
+            var rot = Quaternion.Euler(0f, 0f, shake_offset_roll);
+            cam.worldToCameraMatrix = Matrix4x4.TRS(shake_offset_pos, rot, new Vector3(1f, 1f, -1f))
+                                    * cam.transform.worldToLocalMatrix;
+        }
+
+        private void OnPreRender()
+        {
+            // reset the matrix so the next frame's eval starts from the true transform.
+            cam.ResetWorldToCameraMatrix();
         }
 
         // proxy transform that samples the cinematic clip; the camera rides it as a late override.
@@ -180,37 +153,6 @@ namespace UV2.Live
                     var next = i + 1 < ws.camera_pos.Count ? ws.camera_pos[i + 1] : null;
                     float k = key_eval.interp(cur, next, t);
 
-                    // props-attach keys ride a prop transform: node.position +
-                    // node.rotation * key.position, charaPos/locator/layer all
-                    // skipped (game's IsAttachedToProps branch); when no prop
-                    // resolves, the authored position stands alone.
-                    if (cur.is_attached_to_props)
-                    {
-                        Transform node = null;
-                        for (int slot = 0; slot < chara_roots.Count && slot < chara_parts.MAX; slot++)
-                        {
-                            if ((cur.chara_relative_base & (1 << slot)) == 0) continue;
-                            node = props_system.camera_attach_node(slot + 1, cur.props_index, cur.props_attach_node_index);
-                            if (node != null) break;
-                        }
-                        Vector3 pos_att = node != null
-                            ? node.position + node.rotation * cur.position
-                            : cur.position;
-                        pos_att += cur.offset;
-                        if (next != null && next.interpolate_type != 0)
-                        {
-                            Vector3 next_att = next.is_attached_to_props
-                                ? pos_att // unresolved attach keys hold - matching the game's fallback
-                                : pos_att; // attach keys don't blend out through authored geometry
-                            pos_att = key_eval.lerp_v3(pos_att, next_att, 0f);
-                        }
-                        cam.transform.position = pos_att;
-                        trace_prev_pos = pos_att;
-                        if (cur.near_clip > 0f) cam.nearClipPlane = cur.near_clip;
-                        if (cur.far_clip > 0f) cam.farClipPlane = cur.far_clip;
-                        goto lookat;
-                    }
-
                     // the layer band rides the pos key's own flags.
                     Vector3 pos_layer = Vector3.zero;
                     if (cur.set_type == 1)
@@ -254,8 +196,6 @@ namespace UV2.Live
                     if (cur.far_clip > 0f) cam.farClipPlane = cur.far_clip;
                 }
             }
-
-        lookat:;
 
             // look-at
             if (ws.camera_lookat.Count > 0)
@@ -353,15 +293,13 @@ namespace UV2.Live
                 }
             }
 
-            // the authored handshake rides on top. the key params interp
-            // between keys and zero when no key is current (unlike pos which
-            // holds); the noise body is the game's Work random walk from
-            // uv2_handshake_math_decoded.md section 3, register-exact.
+            // the authored handshake rides on top: the key params interp between
+            // keys (zeroed when no key is current, unlike pos which holds), and
+            // the game applies the noise as a render-time view-matrix offset.
             if (ws.handshake.Count > 0)
             {
                 int i = key_eval.bracket(ws.handshake, t);
                 float power = 0f, frequency = 0f, rate = 0f;
-                byte fixed_pattern = 0;
                 if (i >= 0)
                 {
                     var cur = ws.handshake[i];
@@ -369,7 +307,6 @@ namespace UV2.Live
                     power = cur.power;
                     frequency = cur.frequency;
                     rate = cur.rate;
-                    fixed_pattern = cur.use_fixed_shake_pattern;
                     if (next != null && next.interpolate_type != 0)
                     {
                         float k = key_eval.interp(cur, next, t);
@@ -378,105 +315,27 @@ namespace UV2.Live
                         rate = key_eval.lerp_f(cur.rate, next.rate, k);
                     }
                 }
-
-                const float HS_EPS = 1e-6f;
-                const float HS_POWER_MIN = 0.01f;
-                const float HS_DELTA_TIME_FACTOR = 30f;
-                const float HS_TIME_RANGE = 0.1f;
-
-                if (power < HS_EPS || frequency < HS_EPS || rate < HS_EPS)
+                // the noise engine: 2-octave centered perlin fbm, time advancing
+                // at the game's fixed 0.2/sec, applied along the camera axes.
+                if (power > 0f)
                 {
-                    // the reset path: the walk state clears, no shake.
-                    hs_current_angle = 0f;
-                    hs_screen_position = Vector2.zero;
-                    hs_next_target = Vector2.zero;
-                    hs_duration = 0f;
-                    hs_offset = Vector3.zero;
-                    hs_active = false;
+                    time_pos += Time.deltaTime * 0.2f * Mathf.Max(0.01f, rate);
+                    Vector3 noise = new Vector3(
+                        fbm_centered(n0.x * time_pos, n0.y * time_pos),
+                        fbm_centered(n1.x * time_pos, n1.y * time_pos),
+                        fbm_centered(n2.x * time_pos, n2.y * time_pos));
+                    shake_offset_pos = noise * power * 2f;
+                    shake_offset_roll = noise.x * power * 2f;
                 }
                 else
                 {
-                    // the game feeds DeltaTimePauseReset - the frame's own
-                    // delta, never a song-time difference. a burst after a
-                    // long gated gap must not integrate the whole gap in one
-                    // step (that launched the camera meters off).
-                    float dt = t - hs_prev_time;
-                    if (dt < 0f || dt > 0.1f) dt = Time.deltaTime;
-                    hs_prev_time = t;
-
-                    float eff_power = Mathf.Max(power, HS_POWER_MIN) * HS_POWER_MIN;
-
-                    // the chase target re-rolls while it sits within eff_power
-                    // of the screen point (fixed pattern: one re-roll then a
-                    // signed diagonal snap).
-                    Vector2 d = hs_next_target - hs_screen_position;
-                    if (fixed_pattern == 0)
-                    {
-                        int guard = 0;
-                        while (d.magnitude <= eff_power && guard++ < 64)
-                        {
-                            hs_next_target = roll_target(eff_power, fixed_pattern);
-                            d = hs_next_target - hs_screen_position;
-                        }
-                    }
-                    else if (d.magnitude < eff_power)
-                    {
-                        hs_next_target = roll_target(eff_power, fixed_pattern);
-                        d = hs_next_target - hs_screen_position;
-                        if (d.magnitude < eff_power)
-                        {
-                            hs_next_target = hs_screen_position + new Vector2(
-                                d.x >= 0f ? eff_power : -eff_power,
-                                d.y >= 0f ? eff_power : -eff_power);
-                            d = hs_next_target - hs_screen_position;
-                        }
-                    }
-
-                    // the orbit angle chases the target direction at
-                    // frequency*speed, wrapped to (-180,180].
-                    float drift_angle = angle_deg(d);
-                    float drift_speed = fixed_pattern != 0
-                        ? Mathf.PerlinNoise(t, live_seed * 2f) * 9f + 1f
-                        : UnityEngine.Random.Range(1f, 10f);
-                    hs_current_angle = move_towards_angle(hs_current_angle, drift_angle,
-                        frequency * drift_speed);
-
-                    if (dt > HS_EPS)
-                    {
-                        // the screen point orbits at dt*30*eff_power, x on sin
-                        // and y on cos.
-                        float step = dt * HS_DELTA_TIME_FACTOR * eff_power;
-                        float rad = hs_current_angle * Mathf.Deg2Rad;
-                        hs_screen_position.x += Mathf.Sin(rad) * step;
-                        hs_screen_position.y += Mathf.Cos(rad) * step;
-                    }
-
-                    hs_duration += dt * frequency;
-                    if (hs_duration >= HS_TIME_RANGE)
-                    {
-                        hs_duration = 0f;
-                        hs_next_target = roll_target(eff_power, fixed_pattern);
-                    }
-
-                    // the output projects the walk onto the camera: horizontal
-                    // rides the right vector, vertical is plain world-y, rate
-                    // scales everything.
-                    var right = cam.transform.rotation * Vector3.right;
-                    hs_offset = new Vector3(
-                        right.x * hs_screen_position.x * rate,
-                        hs_screen_position.y * rate,
-                        right.z * hs_screen_position.x * rate);
-                    hs_active = true;
-                    if ((int)(t * 60f) % 60 == 0)
-                        UV2.App.trace_log.write($"handshake: on t{t:0.0} p{power:0.00} f{frequency:0.00} r{rate:0.00} off{hs_offset.x:0.000},{hs_offset.y:0.000},{hs_offset.z:0.000}");
+                    shake_offset_pos = Vector3.zero;
+                    shake_offset_roll = 0f;
                 }
             }
 
             // the cinematic clip overrides the camera last.
             apply_camera_motion(t);
-
-            // the handshake offset lands on top of the final transform.
-            apply_shake();
         }
 
         // evaluates the camera-layer band at t blended with the flagged characters' height rate.
