@@ -15,9 +15,9 @@ namespace UV2.Live
         public Quaternion init_local;      // bind-pose local rotation
         public Quaternion parent_rot;      // parent's final world rotation
         public Quaternion final_rot;       // this frame's solved world rotation
-        public Quaternion anim_rot;        // the animation's local rotation (cached)
+        public Quaternion anim_local;      // the animation's local rotation (gathered)
 
-        // rest direction + segment length
+        // rest direction + segment length (live on the PARENT record of a pair)
         public Vector3 bone_axis;          // rest direction in the bind pose
         public float bone_distance;        // InitBoneDistance (hard constraint)
 
@@ -38,11 +38,18 @@ namespace UV2.Live
         // flags + collision bindings
         public byte skip;                  // whole-chain skip when set on record 0
         public byte check_chara_collision;
-        public short active_collisions;
+        public int active_collisions;      // count (indices resolved per character)
+        public int[] collision_indices;    // up to 16 slots; beyond 16 counted only
         public int parent_work;            // index into the character's parent work table
 
-        // force accumulator (zeroed each step)
+        // per-step force accumulators (cleared/rebuilt each frame)
         public Vector3 force;
+        public Vector3 connected_force;
+
+        public bool has_collision_slot(int slot)
+        {
+            return collision_indices != null && slot < collision_indices.Length;
+        }
 
         public static spring_record bind(Transform bone, Transform parent_bone)
         {
@@ -50,7 +57,7 @@ namespace UV2.Live
             {
                 init_local = bone.localRotation,
                 final_rot = bone.rotation,
-                anim_rot = bone.localRotation,
+                anim_local = bone.localRotation,
                 target_position = bone.position,
                 prev_target = bone.position,
                 dynamic_ratio = 1f,
@@ -60,14 +67,10 @@ namespace UV2.Live
                 limit_min = new Vector3(180f, 180f, 180f),
                 limit_max = new Vector3(180f, 180f, 180f),
             };
-            if (parent_bone != null)
-            {
-                Vector3 delta = bone.position - parent_bone.position;
-                r.bone_distance = delta.magnitude;
-                Quaternion inv = Quaternion.Inverse(parent_bone.rotation);
-                r.bone_axis = (inv * delta).normalized;
-            }
-            else
+            // root: axis up, distance 1 (self position comes from the parent work).
+            // segment axis/distance live on the PARENT of a pair and are written
+            // by the child during bind (see spring_chain.append).
+            if (parent_bone == null)
             {
                 r.bone_axis = Vector3.up;
                 r.bone_distance = 1f;

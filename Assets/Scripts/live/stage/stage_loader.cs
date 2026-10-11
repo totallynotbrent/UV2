@@ -84,6 +84,11 @@ namespace UV2.Live
             bind_crowd(sel);
 
             int cast_step = 0, cast_total = sel.slots.Count(s => s.chara_id > 0);
+            // spring physics director exists before the cast so load_character
+            // can bind each character's containers as it loads.
+            var physics_go = new GameObject("physics_director");
+            var physics = physics_go.AddComponent<physics_director>();
+            physics.bind_clock(clock);
             foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
             {
                 UV2.UI.load_progress.report($"loading cast {++cast_step}/{cast_total}");
@@ -95,7 +100,6 @@ namespace UV2.Live
                 UV2.Live.chara_parts.record_height(root, slot.chara_id);
             }
             trace_log.write($"cast: {chara_roots.Count} loaded, {_cast_missed} missed, {chara_roots.Count} roots total");
-
             // resolves the song's props against the loaded cast.
             UV2.UI.load_progress.report("binding props");
             yield return null;
@@ -610,13 +614,229 @@ namespace UV2.Live
             // the body prefab ships without a head; it merges on from the head bundle.
             int head_renderers = attach_head(instance.transform, chara_id);
 
+            // the tail mesh carries the Sp_Hi_Tail bones the spring chains bind.
+            int tail_renderers = mount_tail(instance.transform, chara_id, dress_id);
+
             int chara_renderers = instance.GetComponentsInChildren<Renderer>(true).Length;
             trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: {chara_renderers} renderers (head +{head_renderers})");
             shader_manager.fix_game_shaders(instance.transform, $"chara {chara_id}");
 
             // generic bodies ship null texture slots; assign them after the shader swap.
             assign_generic_body_textures(instance.transform, chara_id, body.bundle);
+
+            // spring physics: containers load after the skeleton is complete
+            // (head merged), so every spring root resolves by name.
+            if (physics_director.instance != null)
+            {
+                var (body_folder, chara_body, bust, tail_id) = chara_container_info(chara_id, dress_id);
+                if (body_folder != null)
+                {
+                    int cloth_idx = cloth_slot(dress_id);
+                    var sim = physics_director.instance.attach_character(
+                        chara_id, body_folder, cloth_idx, bust,
+                        chara_body, tail_id, instance.transform, load_container_prefab);
+                    if (sim != null)
+                    {
+                        chara_springs[chara_id] = sim;
+                        chara_springs_roots[instance.transform] = chara_id;
+                        // the skirt knee-correction pass rides the same sim.
+                        physics_director.instance.attach_skirt(chara_id, body_folder,
+                            cloth_idx, instance.transform, load_asset_object);
+                    }
+                    else trace_log.write($"physics: chara {chara_id} no containers bound");
+                }
+            }
             return instance.transform;
+        }
+
+        // loads any single asset from a bundle by manifest name (skirt
+        // parameter ScriptableObjects; falls back to the first asset).
+        UnityEngine.Object load_asset_object(string bundle_name)
+        {
+            var row = meta_row(bundle_name);
+            if (row == null) return null;
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) return null;
+            foreach (var n in bundle.GetAllAssetNames())
+            {
+                var a = bundle.LoadAsset<UnityEngine.Object>(n);
+                if (a != null) return a;
+            }
+            return null;
+        }
+
+        // resolves the tail mesh prefab for one character and merges it onto
+        // the body (the fork's exclusive-then-shared order):
+        //   1. exclusive tail{dress_chara}_{sub} (costume-specific model),
+        //   2. shared tail{tail_model_id:0000}_00 from the chara row.
+        // the tail's textures load by manifest name; missing texture rows
+        // leave the material slots to the bundle's own defaults.
+        private int mount_tail(Transform character, int chara_id, int dress_id)
+        {
+            var (folder, chara_body, bust, tail_id) = chara_container_info(chara_id, dress_id);
+            if (tail_id <= 0) return 0;
+
+            // the exclusive tail names the character + costume sub slot.
+            string sub = chara_body && folder != null ? folder.Substring(folder.Length - 2) : "00";
+            string excl_tail = $"3d/chara/tail/tail{chara_id}_{sub}/pfb_tail{chara_id}_{sub}";
+            string shared_tail = $"3d/chara/tail/tail{tail_id:0000}_00/pfb_tail{tail_id:0000}_00";
+
+            var tail_instance = load_mesh_prefab(excl_tail);
+            if (tail_instance == null)
+                tail_instance = load_mesh_prefab(shared_tail);
+            if (tail_instance == null)
+            {
+                trace_log.write($"chara {chara_id}: no tail prefab ({excl_tail} | {shared_tail})");
+                return 0;
+            }
+
+            // tail textures: per-head rows first, then the _0000 set.
+            string tail_stem = tail_instance.name.Replace("(Clone)", "");
+            load_tail_textures(character, chara_id, tail_stem);
+            return tail_mount.mount(character, tail_instance, s => trace_log.write($"chara {chara_id}: {s}"));
+        }
+
+        // loads texture bundles named tex_{tail}_{head}_{suffix} into the
+        // tail's materials: per-head rows first (diff/shad), then the shared
+        // _0000 base/ctrl set.
+        private void load_tail_textures(Transform character, int chara_id, string tail_stem)
+        {
+            string dir = $"3d/chara/tail/{tail_stem.Substring(4)}/textures";
+            var names = new HashSet<string>();
+            foreach (var suffix in new[] { "diff", "shad_c" })
+                names.Add($"{dir}/tex_{tail_stem}_{chara_id}_{suffix}");
+            names.Add($"{dir}/tex_{tail_stem}_0000_base");
+            names.Add($"{dir}/tex_{tail_stem}_0000_ctrl");
+            using var meta = meta_reader.reader.open(config.meta_db_path);
+            if (meta == null) return;
+            var rows = meta.lookup(names);
+            var loaded = new Dictionary<string, Texture2D>();
+            foreach (var kv in rows)
+            {
+                var bundle = game_assets.open(kv.Value, config.data_root);
+                if (bundle == null) continue;
+                foreach (var n in bundle.GetAllAssetNames())
+                {
+                    var t = bundle.LoadAsset<Texture2D>(n);
+                    if (t != null) loaded[n] = t;
+                }
+            }
+            if (loaded.Count == 0) return;
+            int assigned = 0;
+            foreach (var r in character.GetComponentsInChildren<Renderer>(true))
+            {
+                if (!r.name.Contains("Tail") && !r.name.Contains("tail")) continue;
+                var mats = r.materials;
+                foreach (var m in mats)
+                {
+                    if (m == null || m.shader == null) continue;
+                    Texture tex = null;
+                    try { tex = m.GetTexture("_MainTex"); } catch { }
+                    if (tex != null) continue;
+                    foreach (var kv in loaded)
+                    {
+                        string prop = kv.Key.Contains("diff") ? "_MainTex"
+                            : kv.Key.Contains("shad") ? "_ToonMap"
+                            : kv.Key.Contains("base") ? "_TripleMaskMap"
+                            : "_OptionMaskMap";
+                        try
+                        {
+                            if (m.GetTexture(prop) == null)
+                            {
+                                m.SetTexture(prop, kv.Value);
+                                assigned++;
+                            }
+                        } catch { }
+                    }
+                }
+            }
+            trace_log.write($"chara {chara_id} tail textures: {loaded.Count} loaded, {assigned} slots assigned");
+        }
+
+        // loads a mesh prefab bundle by manifest name and returns the live instance.
+        private GameObject load_mesh_prefab(string bundle_name)
+        {
+            var row = meta_row(bundle_name);
+            if (row == null) return null;
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) return null;
+            string want = bundle_name.Split('/').Last();
+            string prefab_name = bundle.GetAllAssetNames().FirstOrDefault(n => n.EndsWith($"/{want}.prefab"))
+                                 ?? bundle.GetAllAssetNames().FirstOrDefault(n => n.EndsWith(".prefab"));
+            var prefab = string.IsNullOrEmpty(prefab_name) ? null : bundle.LoadAsset<GameObject>(prefab_name);
+            return prefab == null ? null : Instantiate(prefab);
+        }
+
+        // per-character spring sims (formation keys address them by chara id).
+        readonly Dictionary<int, spring_sim> chara_springs = new();
+        // root transform per chara id, for the formation driver's key routing.
+        readonly Dictionary<Transform, int> chara_springs_roots = new();
+
+        // resolves the container bundle folder + axes for one character from
+        // the master db (mirrors manifest_reader.chara_body's naming rules):
+        // body folder, whether it is character-specific, the bust size
+        // (shared bodies), and the tail model id.
+        (string folder, bool chara_body, int bust, int tail_id) chara_container_info(
+            int chara_id, int dress_id)
+        {
+            var db = UV2.Data.master_db.reader.open(config.master_db_path);
+            if (db == null) return (null, false, 0, 0);
+            try
+            {
+            var dress_rows = db.query(
+                $"SELECT chara_id, body_type, body_type_sub, tail_model_id FROM dress_data WHERE id={dress_id}");
+            if (dress_rows.Count == 0) return (null, false, 0, 0);
+            int dress_chara = (int)dress_rows[0].get_int(0);
+            int body_type = (int)dress_rows[0].get_int(1);
+            int body_sub = (int)dress_rows[0].get_int(2);
+            int dress_tail = (int)dress_rows[0].get_int(3);
+
+            if (dress_chara != 0)
+            {
+                // character-specific body: one folder, tail id from the chara row.
+                var chara_rows = db.query(
+                    $"SELECT bust, tail_model_id FROM chara_data WHERE id={dress_chara}");
+                int bust = 0, tail_id = dress_tail;
+                if (chara_rows.Count > 0)
+                {
+                    bust = (int)chara_rows[0].get_int(0);
+                    if (tail_id < 0) tail_id = (int)chara_rows[0].get_int(1);
+                }
+                return ($"3d/chara/body/bdy{dress_chara}_{body_sub:d2}", true, bust, tail_id);
+            }
+
+            // shared body: the folder rides the dress's body_type; the bust
+            // size and tail come from the character row.
+            var rows = db.query(
+                $"SELECT bust, tail_model_id FROM chara_data WHERE id={chara_id}");
+            if (rows.Count == 0) return (null, false, 0, 0);
+            int bust2 = (int)rows[0].get_int(0);
+            int tail2 = dress_tail;
+            if (tail2 < 0) tail2 = (int)rows[0].get_int(1);
+            return ($"3d/chara/body/bdy{body_type:d4}_{body_sub:d2}", false, bust2, tail2);
+            }
+            finally { db.Dispose(); }
+        }
+
+        // the dress's cloth slot: the container bundles ship cloth00..04 and
+        // the worn dress resolves one. until the cloth index decode lands,
+        // every character binds cloth00 (the base slot the containers carry
+        // for all bodies) — the loader falls back down from the slot given.
+        int cloth_slot(int dress_id) => 0;
+
+        // loads a container prefab bundle by manifest name (instances are
+        // plain GameObjects with one data-only component).
+        GameObject load_container_prefab(string bundle_name)
+        {
+            var row = meta_row(bundle_name);
+            if (row == null) return null;
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) return null;
+            string want = bundle_name.Split('/').Last();
+            string prefab_name = bundle.GetAllAssetNames().FirstOrDefault(n => n.EndsWith($"/{want}.prefab"))
+                                 ?? bundle.GetAllAssetNames().FirstOrDefault(n => n.EndsWith(".prefab"));
+            var prefab = string.IsNullOrEmpty(prefab_name) ? null : bundle.LoadAsset<GameObject>(prefab_name);
+            return prefab == null ? null : Instantiate(prefab);
         }
 
         // finds the shader's main texture property; it may not be _MainTex.
@@ -965,7 +1185,9 @@ namespace UV2.Live
             var bgc_go = new GameObject("bg_color1_director");
             bg_color1 = bgc_go.AddComponent<bg_color1_director>();
             bg_color1.open(ws, clock, chara_roots);
-            formation.open(ws, clock, chara_roots);
+            var spring_sims = new Dictionary<int, spring_sim>(chara_springs);
+            formation.open(ws, clock, chara_roots, spring_sims);
+            foreach (var kv in chara_springs_roots) formation.root_chara[kv.Key] = kv.Value;
 
             var motion_go = new GameObject("motion_player");
             motion = motion_go.AddComponent<motion_player>();

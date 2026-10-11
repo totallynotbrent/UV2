@@ -2,51 +2,74 @@ using UnityEngine;
 
 namespace UV2.Live
 {
-    // wind composition from the decoded CreateWindControlData: four direction
-    // cones (slow/fast pairs, vertical + horizontal), phase-driven weights.
-    // phases advance per solver call (not wall clock), by 2pi / cycle.
+    // wind composition from the decoded CreateWindControlData +
+    // UpdateSpringHasWind: four direction cones built at load from the
+    // container's angle/width pairs, two oscillator phases (vertical,
+    // horizontal) advanced per solver call by 2pi/cycle.
+    //
+    // verified composition (per wind-enabled root chain):
+    //   t_v = clamp01(sin(v_phase + root_phase_shift) * 0.5 + 0.5)
+    //   t_h = clamp01(sin(h_phase + root_phase_shift) * 0.5 + 0.5)
+    //   raw = lerp(upper, downer, t_v) + lerp(right, left, t_h)
+    //   n = normalize(raw)
+    //   horiz = normalize(n.x, 0, n.z)
+    //   wind = (horiz.x * power * 0.005,        <- HORIZONTAL rate on x/z
+    //           n.y * power * 0.015,            <- VERTICAL rate on y
+    //           horiz.z * power * 0.005)
+    //   wind rotated by the root parent's world rotation; per-bone wind rates
+    //   gate the add inside the solver.
     public class spring_wind
     {
-        public float cycle_slow;           // seconds per slow cycle
-        public float cycle_fast;
-        public Vector3 dir_v_slow, dir_v_fast;   // vertical cones
-        public Vector3 dir_h_slow, dir_h_fast;   // horizontal cones
-        public float amplitude_v = 0.015f;       // decoded default amplitudes
-        public float amplitude_h = 0.005f;
-        public float power_rate = 1f;            // per-part windPowerRate (0..1)
+        public Vector3 dir_upper, dir_downer;      // vertical cone pair
+        public Vector3 dir_right, dir_left;        // horizontal cone pair
+        public float cycle_vertical;               // seconds per vertical cycle
+        public float cycle_horizontal;
+        public float power_scale = 1f;             // per-part windPowerScale
+        public bool enable_vertical = true;
+        public bool enable_horizontal = true;
 
-        // phase state, per character
-        float phase_v_slow, phase_v_fast, phase_h_slow, phase_h_fast;
+        // phase state (one shared accumulator + per-root shift)
+        float v_phase, h_phase;
 
-        public void set_phases(float v_slow, float v_fast, float h_slow, float h_fast)
+        public void set_phases(float vertical, float horizontal)
         {
-            phase_v_slow = v_slow; phase_v_fast = v_fast;
-            phase_h_slow = h_slow; phase_h_fast = h_fast;
+            v_phase = vertical;
+            h_phase = horizontal;
         }
 
-        // advances every phase by 2pi/cycle for one solver call.
-        public void advance()
+        // advances both phases for one solver call (omega = 2pi/cycle).
+        public void advance(float dt)
         {
-            phase_v_slow += 2f * Mathf.PI / Mathf.Max(cycle_slow, 1e-4f);
-            phase_v_fast += 2f * Mathf.PI / Mathf.Max(cycle_fast, 1e-4f);
-            phase_h_slow += 2f * Mathf.PI / Mathf.Max(cycle_slow * 1.13f, 1e-4f);
-            phase_h_fast += 2f * Mathf.PI / Mathf.Max(cycle_fast * 1.13f, 1e-4f);
+            v_phase += dt * (2f * Mathf.PI) / Mathf.Max(cycle_vertical, 1e-6f);
+            h_phase += dt * (2f * Mathf.PI) / Mathf.Max(cycle_horizontal, 1e-6f);
         }
 
-        // composes the world-space wind vector for this call; the caller passes
-        // it to every chain. weights: sin(phase)*0.5+0.5 lerped slow->fast.
-        public Vector3 compose()
+        // composes the pre-rotation wind vector for ONE root chain (the caller
+        // applies the root-parent rotation and passes it to the solver).
+        public Vector3 compose(float root_phase_shift, Quaternion parent_rot)
         {
-            float wv = Mathf.Lerp(weight(phase_v_slow), weight(phase_v_fast), 0.5f);
-            float wh = Mathf.Lerp(weight(phase_h_slow), weight(phase_h_fast), 0.5f);
-            Vector3 v = Vector3.Slerp(dir_v_slow, dir_v_fast, wv) * (amplitude_v * wv);
-            Vector3 h = Vector3.Slerp(dir_h_slow, dir_h_fast, wh) * (amplitude_h * wh);
-            return (v + h) * Mathf.Clamp01(power_rate);
-        }
+            Vector3 raw = Vector3.zero;
+            if (enable_vertical)
+            {
+                float t = Mathf.Clamp01(Mathf.Sin(v_phase + root_phase_shift) * 0.5f + 0.5f);
+                raw += Vector3.Lerp(dir_upper, dir_downer, t);
+            }
+            if (enable_horizontal)
+            {
+                float t = Mathf.Clamp01(Mathf.Sin(h_phase + root_phase_shift) * 0.5f + 0.5f);
+                raw += Vector3.Lerp(dir_right, dir_left, t);
+            }
+            if (raw.sqrMagnitude <= 1e-10f) return Vector3.zero;
 
-        private static float weight(float phase)
-        {
-            return Mathf.Sin(phase) * 0.5f + 0.5f;
+            Vector3 n = raw.normalized;
+            Vector3 horiz = new Vector3(n.x, 0f, n.z);
+            if (horiz.sqrMagnitude > 1e-10f) horiz.Normalize();
+
+            Vector3 w = new Vector3(
+                horiz.x * power_scale * 0.005f,
+                n.y * power_scale * 0.015f,
+                horiz.z * power_scale * 0.005f);
+            return parent_rot * w;
         }
     }
 }

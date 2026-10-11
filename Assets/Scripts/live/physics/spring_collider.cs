@@ -2,54 +2,68 @@ using UnityEngine;
 
 namespace UV2.Live
 {
-    public enum spring_collider_type { sphere = 0, capsule = 1 }
+    // collider types as the shipped build dispatches them: 0 = sphere,
+    // 2 = capsule, 1 = plane (compiled out — never materialized).
+    public enum spring_collider_type { sphere = 0, plane = 1, capsule = 2 }
 
     // one character-body collider in world space, rebuilt each frame from the
-    // rig's collision transforms (ikcol + container collision params).
+    // collision transform the loader created under the target bone.
+    // decoded placement (verified against CySpringCollisionRuntimeData):
+    //   sphere: the rider's world position = target bone position + offset;
+    //           the sim reads the rider's transform.position directly.
+    //   capsule: rider localPosition = offset; axis = (offset2 - offset)
+    //           scaled by the rider's parent lossyScale.
+    //   radius: serialized _radius; capsules scale by the parent lossyScale.y
+    //           factor (the game's ScaleParams_Capsule form).
     public struct spring_collider
     {
         public spring_collider_type type;
         public Vector3 position;           // sphere center / capsule start
         public Vector3 position2;          // capsule end (unused for spheres)
         public float radius;
-        public string link_bone;           // the transform the collider rides
 
-        // evaluates world-space placement from a collision param row.
-        public static spring_collider from_param(collision_param p, Transform owner,
-            float height_scale, Vector3 parent_scale)
+        // evaluates world-space placement from one collision row's rider
+        // transform (the GameObject parented under the target bone).
+        public static spring_collider from_rider(collision_param p)
         {
             var c = new spring_collider
             {
-                link_bone = p.link_bone,
-                radius = p.radius * height_scale,
+                radius = p.radius,
+                type = (spring_collider_type)p.type,
             };
-            Transform t = owner;
-            if (!string.IsNullOrEmpty(p.link_bone))
-            {
-                var found = owner.GetComponentsInChildren<Transform>();
-                for (int i = 0; i < found.Length; i++)
-                    if (found[i].name == p.link_bone) { t = found[i]; break; }
-            }
-            Vector3 base_pos = t != null ? t.position : owner.position;
-            Vector3 scale = t != null ? Vector3.Scale(t.lossyScale, parent_scale) : parent_scale;
-            Vector3 off = Vector3.Scale(p.offset, scale);
-            c.position = base_pos + off;
+            Transform rider = p.rider;
+            if (rider == null) return c;
+
             if (p.type == (int)spring_collider_type.capsule)
             {
-                Vector3 off2 = Vector3.Scale(p.offset2, scale);
-                c.position2 = base_pos + off2;
+                Vector3 parent_scale = rider.parent != null
+                    ? rider.parent.lossyScale
+                    : Vector3.one;
+                Vector3 axis = Vector3.Scale(p.offset2 - p.offset, parent_scale);
+                c.position = rider.position;
+                c.position2 = rider.position + axis;
+                c.radius *= parent_scale.y > 1e-6f ? parent_scale.y : 1f;
+            }
+            else
+            {
+                c.position = rider.position;
             }
             return c;
         }
     }
 
-    // one deserialized row from the container collisionParam list / ikcols.
+    // one deserialized row from the container collisionParam list. the loader
+    // resolves the target bone once, parents the rider GameObject, and the
+    // sim reads world placement from the rider every frame.
     public class collision_param
     {
-        public int type;                   // 0 sphere, 1 capsule (plane compiled out)
-        public string link_bone;
+        public int type;                   // 0 sphere, 2 capsule, 1 plane (unused)
+        public string collision_name;      // the name spring bones reference
+        public string link_bone;           // _targetObjectName: the bone it rides
         public Vector3 offset;
         public Vector3 offset2;
         public float radius;
+        public byte is_other_target;       // resolve against another character
+        public Transform rider;            // the created child transform
     }
 }
