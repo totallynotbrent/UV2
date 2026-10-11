@@ -62,6 +62,17 @@ namespace UV2.Live
             anchors[root] = a;
         }
 
+        // re-reads the standing position after the formation places the cast:
+        // the game captures liveCharaInitialPosition in SetupCharacterLocator,
+        // which runs after stage placement, so camera anchors ride the placed
+        // spot - not the load spot the record() call above sees.
+        public static void recapture_initial(Transform root)
+        {
+            if (root == null || !anchors.TryGetValue(root, out var a)) return;
+            var position_bone = find_bone(root, "Position") ?? root;
+            a.initial_position = position_bone.position;
+        }
+
         // stores the character's cm height; falls back to the base height when missing.
         public static void record_height(Transform root, int chara_id)
         {
