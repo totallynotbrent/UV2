@@ -225,6 +225,8 @@ namespace UV2.Live
             // filename resolves against the process working directory, which
             // differs between a double-clicked exe and a scripted launch,
             // and the sweep's collector then finds nothing to move.
+            // disabled by user request 10-11: re-enable only for a bench run.
+            if (System.Environment.GetEnvironmentVariable("UV2_SNAPS") != "1") return;
             int song_frame = (int)Mathf.RoundToInt(t * 60f);
             string snap_dir = System.IO.Path.Combine(System.AppDomain.CurrentDomain.BaseDirectory);
             // the capture set: the three originals plus the dark cutaway
