@@ -997,6 +997,9 @@ namespace UV2.Live
                     ik_l_low = k.IKMicStandLOffsetLow,
                     ik_r_high = k.IKMicStandROffsetHigh,
                     ik_r_low = k.IKMicStandROffsetLow,
+                    warm_up_cy_spring = k.warmUpCySpring,
+                    cy_spring_warm_up_time = k.CySpringWarmUpTime,
+                    cy_spring_rate = k.CySpringRate,
                 });
             }
             ws.formation[name] = list;

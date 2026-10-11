@@ -143,6 +143,9 @@ namespace UV2.Live
         public Vector3 ik_l_low;
         public Vector3 ik_r_high;
         public Vector3 ik_r_low;
+        public byte warm_up_cy_spring;    // warmUpCySpring: triggers the warm-up pass
+        public float cy_spring_warm_up_time;   // seconds (0 = default 1.0s)
+        public float cy_spring_rate;      // amplitude scale for the springs
     }
 
     // one authored global-light key: the toon light direction for the frame.
