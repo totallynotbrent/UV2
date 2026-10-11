@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UnityEngine.Rendering.Universal;
 using UV2.App;
 using UV2.Concert;
 using UV2.Data;
@@ -18,8 +19,29 @@ namespace UV2.App
             try
             {
                 stage_loader.force_free_clock = free_clock;
+                // the batch editor reverts asset hdr during bakes, so the
+                // pipeline settings are pinned at boot instead: hdr for bloom,
+                // the camera generates the depth texture for dof.
+                var urp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline
+                    as UnityEngine.Rendering.Universal.UniversalRenderPipelineAsset;
+                if (urp != null)
+                    urp.supportsHDR = true;
+                // zero-engine ambient: the game's stage shaders must read
+                // _AmbientColor from the worksheet (1004 authors near-black
+                // there), not Unity's default sky probe at intensity 1.
+                // custom mode + black everywhere, ambient intensity 0.
+                RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Custom;
+                RenderSettings.ambientSkyColor = Color.black;
+                RenderSettings.ambientEquatorColor = Color.black;
+                RenderSettings.ambientGroundColor = Color.black;
+                RenderSettings.ambientIntensity = 0f;
+                RenderSettings.ambientLight = Color.black;
                 var cam_go = new GameObject("main_camera", typeof(Camera));
                 var cam = cam_go.GetComponent<Camera>();
+                cam.depthTextureMode = UnityEngine.DepthTextureMode.Depth;
+                // urp skips the whole post chain unless the camera opts in.
+                var cam_data = cam.GetUniversalAdditionalCameraData();
+                cam_data.renderPostProcessing = true;
                 // live camera defaults; the fov/position come from the worksheet camera keys.
                 cam.clearFlags = CameraClearFlags.Skybox;
                 cam.orthographic = false;

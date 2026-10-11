@@ -11,6 +11,7 @@ namespace UV2.Live
         // the volume side: the resolved entry count + whether any key is enabled.
         private static int _volume_entries;
         private static int _volume_enabled;
+        private static float last_probe_t = -10f;
 
         // every stage material by asset name, for the uv scroll entries.
         private static readonly Dictionary<string, List<Material>> stage_materials = new();
@@ -47,6 +48,7 @@ namespace UV2.Live
             uv_targets.Clear();
             _volume_entries = 0;
             _volume_enabled = 0;
+            last_probe_t = -10f;
         }
 
         // counts the volume entries and resolves the uv scroll entries against the stage materials by name.
@@ -86,6 +88,9 @@ namespace UV2.Live
                 }
                 uv_targets[t.name] = new uv_target { materials = mats };
                 resolved++;
+                string shader_name = mats.Count > 0 && mats[0] != null ? mats[0].shader.name : "?";
+                bool has_mul0 = mats.Count > 0 && mats[0] != null && mats[0].HasProperty(id_mul_color0);
+                trace_log.write($"uv scroll light resolved: '{t.name}' x{mats.Count} shader '{shader_name}' hasMulColor0={has_mul0}");
             }
             trace_log.write($"uv scroll lights: {resolved} materials resolved, {missing.Count} unresolved");
             foreach (var m in missing) trace_log.write($"uv scroll light unresolved: {m}");
@@ -125,6 +130,11 @@ namespace UV2.Live
                 if (!uv_targets.TryGetValue(t.name, out var target)) continue;
                 var (color0, color1, power, offset, speed) = t.sample(frame);
 
+                // the key's texture swap rides with the current bracketed key
+                // (the fork's UVScrollLightController applies it when the key
+                // authors one; a null texture keeps the material's own).
+                var cur_key = t.current_key(frame);
+
                 // the scroll offset advances by speed * seconds since the current key.
                 float elapsed = t.elapsed_seconds(frame);
                 Vector2 scrolled = offset + speed * elapsed;
@@ -132,10 +142,30 @@ namespace UV2.Live
                 foreach (var m in target.materials)
                 {
                     if (m == null) continue;
-                    if (m.HasProperty(id_mul_color0)) m.SetColor(id_mul_color0, color0);
-                    if (m.HasProperty(id_mul_color1)) m.SetColor(id_mul_color1, color1);
-                    if (m.HasProperty(id_color_power)) m.SetFloat(id_color_power, power);
-                    if (m.HasProperty(id_main_tex)) m.SetTextureOffset(id_main_tex, scrolled);
+                    // unconditional writes, matching the fork's controller
+                    // (mat.SetColor/_MulColor0, mat.SetFloat/_ColorPower, no
+                    // property gates): the HasProperty guard no-ops every
+                    // publish when the shader's property table reads false,
+                    // leaving the bars at their serialized unbound white
+                    // state. unity keeps the values in the material sheet
+                    // even when the shader has not loaded its table yet.
+                    if (cur_key != null && cur_key.texture != null)
+                        m.SetTexture(id_main_tex, cur_key.texture);
+                    m.SetColor(id_mul_color0, color0);
+                    m.SetColor(id_mul_color1, color1);
+                    m.SetFloat(id_color_power, power);
+                    m.SetTextureOffset(id_main_tex, scrolled);
+
+                    // one-shot probe every ~5s of song time: reads back the
+                    // published values so traces prove the writes landed even
+                    // where llvmpipe substitutes its magenta error shader
+                    // (uv2_uvlight_white_rootcause.md, recipe E).
+                    if (time_sec - last_probe_t >= 5f)
+                    {
+                        last_probe_t = time_sec;
+                        var readback = m.GetColor(id_mul_color0);
+                        trace_log.write($"uvscroll probe '{t.name}' mulColor0=({readback.r:0.00},{readback.g:0.00},{readback.b:0.00}) power={m.GetFloat(id_color_power):0.00} off={scrolled.x:0.00}");
+                    }
                 }
             }
         }
@@ -246,13 +276,27 @@ namespace UV2.Live
             return (c0, c1, power, offset, speed);
         }
 
-        // seconds elapsed since the current key.
+        // the current bracketed key (last key at or before frame).
+        public uv_scroll_key current_key(float frame)
+        {
+            if (keys == null || keys.Count == 0) return null;
+            if (frame <= keys[0].frame) return keys[0];
+            if (frame >= keys[keys.Count - 1].frame) return keys[keys.Count - 1];
+            for (int i = 0; i < keys.Count - 1; i++)
+                if (frame >= keys[i].frame && frame < keys[i + 1].frame)
+                    return keys[i];
+            return keys[keys.Count - 1];
+        }
+
+        // seconds elapsed since the current key (the last key at or before
+        // frame) — the game's progressTime = max(frameTime - keyTime, 0)
+        // (uv2_uvlight_white_rootcause.md, fix recipe B).
         public float elapsed_seconds(float frame)
         {
             if (keys == null || keys.Count == 0) return 0f;
-            foreach (var k in keys)
-                if (frame >= k.frame) return (frame - k.frame) / 60f;
-            return 0f;
+            uv_scroll_key cur = keys[0];
+            foreach (var k in keys) { if (frame >= k.frame) cur = k; else break; }
+            return (frame - cur.frame) / 60f;
         }
     }
 
@@ -271,5 +315,6 @@ namespace UV2.Live
         public float scroll_offset_y;
         public float scroll_speed_x;
         public float scroll_speed_y;
+        public Texture2D texture;
     }
 }

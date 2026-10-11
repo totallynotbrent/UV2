@@ -28,9 +28,13 @@ namespace UV2.Live
         private live_worksheet ws;
         private timeline_clock clock;
         private readonly List<Transform> chara_roots = new();
+        // per-chara face morph databases loaded from the head bundles.
+        private readonly Dictionary<int, Gallop.FaceDrivenKeyTarget> face_targets = new();
         private camera_director director;
         private formation_driver formation;
+        private bg_color1_director bg_color1;
         private motion_player motion;
+        private vocal_mixer vocals;
 
         public IReadOnlyList<Transform> characters => chara_roots;
 
@@ -67,7 +71,7 @@ namespace UV2.Live
 
             blink_lights.bind(ws?.blink_tracks, null);
             spot_lights.bind(ws?.spot_tracks);
-            laser_lights.bind(ws?.laser_tracks);
+            laser_lights.bind(ws?.laser_tracks, Camera.main);
             foot_light.reset();
             foot_light.bind(ws?.foot_light);
             volume_uv_scroll.bind(ws?.volume_tracks, ws?.uv_scroll_tracks);
@@ -102,14 +106,25 @@ namespace UV2.Live
             var clips = run_phase_clips(sel);
             if (clips == null) yield break;
 
-            wire_drivers(clips, sel.music_id);
+            wire_drivers(clips, sel.music_id, sel.slots.Select(x => x.chara_id).ToList());
             trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
 
-            UV2.UI.load_progress.report("starting music");
+            // the vocal stems: decode the banks but keep every stem silent
+            // until its part row arrives — the bgm below is the timing
+            // master and must start only once the whole stage is live.
+            UV2.UI.load_progress.report("starting vocals");
             yield return null;
-            start_music(sel.music_id);
+            var vocals_go = new GameObject("vocal_mixer");
+            vocals = vocals_go.AddComponent<vocal_mixer>();
+            vocals.open(clock, chara_roots, sel.slots, sel.music_id);
+
             UV2.UI.load_progress.report("concert ready");
             _open_ok = true;
+
+            // the music starts last, with everything visible: starting it
+            // mid-load made the song audible during the loading phase and
+            // led the visible concert by the remaining load time.
+            start_music(sel.music_id);
         }
 
         // loads the worksheet and resolves the stage manifest; false on failure.
@@ -155,6 +170,88 @@ namespace UV2.Live
         }
 
         // clones the controller's loose laser fixtures, one per distinct worksheet entry.
+        // logs the live render state of the beam/mirror/floor meshes a frame
+        // after stage bind so a gpu log can distinguish "not bound" from
+        // "bound but not rendered" on dx11.
+        private System.Collections.IEnumerator probe_beam_after_frame(Transform root)
+        {
+            yield return null;
+            probe_beam_render_state(root);
+        }
+
+        private void probe_beam_render_state(Transform root)
+        {
+            if (root == null) return;
+            var cam = Camera.main;
+            int probed = 0;
+            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null) continue;
+                string n = r.gameObject.name.ToLowerInvariant();
+                if (!n.Contains("uv_light") && !n.Contains("beam") && !n.Contains("mirror")
+                    && !n.Contains("ground") && !n.Contains("monitor")) continue;
+                probed++;
+                bool in_frustum = false;
+                if (cam != null)
+                {
+                    var planes = GeometryUtility.CalculateFrustumPlanes(cam);
+                    in_frustum = GeometryUtility.TestPlanesAABB(planes, r.bounds);
+                }
+                var mats = new System.Text.StringBuilder();
+                foreach (var m in r.sharedMaterials)
+                {
+                    if (m == null) { mats.Append(" null"); continue; }
+                    mats.Append(" ").Append(m.name).Append("[").Append(m.shader != null ? m.shader.name : "NULLSHADER").Append("]");
+                }
+                trace_log.write($"render probe '{r.gameObject.name}' layer={r.gameObject.layer} enabled={r.enabled} active={r.gameObject.activeInHierarchy} frustum={in_frustum} mats={mats.ToString().Trim()}");
+            }
+            trace_log.write($"render probe complete: {probed} meshes");
+        }
+
+        // auto-attaches mirror_reflection to renderers that carry mirror
+        // geometry or reflection-aware materials; the game's stage prefab
+        // expects us to do this (the fork does the same pass via
+        // StageController.AutoAttachMirrorReflectionComponents).
+        private void attach_mirror_reflections(Transform root)
+        {
+            if (root == null) return;
+            int attached = 0;
+            var rends = root.GetComponentsInChildren<Renderer>(true);
+            foreach (var r in rends)
+            {
+                if (r == null) continue;
+                string path = "";
+                var t = r.transform;
+                while (t != null)
+                {
+                    path = "/" + t.name + path;
+                    t = t.parent;
+                }
+                string lower = path.ToLowerInvariant();
+                bool wants_mirror = lower.Contains("mirror");
+                if (!wants_mirror)
+                {
+                    var mats = r.sharedMaterials;
+                    foreach (var m in mats)
+                    {
+                        if (m == null) continue;
+                        if (m.HasProperty("_ReflectionTex") || m.HasProperty("_ReflectionRate"))
+                        {
+                            wants_mirror = true;
+                            break;
+                        }
+                    }
+                }
+                if (!wants_mirror) continue;
+                if (r.GetComponent<mirror_reflection>() != null) continue;
+                var mr = r.gameObject.AddComponent<mirror_reflection>();
+                var cam = Camera.main;
+                if (cam != null) mr.ConfigureFor(cam);
+                attached++;
+            }
+            trace_log.write($"mirror reflections attached: {attached}");
+        }
+
         private System.Collections.IEnumerator instantiate_laser_fixtures()
         {
             var ctrl = _stage_controller;
@@ -221,13 +318,17 @@ namespace UV2.Live
                 foreach (var entry in holder._assetTable.list)
                 {
                     if (entry?.Value == null) { trace_log.write("spotlight fixture: a table entry did not bind"); continue; }
-                    var piece = Instantiate(entry.Value, parent);
-                    piece.name = entry.Value.name;
+                    if (entry.Value is not GameObject entry_go) { trace_log.write($"spotlight fixture '{entry.Key}': not a prefab ({entry.Value.GetType().Name})"); continue; }
+                    var piece = Instantiate(entry_go, parent);
+                    piece.name = entry_go.name;
+                    // the game instances a fixture only when a spotlight3d
+                    // key activates it: pre-placed fixtures start hidden.
+                    piece.SetActive(false);
                     placed++;
                     foreach (var child in piece.GetComponentsInChildren<Transform>(true))
                         blink_lights.record_stage_child(child.name, child.gameObject);
                     blink_lights.record_stage_child(entry.Key, piece);
-                    trace_log.write($"spotlight fixture '{entry.Key}' -> '{entry.Value.name}' placed");
+                    trace_log.write($"spotlight fixture '{entry.Key}' -> '{entry.Value.name}' placed (hidden)");
                 }
             }
             else
@@ -320,6 +421,13 @@ namespace UV2.Live
 
                             Debug.Log($"[stage_loader] stage geometry: {placed} roots placed, renderers {geo_root.GetComponentsInChildren<Renderer>(true).Length}");
                             trace_log.write($"stage geometry: {placed} roots, {geo_root.GetComponentsInChildren<Renderer>(true).Length} renderers");
+            // one-shot render-state probe of the beams + mirror + floor so a
+            // user's gpu log tells us whether those meshes sit culled, hidden,
+            // or shader-fallbacked on dx11.
+            // deferred probe: run it one frame later so culling and camera
+            // state reflect the live render, not the freshly-instantiated pose.
+            StartCoroutine(probe_beam_after_frame(geo_root.transform));
+            attach_mirror_reflections(geo_root.transform);
                             volume_uv_scroll.record_stage_materials(geo_root.transform);
                             // spawns the cyalume rig before the crowd records it.
                             crowd_rig.start_stage_animations(geo_root.transform);
@@ -440,6 +548,9 @@ namespace UV2.Live
 
         public bool opened { get { return _open_ok; } }
         private bool _open_ok;
+
+        // the song clock, exposed for the -uv2frame seek mode in scene_boot.
+        public timeline_clock song_clock { get { return clock; } }
 
         public System.Collections.IEnumerator open(selection_state sel) { yield return open_core(sel); }
 
@@ -675,6 +786,20 @@ namespace UV2.Live
             var head = Instantiate(prefab);
             int head_renderers = head.GetComponentsInChildren<Renderer>(true).Length;
 
+            // the face morph database rides the head as a ScriptableObject
+            // referenced by the root's AssetHolder table ('facial_target').
+            var holder = head.GetComponent<Gallop.AssetHolder>();
+            Gallop.FaceDrivenKeyTarget face_target = null;
+            if (holder?._assetTable?.list != null)
+                foreach (var entry in holder._assetTable.list)
+                    if (entry.Key == "facial_target" && entry.Value is Gallop.FaceDrivenKeyTarget ft)
+                    {
+                        face_target = ft;
+                        break;
+                    }
+            face_targets[chara_id] = face_target;
+            trace_log.write($"chara {chara_id}: face target {(face_target == null ? "MISS" : $"{face_target._mouthTarget.Count} mouth / {face_target._eyeTarget.Count} eye / {face_target._eyebrowTarget.Count} eyebrow")}");
+
             // remaps the head's skinned meshes onto the body's bones so they deform together.
             var body_bones = new Dictionary<string, Transform>();
             foreach (var smr in body_root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
@@ -804,7 +929,7 @@ namespace UV2.Live
             return rows?.GetValueOrDefault(name);
         }
 
-        private void wire_drivers(Dictionary<string, AnimationClip> clips, int music_id)
+        private void wire_drivers(Dictionary<string, AnimationClip> clips, int music_id, List<int> chara_ids)
         {
             var cam = FindObjectOfType<Camera>();
             if (cam == null)
@@ -823,8 +948,23 @@ namespace UV2.Live
             director = director_go.AddComponent<camera_director>();
             director.open(ws, clock, chara_roots, cam);
 
+            // phase 4: the postfx director drives the volume bloom + fog/fade.
+            var postfx_go = new GameObject("postfx_director");
+            var postfx = postfx_go.AddComponent<postfx_director>();
+            postfx.open(ws, clock, cam, chara_roots);
+
+            // phase 4: the facial director drives mouth weight + gaze from the cutt facial tracks.
+            var facial_go = new GameObject("facial_director");
+            var facial = facial_go.AddComponent<facial_director>();
+            facial.open(ws, clock, chara_roots, face_targets, chara_ids);
+
             var formation_go = new GameObject("formation_driver");
             formation = formation_go.AddComponent<formation_driver>();
+
+            // the bgColor1 tracks drive ambient + chara tint per frame.
+            var bgc_go = new GameObject("bg_color1_director");
+            bg_color1 = bgc_go.AddComponent<bg_color1_director>();
+            bg_color1.open(ws, clock, chara_roots);
             formation.open(ws, clock, chara_roots);
 
             var motion_go = new GameObject("motion_player");
@@ -949,10 +1089,13 @@ namespace UV2.Live
             diag_pass("blink", () => blink_lights.update(clock?.time ?? 0f, ws?.blink_tracks));
             diag_pass("spot", () => spot_lights.update(clock?.time ?? 0f, ws?.spot_tracks, chara_roots));
             diag_pass("laser", () => laser_lights.update(clock?.time ?? 0f, ws?.laser_tracks, chara_roots));
+            diag_pass("shafts", () => shafts_lights.update(clock?.time ?? 0f, ws?.shafts_tracks));
             diag_pass("volume", () => volume_uv_scroll.update_volume(clock?.time ?? 0f, ws?.volume_tracks));
             diag_pass("uvscroll", () => volume_uv_scroll.update_uv_scroll(clock?.time ?? 0f, ws?.uv_scroll_tracks));
             diag_pass("wash", () => wash_light.update(clock?.time ?? 0f, ws?.wash_tracks));
             diag_pass("additional", () => additional_light.update(clock?.time ?? 0f, ws?.additional_tracks));
+            diag_pass("lightproj", () => light_projection_lights.update(clock?.time ?? 0f, ws?.light_projection));
+            diag_pass("transmitted", () => transmitted_light.update(clock?.time ?? 0f, ws?.transmitted));
             diag_pass("crowd", () =>
             {
                 crowd_rig.update(clock?.time ?? 0f, ws?.audience_tracks);
@@ -963,6 +1106,13 @@ namespace UV2.Live
             diag_pass("shade", () =>
             {
                 global_shade.publish(FindObjectOfType<Camera>());
+                // bg_color1 first: its Chara* groups overwrite the whole
+                // property block on the character renderers, which wipes any
+                // earlier block. the game re-pins the toon-light state every
+                // frame AFTER every other writer (fork Director.cs: the
+                // global-light mpb is re-applied per frame so "any competing
+                // writer loses"), so the chara pin must be the last writer.
+                bg_color1?.update(clock?.time ?? 0f);
                 global_shade.publish_chara_block(chara_roots);
             });
 
@@ -996,6 +1146,22 @@ namespace UV2.Live
                 var px = probe.GetPixel(0, 0);
                 trace_log.write($"px {px.r:0.00},{px.g:0.00},{px.b:0.00}");
                 Destroy(probe);
+                // a center hit naming its mesh separates a scene-geometry white
+                // from a material/texture bind failure. renderer bounds, not
+                // physics: the live scene carries no colliders.
+                string center = "none";
+                foreach (var r in FindObjectsOfType<Renderer>())
+                {
+                    if (!r.isVisible) continue;
+                    var b = r.bounds;
+                    var ro = new Ray(cam.transform.position, cam.transform.forward);
+                    if (b.IntersectRay(ro) && b.SqrDistance(cam.transform.position) < 400f)
+                    {
+                        center = r.name;
+                        break;
+                    }
+                }
+                trace_log.write($"center hit {center}");
 
                 // head-bone movement across beats proves the motion actually poses the cast.
                 string pose = "";
@@ -1086,3 +1252,4 @@ namespace UV2.Live
         }
     }
 }
+
