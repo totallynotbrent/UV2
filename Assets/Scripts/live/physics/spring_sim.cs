@@ -351,6 +351,11 @@ namespace UV2.Live
             if (warm_time <= 0f) warm_time = 1f;
             int n = Mathf.Max(1, Mathf.CeilToInt(warm_time * 60f));
             float dt = 1f / 60f;
+            // the warm-up burst must not advance the bench sampling gate:
+            // record the tick before the burst and roll the counters back
+            // after, so cadence evidence only counts live solves.
+            int[] ticks = new int[parts.Count];
+            for (int i = 0; i < parts.Count; i++) ticks[i] = parts[i].bench_tick;
             for (int i = 0; i < n; i++)
             {
                 begin(dt);
@@ -358,6 +363,7 @@ namespace UV2.Live
                 end();
                 reset_history();
             }
+            for (int i = 0; i < parts.Count; i++) parts[i].bench_tick = ticks[i];
         }
 
         // re-zeroes the velocity history so consecutive warm-up steps do not

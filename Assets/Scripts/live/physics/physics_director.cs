@@ -38,6 +38,9 @@ namespace UV2.Live
         const float PHYSICS_STEP = 1f / 60f;
         const int MAX_STEPS_PER_FRAME = 2;
         float step_acc;
+        int render_count;
+        int solve_count;
+        float probe_t;
 
         void Awake()
         {
@@ -156,6 +159,10 @@ namespace UV2.Live
             // still runs the write path so the pose stays consistent.
             bool paused = clock != null && clock.paused;
 
+            // cadence probe: renders + solves per second, logged once a
+            // second. bench evidence of the accumulator's actual rate.
+            render_count++;
+
             // gate the whole pass on the accumulator: at 120fps the sim
             // steps every other frame; below 60 it catches up at most 2
             // steps per frame. warm-up runs outside the gate (once, on
@@ -166,7 +173,6 @@ namespace UV2.Live
             if (step_frame)
             {
                 step_acc += dt;
-                steps = 0;
                 while (step_acc >= PHYSICS_STEP && steps < MAX_STEPS_PER_FRAME)
                 {
                     step_acc -= PHYSICS_STEP;
@@ -177,6 +183,17 @@ namespace UV2.Live
                 if (step_acc > MAX_STEPS_PER_FRAME * PHYSICS_STEP)
                     step_acc = 0f;
                 step_frame = steps > 0;
+            }
+
+            // probe tally AFTER the gate math, logged once per second.
+            solve_count += steps;
+            probe_t += dt;
+            if (probe_t >= 1f)
+            {
+                UV2.App.trace_log.write($"phys cadence: {render_count} renders/s, {solve_count} solves/s, avg dt {probe_t / render_count * 1000f:0.0}ms");
+                render_count = 0;
+                solve_count = 0;
+                probe_t = 0f;
             }
 
             foreach (var cs in sims)
