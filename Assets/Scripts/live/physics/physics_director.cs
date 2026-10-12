@@ -30,6 +30,15 @@ namespace UV2.Live
         readonly List<chara_sim> sims = new();
         timeline_clock clock;
 
+        // fixed 60hz physics stepping: the solver's constants are authored
+        // for exactly 60 steps per second (the game's own scheduling at
+        // fps mode 1). rendering may run faster or stall; the accumulator
+        // steps the sim on a 1/60s grid, capped at 2 catch-up steps per
+        // frame so a stall never produces giant solve steps.
+        const float PHYSICS_STEP = 1f / 60f;
+        const int MAX_STEPS_PER_FRAME = 2;
+        float step_acc;
+
         void Awake()
         {
             instance = this;
@@ -146,6 +155,30 @@ namespace UV2.Live
             // paused (clock held) = IsDeltaTimeZero: skip the solve; the game
             // still runs the write path so the pose stays consistent.
             bool paused = clock != null && clock.paused;
+
+            // gate the whole pass on the accumulator: at 120fps the sim
+            // steps every other frame; below 60 it catches up at most 2
+            // steps per frame. warm-up runs outside the gate (once, on
+            // scheduling). every stepping frame steps ALL characters so
+            // their phases stay in lockstep.
+            bool step_frame = !paused;
+            int steps = 0;
+            if (step_frame)
+            {
+                step_acc += dt;
+                steps = 0;
+                while (step_acc >= PHYSICS_STEP && steps < MAX_STEPS_PER_FRAME)
+                {
+                    step_acc -= PHYSICS_STEP;
+                    steps++;
+                }
+                // a stall longer than the cap discards the backlog instead
+                // of bursting giant solves; the next frame resumes in phase.
+                if (step_acc > MAX_STEPS_PER_FRAME * PHYSICS_STEP)
+                    step_acc = 0f;
+                step_frame = steps > 0;
+            }
+
             foreach (var cs in sims)
             {
                 if (cs?.sim == null) continue;
@@ -157,8 +190,16 @@ namespace UV2.Live
                     cs.warm_scheduled = false;
                     continue;
                 }
-                if (paused) continue;
-                cs.sim.begin(dt);
+                if (!step_frame)
+                {
+                    // non-step frame (120fps cadence or catch-up exhausted):
+                    // hold the last solved pose — the write path runs every
+                    // frame so the rig never flashes the raw animation pose.
+                    cs.sim.hold();
+                    if (cs.skirt != null) cs.skirt.update();
+                    continue;
+                }
+                cs.sim.begin(PHYSICS_STEP * steps);
                 cs.sim.update(collision_switch: true);
                 cs.sim.end();
                 // the skirt knee-correction runs after the spring solve (the

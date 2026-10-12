@@ -274,6 +274,23 @@ namespace UV2.Live
         }
 
         // EndSimulation: write the solved rotations back to the bones.
+        // non-step frame: write the last solved pose without solving. the
+        // write path must run every rendered frame (the game's PostSpring
+        // does the same on frames the native solve is skipped).
+        public void hold()
+        {
+            simulating = false;
+            foreach (var p in parts)
+            {
+                if (p == null || !p.apply_transform) continue;
+                foreach (var chain in p.chains)
+                {
+                    if (chain?.records == null || chain.records.Length == 0) continue;
+                    chain.write_back(null);
+                }
+            }
+        }
+
         public void end()
         {
             simulating = false;
