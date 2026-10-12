@@ -29,12 +29,13 @@ namespace UV2.Live
         // (stiffness/drag/gravity multipliers) and the per-part group rate;
         // step_scale normalizes the fixed-step constants. the root record
         // seeds from its own animated world position (GatherRootSpring).
+        // hip_rate < 0 disables the hip-move damper for the part.
         public static void solve(spring_chain chain,
             Vector3 root_anim_pos, Quaternion parent_work_rot,
             float stiffness_rate, float drag_rate, float gravity_rate,
             Vector3 wind, float wind_strength, float step_scale,
             bool collision_switch, spring_collider[] colliders,
-            float spring_rate)
+            float spring_rate, float hip_rate)
         {
             var rs = chain.records;
             if (rs == null || rs.Length == 0) return;
@@ -56,14 +57,14 @@ namespace UV2.Live
                 }
 
                 step(ref rs[i], stiffness_rate, drag_rate, gravity_rate, wind,
-                    wind_strength, step_scale, collision_switch, colliders, spring_rate);
+                    wind_strength, step_scale, collision_switch, colliders, spring_rate, hip_rate);
             }
         }
 
         // one bone, one step.
         private static void step(ref spring_record r, float stiffness_rate, float drag_rate,
             float gravity_rate, Vector3 wind, float wind_strength, float step_scale,
-            bool collision_switch, spring_collider[] colliders, float spring_rate)
+            bool collision_switch, spring_collider[] colliders, float spring_rate, float hip_rate)
         {
             // 1-2. velocity proxy + history shift (diff is the NEGATED displacement)
             Vector3 diff = r.prev_target - r.target_position;
@@ -84,6 +85,14 @@ namespace UV2.Live
             // lag term: pulls the integrated position toward (lag x) the previous
             // position; lag = 3.0 (normal) or 0.9999 x MoveSpringApplyRate (dynamic).
             float lag = dynamic ? 0.9999f * r.move_rate : 3.0f;
+            // hip-move damper (InternalMono @ 0x7ff8e49a8c70): the frame's hip
+            // rate blends the damping toward the rest line; hip_rate < 0 = the
+            // part carries no hip params, the blend is skipped entirely.
+            if (hip_rate >= 0f)
+            {
+                float hip_blend = (1f - r.move_rate) * Mathf.Clamp01(hip_rate) + r.move_rate;
+                lag *= hip_blend;
+            }
             force -= 2f * (r.prev_target * lag - r.target_position);
             // gravity: plain -Y in the shipped path, /10000 and /stepScale
             force.y -= r.gravity * gravity_rate * spring_rate / (10000f * Mathf.Max(step_scale, 1e-6f));
@@ -129,6 +138,14 @@ namespace UV2.Live
                 e = spring_math.clamp_euler(e, r.limit_min, r.limit_max);
             world = Quaternion.Euler(e * (30f * Mathf.Deg2Rad)) * r.parent_rot;
             r.final_rot = world;
+
+            // the dynamic-ratio blend (InternalMono tail @ 0x7ff8e49a8c70):
+            // a bone whose DynamicRatio < 1 lerps its local rotation toward the
+            // animation's own pose by the ratio — partial animation tracking on
+            // top of the spring solve (tail chains, bust).
+            if (r.dynamic_ratio < 1f && r.dynamic_ratio != 1f)
+                r.final_rot = Quaternion.Lerp(r.final_rot,
+                    r.anim_local * r.parent_rot, r.dynamic_ratio);
         }
 
         // sphere/capsule push-out to (radius + collider radius), then re-snap.

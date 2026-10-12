@@ -71,7 +71,7 @@ namespace UV2.Live
                 if (rf.instance != null)
                     rf.instance.transform.SetParent(transform, false);
 
-            sims.Add(new chara_sim { root = transform, sim = sim, refs = refs.ToArray() });
+            sims.Add(new chara_sim { root = character_root, sim = sim, refs = refs.ToArray() });
             // a formation key may have set the amplitude rate before the part
             // bound; every part starts at the current rate.
             if (pending_rate != 1f)

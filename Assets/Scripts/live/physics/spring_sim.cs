@@ -20,10 +20,23 @@ namespace UV2.Live
             public float wind_power_rate = 1f;    // per-part windPowerRate (clamped 0..1)
             public bool apply_transform = true;   // IsApplyTailTransform gates the tail's write
             public int bench_tick;                 // per-part bench sample counter
+
+            // hip-move damper: the part's main container params (IsEnableHipMoveParam).
+            // negative influence distance = the damper is disabled for the part.
+            public bool hip_enabled;
+            public float hip_influence_distance = -1f;
+            public float hip_influence_max_distance = -1f;
+            public float hip_rate = 1f;           // last frame's rate (blend input)
         }
 
         public List<part_state> parts = new List<part_state>();
         public spring_wind wind;                  // null when no container enabled wind
+
+        // hip-move damper source: the character's Position/Hip transform and
+        // the previous-frame position it moved from.
+        public Transform hip_transform;
+        Vector3 hip_prev_pos;
+        bool hip_prev_valid;
 
         // per-part collision tables (the game keeps one per part; the chain
         // rows reference rows by name within their part's table).
@@ -176,6 +189,31 @@ namespace UV2.Live
 
             refresh_colliders();
 
+            // hip-move damper: measure the frame's hip displacement and
+            // resolve each part's rate (CySpringController.UpdateSpring's
+            // per-frame path). a missing hip or a first frame disables the
+            // blend (rate stays 1).
+            if (hip_transform != null)
+            {
+                Vector3 hip_pos = hip_transform.position;
+                float hip_dist = hip_prev_valid
+                    ? Vector3.Distance(hip_pos, hip_prev_pos) : 0f;
+                hip_prev_pos = hip_pos;
+                hip_prev_valid = true;
+                foreach (var p in parts)
+                {
+                    if (p == null) continue;
+                    p.hip_rate = get_hip_move_rate(
+                        p.hip_enabled, p.hip_influence_distance,
+                        p.hip_influence_max_distance, hip_dist);
+                }
+            }
+            else
+            {
+                foreach (var p in parts)
+                    if (p != null) p.hip_rate = -1f;
+            }
+
             if (suppression_armed)
             {
                 apply_suppression();
@@ -202,6 +240,13 @@ namespace UV2.Live
                     // the root's parent work: the live rig transform above it.
                     Quaternion parent_rot = rt.parent != null ? rt.parent.rotation : Quaternion.identity;
 
+                    // the animation's current local pose, gathered fresh every
+                    // frame (the dynamic-ratio blend target; GatherRootSpring's
+                    // AnimationRotation slot).
+                    for (int bi = 0; bi < chain.records.Length; bi++)
+                        if (chain.bones[bi] != null)
+                            chain.records[bi].anim_local = chain.bones[bi].localRotation;
+
                     // the root's animated world position: the solver seeds the
                     // root's SelfPosition from its own animated transform.
                     Vector3 root_anim_pos = rt.position;
@@ -213,7 +258,7 @@ namespace UV2.Live
                     spring_solver.solve(chain, root_anim_pos, parent_rot,
                         stiffness_rate, drag_rate, gravity_rate,
                         wind_vec, wind_power, step_scale, collision_switch,
-                        part_colliders, p.spring_rate);
+                        part_colliders, p.spring_rate, p.hip_rate);
 
                     // suppression easing toward the animated pose (1cm/frame)
                     if (suppression_pending)
@@ -259,6 +304,21 @@ namespace UV2.Live
 
         // samples 5 consecutive steps at startup then every 120th step (~2s).
         static bool bench_sample(int n) => n <= 5 || n % 120 == 0;
+
+        // hip-move rate, the shipped solver's anti-fling damper
+        // (GetHipMoveRate @ 0x7ff8e496a2b0): returns -1 when the part carries
+        // no hip params (damper off), 1 inside the influence distance, a
+        // linear ramp toward 0 across the influence band, 0 beyond the max.
+        static float get_hip_move_rate(bool enabled, float influence, float max_distance,
+            float hip_dist)
+        {
+            if (!enabled) return -1f;
+            if (hip_dist <= influence) return 1f;
+            if (hip_dist >= max_distance && hip_dist != max_distance) return 0f;
+            // the binary's equality edge: hip_dist == max_distance returns the
+            // ramp result below (guard division by a zero band width).
+            return 1f - (max_distance - hip_dist) / (max_distance - influence);
+        }
 
         // warm-up: n = ceil(60 * t) full begin/update/end passes at dt=1/60
         // (the game always warms at 60; fork WarmUpCySpring), history reset

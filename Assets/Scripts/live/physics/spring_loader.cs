@@ -100,6 +100,10 @@ namespace UV2.Live
         {
             if (refs == null || refs.Count == 0 || character == null) return false;
 
+            // the hip-move damper source: the rig's Position/Hip transform.
+            var hip = character.Find("Position/Hip");
+            if (hip != null) sim.hip_transform = hip;
+
             var tables = new Dictionary<spring_sim.part, List<collision_param>>();
             var claimed = new HashSet<string>(); // first container naming a bone wins
 
@@ -111,6 +115,16 @@ namespace UV2.Live
                     ? spring_sim.part.tail
                     : rf.source == spring_source.body ? spring_sim.part.body : spring_sim.part.head;
                 var part = sim.part_or_create(part_id);
+
+                // the hip-move damper params: the part's MAIN container carries
+                // them (first container of the part wins, matching the game's
+                // one springData per parts-array slot).
+                if (!part.hip_enabled && entry.hip_influence_distance >= 0f)
+                {
+                    part.hip_enabled = true;
+                    part.hip_influence_distance = entry.hip_influence_distance;
+                    part.hip_influence_max_distance = entry.hip_influence_max_distance;
+                }
 
                 // collision rows first: chains skip transforms the collision
                 // table owns (the game's CreateChild rule).
