@@ -2,40 +2,52 @@ using UnityEngine;
 
 namespace UV2.Live
 {
-    // the per-frame solver, transcribed from the decoded contract: verlet
-    // integrate, hard length snap, collision push-out + re-snap, parent-local
-    // euler limit clamp, final rotation write. one pass, no iteration.
+    // the per-frame solver, transcribed from the shipped solver's native
+    // path with every constant register-verified (UpdateNativeClothInternalMono
+    // 0x7ff8e49a8c70, UpdateForce 0x7ff8e49a8a80, CollisionDetect
+    // 0x7ff8e49a7630, CySpringController's update order).
     //
-    // the verified 13-step per-bone order:
-    //   diff = prev - target (NEGATED velocity); prev = target
-    //   aim  = parent_rot * bone_axis
-    //   force  = aim * stiffness * stiffnessRate * groupRate
-    //   force += diff * 0.5 * drag * dragRate * groupRate   (diff already halved)
-    //   force += connected_force (accumulated between steps)
-    //   force.y -= gravity * gravityRate / (10000 * stepScale)
-    //   force += wind * per-bone wind bit
-    //   target = target - diff + force                      (verlet)
-    //   d = normalize(target - self); target = d * boneDistance + self  (hard snap)
-    //   collisions: push-out + re-snap, index order, sphere|capsule only
-    //   rot = FromToRotation(aim, d) * parent_rot
-    //   euler = RoundAngle(ToEuler(Inverse(parent_rot) * rot)), clamp if isLimit
-    //   final = FromEuler(clamped * 30 * deg2rad) * parent_rot
-    //
-    // the driver couples records: self[i] = target[i-1], parent_rot[i] =
-    // init_local[i-1] * final[i-1]. force is rebuilt fresh every step.
+    // per-bone order (timescale 1.0, one step per rendered frame):
+    //   base   = parent_now * init_local            (the animated rest frame)
+    //   aim    = base * bone_axis                   (rest line direction)
+    //   diff   = prev_target - target               (halved when !is60fps)
+    //   force  = aim * (stiffRate*stiffness/1000/30)
+    //   force += diff * (dragRate*drag/100/30)
+    //   force.y -= gravityRate*gravity/10000/30
+    //   force += wind lerped by per-bone slow/fast slot pairs
+    //   force += connected/30
+    //   new    = target - diff*ts + force*pool*ts   (pool 1.5@60fps, 3.0 else)
+    //   hip blend: ((1-msa)*clamp(hip)+msa)*springRate, sqrt@60fps;
+    //             blend<1 lerps new toward the rest line (anti-fling)
+    //   snap to self at bone_distance; collisions; rotation write:
+    //   final  = FromToRotation(aim, dir) * base
+    //   limit: euler delta vs base, wrap, clamp, base*Euler(clamped)
+    //   dynamic_ratio<1: init_local lerps toward the animated pose
+    //   target re-projected through final for the next bone's anchor
     public static class spring_solver
     {
+        // the binary's force-term divisors (.rdata)
+        const float STIFFNESS_DIV = 1000f;
+        const float DRAG_DIV = 100f;
+        const float GRAVITY_DIV = 10000f;
+        // the constant scale arg InternalMono passes to UpdateForce
+        const float FORCE_SCALE = 30f;
+        // the force pool: 1.5 in 60fps mode, doubled otherwise
+        const float POOL_60 = 1.5f;
+        const float POOL_OTHER = 3.0f;
+        // non-60fps mode halves the diff (velocity) term
+        const float DIFF_SCALE_NON_60 = 0.5f;
+
         // solves one chain for one frame. rates are the caller's globals
-        // (stiffness/drag/gravity multipliers) and the per-part group rate;
-        // step_scale normalizes the fixed-step constants. the root record
-        // seeds from its own animated world position (GatherRootSpring).
-        // hip_rate < 0 disables the hip-move damper for the part.
+        // (stiffness/drag/gravity multipliers), the per-part group rate,
+        // and the frame's hip-move rate (< 0 disables the damper). the root
+        // record seeds from its own animated transform (GatherRootSpring).
         public static void solve(spring_chain chain,
             Vector3 root_anim_pos, Quaternion parent_work_rot,
             float stiffness_rate, float drag_rate, float gravity_rate,
-            Vector3 wind, float wind_strength, float step_scale,
-            bool collision_switch, spring_collider[] colliders,
-            float spring_rate, float hip_rate)
+            Vector3 wind, float wind_power, float timescale,
+            bool is_60fps, bool collision_switch, spring_collider[] colliders,
+            float spring_rate, float hip_rate, float add_hip_rate)
         {
             var rs = chain.records;
             if (rs == null || rs.Length == 0) return;
@@ -50,107 +62,141 @@ namespace UV2.Live
                 if (i > 0)
                 {
                     // the driver: this bone's base rides the previous bone's
-                    // solve; its parent frame = the previous bone's solved
-                    // world rotation (the bone it actually hangs from).
+                    // solved position; its parent frame = the previous
+                    // bone's solved world rotation.
                     rs[i].self_position = rs[i - 1].target_position;
                     rs[i].parent_rot = rs[i - 1].final_rot;
                 }
 
                 step(ref rs[i], stiffness_rate, drag_rate, gravity_rate, wind,
-                    wind_strength, step_scale, collision_switch, colliders, spring_rate, hip_rate);
+                    wind_power, timescale, is_60fps, collision_switch, colliders,
+                    spring_rate, hip_rate, add_hip_rate);
             }
         }
 
         // one bone, one step.
         private static void step(ref spring_record r, float stiffness_rate, float drag_rate,
-            float gravity_rate, Vector3 wind, float wind_strength, float step_scale,
-            bool collision_switch, spring_collider[] colliders, float spring_rate, float hip_rate)
+            float gravity_rate, Vector3 wind, float wind_power, float timescale,
+            bool is_60fps, bool collision_switch, spring_collider[] colliders,
+            float spring_rate, float hip_rate, float add_hip_rate)
         {
-            // 1-2. velocity proxy + history shift (diff is the NEGATED displacement)
+            // the animated rest frame: the owner bone's bind local pose under
+            // the parent's current world rotation, carrying the child's bind
+            // offset into the current frame (the binary's aim quaternion).
+            Quaternion base_rot = r.parent_rot * r.init_local;
+            Vector3 aim = base_rot * r.bone_axis;
+
+            // velocity proxy + history shift; non-60fps mode halves it.
             Vector3 diff = r.prev_target - r.target_position;
+            if (!is_60fps) diff *= DIFF_SCALE_NON_60;
             r.prev_target = r.target_position;
 
-            // 3. rest direction in the current parent frame
-            Vector3 aim = r.parent_rot * r.bone_axis;
+            // UpdateForce: rebuilt fresh every step, all terms carry the
+            // serialized divisors and the constant scale of 30.
+            float stiff_f = stiffness_rate * r.stiffness / (STIFFNESS_DIV * FORCE_SCALE);
+            Vector3 force = aim * stiff_f;
+            float drag_f = drag_rate * r.drag / (DRAG_DIV * FORCE_SCALE);
+            force += diff * drag_f;
+            force.y -= gravity_rate * r.gravity / (GRAVITY_DIV * FORCE_SCALE);
 
-            // 4-8. force accumulation (rebuilt fresh every step)
-            Vector3 force = aim * (r.stiffness * stiffness_rate * spring_rate);
-            bool dynamic = r.dynamic_ratio != 1f;
-            // drag: the displacement fed into the force is halved when the bone
-            // has no dynamic ratio; the dynamic-ratio path scales it instead.
-            float drag_scale = dynamic ? r.dynamic_ratio : 0.5f;
-            force += diff * (drag_scale * r.drag * drag_rate * spring_rate);
+            // wind: per-bone slow/fast slot pairs lerped by the clamped
+            // power; the vertical pair drives y, the horizontal pair x/z.
+            float wp = Mathf.Clamp01(wind_power);
+            float v_rate = Mathf.Lerp(r.wind_rates.x, r.wind_rates.y, wp);
+            float h_rate = Mathf.Lerp(r.wind_rates.z, r.wind_rates.w, wp);
+            force.x += h_rate * wind.x;
+            force.y += v_rate * wind.y;
+            force.z += h_rate * wind.z;
+
             // connected-bone force accumulated between steps
-            force += r.connected_force;
-            // lag term: pulls the integrated position toward (lag x) the previous
-            // position; lag = 3.0 (normal) or 0.9999 x MoveSpringApplyRate (dynamic).
-            float lag = dynamic ? 0.9999f * r.move_rate : 3.0f;
-            // hip-move damper (InternalMono @ 0x7ff8e49a8c70): the frame's hip
-            // rate blends the damping toward the rest line; hip_rate < 0 = the
-            // part carries no hip params, the blend is skipped entirely.
-            if (hip_rate >= 0f)
-            {
-                float hip_blend = (1f - r.move_rate) * Mathf.Clamp01(hip_rate) + r.move_rate;
-                lag *= hip_blend;
-            }
-            force -= 2f * (r.prev_target * lag - r.target_position);
-            // gravity: plain -Y in the shipped path, /10000 and /stepScale
-            force.y -= r.gravity * gravity_rate * spring_rate / (10000f * Mathf.Max(step_scale, 1e-6f));
-            // wind: the per-bone wind rate gates the add (rate 0 = windless bone)
-            if (wind_strength > 0f)
-            {
-                float vr = r.wind_rates.x != 0f || r.wind_rates.y != 0f ? 1f : 0f;
-                float hr = r.wind_rates.z != 0f || r.wind_rates.w != 0f ? 1f : 0f;
-                force += wind * (vr + hr > 0f ? 1f : 0f) * wind_strength;
-            }
+            force += r.connected_force / FORCE_SCALE;
             r.force = force;
 
-            // 9. verlet integrate
-            r.target_position = r.target_position - diff + force;
+            // the verlet rebuild (timescale 1.0 in the game's live path)
+            float pool = is_60fps ? POOL_60 : POOL_OTHER;
+            Vector3 new_target = r.target_position - diff * timescale
+                + force * (pool * timescale);
 
-            // 10. hard length snap to the parent's solved position
-            Vector3 d = r.target_position - r.self_position;
+            // hip-move damper: the frame's hip rate (add-spring chains take
+            // the add rate) blends through the move-spring apply rate into
+            // the group rate; 60fps mode takes the square root; a result
+            // under 1 pulls the target toward the rest line (anti-fling).
+            float sel = r.is_add_spring != 0 ? add_hip_rate : hip_rate;
+            if (sel >= 0f)
+            {
+                float clamped = Mathf.Clamp01(sel);
+                float blend = (1f - r.move_rate) * clamped + r.move_rate;
+                blend *= spring_rate;
+                if (is_60fps) blend = blend >= 0f ? Mathf.Sqrt(blend) : 0f;
+                if (blend < 1f)
+                {
+                    float t = Mathf.Clamp(blend, 0f, 1f);
+                    Vector3 rest_line = r.self_position + aim * r.bone_distance;
+                    new_target.x = (new_target.x - rest_line.x) * t + rest_line.x;
+                    new_target.y = (new_target.y - rest_line.y) * t + rest_line.y;
+                    new_target.z = (new_target.z - rest_line.z) * t + rest_line.z;
+                }
+            }
+
+            // hard length snap to the base position
+            Vector3 d = new_target - r.self_position;
             float d_len = d.magnitude;
-            if (d_len > 1e-8f)
-            {
-                d /= d_len;
-                r.target_position = d * r.bone_distance + r.self_position;
-            }
-            else
-            {
-                d = aim;
-            }
+            if (d_len > 1e-8f) d /= d_len;
+            else d = aim;
+            r.target_position = d * r.bone_distance + r.self_position;
 
-            // 11. collision push-out + re-snap, in index order
+            // collision push-out + re-snap, in index order
             if (collision_switch && r.check_chara_collision != 0 &&
                 r.active_collisions > 0 && colliders != null)
-                resolve_collisions(ref r, colliders, d);
+                resolve_collisions(ref r, colliders);
 
-            // 12-13. rotation solve + parent-local limit clamp
+            // the rotation write: FromToRotation maps the rest direction
+            // onto the solved direction, applied over the base frame.
             Vector3 solved_dir = (r.target_position - r.self_position).normalized;
-            Quaternion world = Quaternion.FromToRotation(aim, solved_dir) * r.parent_rot;
-            // the euler round-trip applies to every bone: wrap to ±180, clamp
-            // under isLimit, then rebuild with the x30 degree time constant
-            // (a per-step rotation damper at the game's fixed 60fps).
-            Vector3 e = spring_math.round_angle(
-                (Quaternion.Inverse(r.parent_rot) * world).eulerAngles);
-            if (r.is_limit != 0)
-                e = spring_math.clamp_euler(e, r.limit_min, r.limit_max);
-            world = Quaternion.Euler(e * (30f * Mathf.Deg2Rad)) * r.parent_rot;
-            r.final_rot = world;
+            Quaternion final = Quaternion.FromToRotation(aim, solved_dir) * base_rot;
 
-            // the dynamic-ratio blend (InternalMono tail @ 0x7ff8e49a8c70):
-            // a bone whose DynamicRatio < 1 lerps its local rotation toward the
-            // animation's own pose by the ratio — partial animation tracking on
-            // top of the spring solve (tail chains, bust).
+            // limit clamp: the euler delta from the base pose, wrapped to
+            // (-180,180], clamped per axis against min/max, rebuilt on base.
+            if (r.is_limit != 0)
+            {
+                Quaternion relative = final * Quaternion.Inverse(base_rot);
+                Vector3 e = wrap_euler(relative.eulerAngles);
+                e.x = Mathf.Clamp(e.x, -r.limit_min.x, r.limit_max.x);
+                e.y = Mathf.Clamp(e.y, -r.limit_min.y, r.limit_max.y);
+                e.z = Mathf.Clamp(e.z, -r.limit_min.z, r.limit_max.z);
+                final = base_rot * Quaternion.Euler(e);
+            }
+            r.final_rot = final;
+
+            // the dynamic-ratio relax: a bone whose ratio sits under 1 lerps
+            // its rest local rotation toward the animation's own pose by the
+            // ratio, so the rest line chases the animation with lag (the
+            // tail/bust follow-through; the binary mutates InitLocalRotation).
             if (r.dynamic_ratio < 1f && r.dynamic_ratio != 1f)
-                r.final_rot = Quaternion.Lerp(r.final_rot,
-                    r.anim_local * r.parent_rot, r.dynamic_ratio);
+                r.init_local = Quaternion.Lerp(r.init_local,
+                    r.anim_local, r.dynamic_ratio);
+
+            // re-project through the final rotation so the position the
+            // next bone anchors on and the written rotation agree (the
+            // binary's post-solve overwrite; a no-op without collisions).
+            Vector3 axis_dir = (r.final_rot * r.bone_axis).normalized;
+            r.target_position = axis_dir * r.bone_distance + r.self_position;
         }
 
-        // sphere/capsule push-out to (radius + collider radius), then re-snap.
-        // type 1 (plane) is compiled out in the shipped build: skipped here.
-        private static void resolve_collisions(ref spring_record r, spring_collider[] colliders, Vector3 seg_dir)
+        // to-euler in [0,360) wrapped to (-180,180] (MakePositive + the
+        // binary's `if (180 < v) v -= 360` step)
+        static Vector3 wrap_euler(Vector3 e)
+        {
+            if (e.x > 180f) e.x -= 360f;
+            if (e.y > 180f) e.y -= 360f;
+            if (e.z > 180f) e.z -= 360f;
+            return e;
+        }
+
+        // sphere/capsule push-out to (radius + collider radius), then a
+        // re-snap of the segment length. type 1 (plane) is compiled out in
+        // the shipped build: skipped here.
+        private static void resolve_collisions(ref spring_record r, spring_collider[] colliders)
         {
             for (int c = 0; c < r.active_collisions; c++)
             {
@@ -168,8 +214,8 @@ namespace UV2.Live
                 }
                 else if (col.type == spring_collider_type.capsule)
                 {
-                    // closest point on the segment (0 <= t < length), then the
-                    // same push-out; end caps fall out of the clamped projection.
+                    // closest point on the segment, then the same push-out;
+                    // end caps fall out of the clamped projection.
                     Vector3 seg = col.position2 - col.position;
                     float len2 = seg.sqrMagnitude;
                     float t = len2 > 1e-10f

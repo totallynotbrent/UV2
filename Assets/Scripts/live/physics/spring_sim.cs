@@ -257,8 +257,8 @@ namespace UV2.Live
 
                     spring_solver.solve(chain, root_anim_pos, parent_rot,
                         stiffness_rate, drag_rate, gravity_rate,
-                        wind_vec, wind_power, step_scale, collision_switch,
-                        part_colliders, p.spring_rate, p.hip_rate);
+                        wind_vec, wind_power, 1f, true, collision_switch,
+                        part_colliders, p.spring_rate, p.hip_rate, p.hip_rate);
 
                     // suppression easing toward the animated pose (1cm/frame)
                     if (suppression_pending)
@@ -295,7 +295,13 @@ namespace UV2.Live
                         for (int i = 0; i < chain.solve_count; i++)
                             delta = Mathf.Max(delta,
                                 Quaternion.Angle(chain.records[i].final_rot, chain.bones[i].rotation));
-                        trace_log.write($"spring step: part {p.id} chain '{chain.root_transform.name}' bones {chain.solve_count} maxdelta {delta:0.00}deg");
+                        // world position of the tip record + its height
+                        // relative to the chain root: the direction check
+                        // (hair must hang below its anchor, tail behind).
+                        Vector3 tip = chain.records[chain.solve_count - 1].target_position;
+                        Vector3 root_pos = chain.root_transform.position;
+                        Vector3 rel = tip - root_pos;
+                        trace_log.write($"spring step: part {p.id} chain '{chain.root_transform.name}' bones {chain.solve_count} maxdelta {delta:0.00}deg tip_rel ({rel.x:0.000},{rel.y:0.000},{rel.z:0.000}) len {rel.magnitude:0.000}");
                     }
                     chain.write_back(null);
                 }

@@ -38,6 +38,7 @@ namespace UV2.Live
         // flags + collision bindings
         public byte skip;                  // whole-chain skip when set on record 0
         public byte check_chara_collision;
+        public byte is_add_spring;         // add-spring chains take the add hip rate
         public int active_collisions;      // count (indices resolved per character)
         public int[] collision_indices;    // up to 16 slots; beyond 16 counted only
         public int parent_work;            // index into the character's parent work table
