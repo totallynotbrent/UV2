@@ -16,11 +16,28 @@ namespace UV2.Live
 
         public void set_timescale(float scale) => _rate = scale <= 0f ? 1f : scale;
 
-        public void pause() => paused = true;
+        public void pause()
+        {
+            paused = true;
+            if (_master != null && _master.isPlaying) _master.Pause();
+        }
 
-        public void resume() => paused = false;
+        public void resume()
+        {
+            paused = false;
+            if (_master != null && !_master.isPlaying && _master.clip != null) _master.UnPause();
+        }
 
-        public void seek(float seconds) => _time = Mathf.Max(0f, seconds);
+        public void seek(float seconds)
+        {
+            _time = Mathf.Max(0f, seconds);
+            // the bound master follows the scrub so the audio stays in sync.
+            if (_master != null && _master.clip != null)
+            {
+                _time = Mathf.Min(_time, _master.clip.length);
+                _master.time = _time;
+            }
+        }
 
         // the audio source the clock locks to; when set, the clock reads the
         // music position instead of accumulating delta.

@@ -116,6 +116,9 @@ namespace UV2.UI
             {
                 trace_log.write("concert open: SUCCESS - tearing down the summary ui");
                 Destroy(_pending_canvas);
+                // the control panel (scrub/pause/settings) rides the concert.
+                var panel_go = new GameObject("control_panel");
+                panel_go.AddComponent<UV2.UI.control_panel>().open(loader);
                 Destroy(gameObject);
                 yield break;
             }

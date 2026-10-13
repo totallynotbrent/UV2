@@ -889,6 +889,33 @@ namespace UV2.Live
                 add_formation(ws, "place20", fos.place20Keys);
             }
 
+            // charaWind: per-slot spring wind keys; a song without any
+            // enabled key runs its springs windless (1004 is one).
+            var cw = sheet.charaWind;
+            if (cw != null)
+            {
+                add_chara_wind(ws, "center", cw.centerKeys);
+                add_chara_wind(ws, "left1", cw.left1Keys);
+                add_chara_wind(ws, "right1", cw.right1Keys);
+                add_chara_wind(ws, "left2", cw.left2Keys);
+                add_chara_wind(ws, "right2", cw.right2Keys);
+                add_chara_wind(ws, "place06", cw.place06Keys);
+                add_chara_wind(ws, "place07", cw.place07Keys);
+                add_chara_wind(ws, "place08", cw.place08Keys);
+                add_chara_wind(ws, "place09", cw.place09Keys);
+                add_chara_wind(ws, "place10", cw.place10Keys);
+                add_chara_wind(ws, "place11", cw.place11Keys);
+                add_chara_wind(ws, "place12", cw.place12Keys);
+                add_chara_wind(ws, "place13", cw.place13Keys);
+                add_chara_wind(ws, "place14", cw.place14Keys);
+                add_chara_wind(ws, "place15", cw.place15Keys);
+                add_chara_wind(ws, "place16", cw.place16Keys);
+                add_chara_wind(ws, "place17", cw.place17Keys);
+                add_chara_wind(ws, "place18", cw.place18Keys);
+                add_chara_wind(ws, "place19", cw.place19Keys);
+                add_chara_wind(ws, "place20", cw.place20Keys);
+            }
+
             add_props_tracks(ws, sheet);
 
             add_facial_tracks(ws, sheet);
@@ -1003,6 +1030,40 @@ namespace UV2.Live
                 });
             }
             ws.formation[name] = list;
+        }
+
+        // maps one formation group's charaWind keys into the model.
+        private static void add_chara_wind(live_worksheet ws, string name,
+            Cutt.LiveTimelineKeyCharaWindDataList group)
+        {
+            if (group?.thisList == null || group.thisList.Count == 0) return;
+            var list = new List<chara_wind_key>();
+            foreach (var k in group.thisList)
+            {
+                var wp = k.WindParam ?? new Cutt.CySpringWindParam();
+                var ps = wp._powerScaleArray != null ? wp._powerScaleArray.ToArray() : new float[0];
+                list.Add(new chara_wind_key
+                {
+                    frame = k.frame,
+                    easing_type = k.easingType,
+                    enable_wind = k.IsEnableWind,
+                    enable_vertical = wp._isEnableVertical,
+                    enable_horizontal = wp._isEnableHorizontal,
+                    vertical_cycle = wp._verticalCycle,
+                    horizontal_cycle = wp._horizontalCycle,
+                    vertical_angle_width = wp._verticalAngleWidth,
+                    horizontal_angle_width = wp._horizontalAngleWidth,
+                    parts_mask = wp._partsMask,
+                    power_scale = new Vector3(
+                        ps.Length > 0 ? ps[0] : 1f,
+                        ps.Length > 1 ? ps[1] : 1f,
+                        ps.Length > 2 ? ps[2] : 1f),
+                    direction = wp._direction,
+                    right = wp._right,
+                    is_local_direction = wp._isLocalDirection,
+                });
+            }
+            ws.chara_wind[name] = list;
         }
 
         // loads the song's propsDataGroup; null when the bundle or propsSettings is absent.

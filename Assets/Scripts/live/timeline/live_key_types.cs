@@ -148,6 +148,24 @@ namespace UV2.Live
         public float cy_spring_rate;      // amplitude scale for the springs
     }
 
+    // charaWind track key: per-formation-group wind enable + param override.
+    [Serializable]
+    public class chara_wind_key : live_key
+    {
+        public byte enable_wind;
+        public byte enable_vertical;
+        public byte enable_horizontal;
+        public float vertical_cycle;
+        public float horizontal_cycle;
+        public float vertical_angle_width;
+        public float horizontal_angle_width;
+        public int parts_mask;
+        public Vector3 power_scale;        // per-part scales head/body/tail
+        public Vector3 direction;
+        public Vector3 right;
+        public byte is_local_direction;
+    }
+
     // one authored global-light key: the toon light direction for the frame.
     [Serializable]
     public class global_light_key
@@ -302,6 +320,9 @@ namespace UV2.Live
         public List<timescale_key> timescale = new();
         public List<List<motion_seq_key>> motion_sequences = new();
         public Dictionary<string, List<formation_key>> formation = new();
+        // charaWind: per-formation-group spring wind keys (1004 ships none
+        // enabled, so wind stays off unless a key turns it on).
+        public Dictionary<string, List<chara_wind_key>> chara_wind = new();
         public float total_frames;
 
         // propsList = per-prop render state; propsAttachList = joint attach + offset per frame.

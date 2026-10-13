@@ -556,6 +556,10 @@ namespace UV2.Live
         // the song clock, exposed for the -uv2frame seek mode in scene_boot.
         public timeline_clock song_clock { get { return clock; } }
 
+        // the music source, exposed for the control panel's seek bridge.
+        public AudioSource music_source { get { return _music_source; } }
+        private AudioSource _music_source;
+
         public System.Collections.IEnumerator open(selection_state sel) { yield return open_core(sel); }
 
         private AssetBundle load_bundle_keep(string name)
@@ -690,10 +694,13 @@ namespace UV2.Live
                 return 0;
             }
 
-            // tail textures: per-head rows first, then the _0000 set.
             string tail_stem = tail_instance.name.Replace("(Clone)", "");
+            int renderers = tail_mount.mount(character, tail_instance, s => trace_log.write($"chara {chara_id}: {s}"));
+            // textures load after the mount: the renderer must live under the
+            // character to be found; the material comes from the tail's own
+            // materials bundle when the prefab's slot did not resolve.
             load_tail_textures(character, chara_id, tail_stem);
-            return tail_mount.mount(character, tail_instance, s => trace_log.write($"chara {chara_id}: {s}"));
+            return renderers;
         }
 
         // loads texture bundles named tex_{tail}_{head}_{suffix} into the
@@ -723,13 +730,38 @@ namespace UV2.Live
             }
             if (loaded.Count == 0) return;
             int assigned = 0;
+
+            // the tail prefab ships an unresolved material slot; the tail's
+            // own materials bundle (mtl_{stem}) carries the real material.
+            Material tail_mat = null;
+            try
+            {
+                var mtl_row = meta_row($"3d/chara/tail/{tail_stem.Substring(4)}/materials/mtl_{tail_stem}");
+                if (mtl_row != null)
+                {
+                    var mtl_bundle = game_assets.open(mtl_row, config.data_root);
+                    if (mtl_bundle != null)
+                        tail_mat = mtl_bundle.LoadAsset<Material>(mtl_bundle.GetAllAssetNames().FirstOrDefault());
+                }
+            }
+            catch { }
+
             foreach (var r in character.GetComponentsInChildren<Renderer>(true))
             {
                 if (!r.name.Contains("Tail") && !r.name.Contains("tail")) continue;
                 var mats = r.materials;
-                foreach (var m in mats)
+                bool changed = false;
+                for (int mi = 0; mi < mats.Length; mi++)
                 {
-                    if (m == null || m.shader == null) continue;
+                    var m = mats[mi];
+                    if (m == null)
+                    {
+                        if (tail_mat == null) continue;
+                        m = tail_mat;
+                        mats[mi] = m;
+                        changed = true;
+                    }
+                    if (m.shader == null) continue;
                     Texture tex = null;
                     try { tex = m.GetTexture("_MainTex"); } catch { }
                     if (tex != null) continue;
@@ -749,8 +781,9 @@ namespace UV2.Live
                         } catch { }
                     }
                 }
+                if (changed) r.materials = mats;
             }
-            trace_log.write($"chara {chara_id} tail textures: {loaded.Count} loaded, {assigned} slots assigned");
+            trace_log.write($"chara {chara_id} tail textures: {loaded.Count} loaded, {assigned} slots assigned, mat {(tail_mat == null ? "none" : "set")}");
         }
 
         // loads a mesh prefab bundle by manifest name and returns the live instance.
@@ -1233,8 +1266,6 @@ namespace UV2.Live
             }
         }
 
-        private AudioSource music_source;
-
         // decodes the song's instrumental bank and starts playback; the clock locks to it.
         private void start_music(int music_id)
         {
@@ -1279,11 +1310,11 @@ namespace UV2.Live
             }
 
             var go = new GameObject("live_music");
-            music_source = go.AddComponent<AudioSource>();
-            music_source.clip = clip;
-            music_source.loop = false;
-            music_source.Play();
-            if (!force_free_clock) clock.bind_master(music_source);
+            _music_source = go.AddComponent<AudioSource>();
+            _music_source.clip = clip;
+            _music_source.loop = false;
+            _music_source.Play();
+            if (!force_free_clock) clock.bind_master(_music_source);
             else trace_log.write("clock: forced free-run for this run");
             trace_log.write($"music: oke playing ({clip.frequency}Hz, {clip.length:0.0}s, {waves.Count} waves)");
         }
