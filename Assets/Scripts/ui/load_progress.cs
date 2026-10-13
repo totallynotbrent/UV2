@@ -9,16 +9,28 @@ namespace UV2.UI
         public static string current = "";
         public static float started_at = -1f;
         public static float last_update = -1f;
-        private static int _seq;
-        private static string _last_key;
 
-        // publishes a phase line; repeated identical keys don't advance the
-        // sequence so per-chara progress still ticks via the count.
-        public static void report(string key)
+        // fraction of the open sequence complete (0..1), driven by the
+        // loader's phase marks; the bar renders this.
+        public static float fraction;
+        // the last four phase lines, oldest first — the loading screen
+        // shows the trail so slow steps are visible as they happen.
+        static readonly System.Collections.Generic.List<string> trail = new();
+        static string _last_key;
+
+        // phase marks: each report carries an optional fraction estimate.
+        public static void report(string key, float at = -1f)
         {
             float now = Time.realtimeSinceStartup;
             if (started_at < 0) started_at = now;
-            if (_last_key != key) { _seq++; _last_key = key; }
+            if (_last_key != key)
+            {
+                trail.Add(key);
+                if (trail.Count > 4) trail.RemoveAt(0);
+                _last_key = key;
+            }
+            if (at >= 0f) fraction = at;
+            else fraction = Mathf.Min(1f, fraction + 0.05f);
             last_update = now;
             current = key;
         }
@@ -30,5 +42,23 @@ namespace UV2.UI
             float elapsed = started_at < 0 ? 0f : now - started_at;
             return $"{current}  ({elapsed:0.0}s)";
         }
+
+        // the phase trail joined for the loading screen's detail lines.
+        public static string describe_trail()
+        {
+            if (trail.Count == 0) return "";
+            return string.Join("\n", trail);
+        }
+
+        public static void reset()
+        {
+            current = "";
+            started_at = -1f;
+            last_update = -1f;
+            fraction = 0f;
+            trail.Clear();
+            _last_key = null;
+        }
     }
 }
+

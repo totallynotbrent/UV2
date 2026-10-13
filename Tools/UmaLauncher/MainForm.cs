@@ -382,7 +382,15 @@ namespace UmaLauncher
                 MessageBox.Show("UV2.exe not found next to the launcher.", "Concert player", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dir, UseShellExecute = false });
+            // a stale control file from a previous run must not command this one.
+            try { File.Delete(Path.Combine(dir, "control.json")); } catch { }
+            try { File.Delete(Path.Combine(dir, "status.json")); } catch { }
+            var player = Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dir, UseShellExecute = false });
+            if (player != null)
+            {
+                ControlForm control = new(dir, player);
+                control.Show(this);
+            }
         }
 
         private static string EscapeJson(string text) =>
