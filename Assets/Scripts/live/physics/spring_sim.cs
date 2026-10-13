@@ -21,6 +21,14 @@ namespace UV2.Live
             public bool apply_transform = true;   // IsApplyTailTransform gates the tail's write
             public int bench_tick;                 // per-part bench sample counter
 
+            // clip-driven tail motion (PlayTailAnimation): while the motion
+            // clip animates this part's bones the dynamics ratio tweens to 0
+            // (rest line chases the animation, pure follow-through); when the
+            // clip stops, RemoveClipDrivenTailMotion tweens back to 1 over
+            // 0.5s. ratio_target holds the tween endpoint, ratio the value.
+            public float ratio_target = 1f;
+            public float ratio = 1f;
+
             // hip-move damper: the part's main container params (IsEnableHipMoveParam).
             // negative influence distance = the damper is disabled for the part.
             public bool hip_enabled;
@@ -31,6 +39,12 @@ namespace UV2.Live
 
         public List<part_state> parts = new List<part_state>();
         public spring_wind wind;                  // null when no container enabled wind
+
+        // the timeline's charaWind keys own the on/off; a song without an
+        // enabled key never blows (1004's container params stay dormant).
+        public bool wind_enabled = false;
+
+        public void set_wind_enabled(bool on) => wind_enabled = on;
 
         // hip-move damper source: the character's Position/Hip transform and
         // the previous-frame position it moved from.
@@ -224,14 +238,27 @@ namespace UV2.Live
         }
 
         // solves every part in order (head, body, tail).
-        public void update(bool collision_switch)
+        public void update(bool collision_switch, float step_dt = 0f)
         {
             if (!simulating) return;
             foreach (var p in parts)
             {
                 if (p == null || p.chains.Count == 0) continue;
-                float wind_power = p.has_wind && wind != null ? Mathf.Clamp01(p.wind_power_rate) : 0f;
+                float wind_power = wind_enabled && p.has_wind && wind != null ? Mathf.Clamp01(p.wind_power_rate) : 0f;
                 resolved.TryGetValue(p.id, out var part_colliders);
+
+                // clip-driven dynamics ratio: the game tweens this ONLY from
+                // PlayTailAnimation / RemoveClipDrivenTailMotion events — never
+                // from pose inspection — and 1004 fires none. the ratio stays
+                // pinned at 1 (pure physics) until an event source exists.
+                p.ratio = 1f;
+                p.ratio_target = 1f;
+                foreach (var chain in p.chains)
+                {
+                    if (chain == null || chain.records == null) continue;
+                    for (int bi = 0; bi < chain.records.Length; bi++)
+                        chain.records[bi].dynamic_ratio = 1f;
+                }
                 foreach (var chain in p.chains)
                 {
                     if (chain == null || chain.records == null) continue;
@@ -239,13 +266,6 @@ namespace UV2.Live
                     if (rt == null) continue;
                     // the root's parent work: the live rig transform above it.
                     Quaternion parent_rot = rt.parent != null ? rt.parent.rotation : Quaternion.identity;
-
-                    // the animation's current local pose, gathered fresh every
-                    // frame (the dynamic-ratio blend target; GatherRootSpring's
-                    // AnimationRotation slot).
-                    for (int bi = 0; bi < chain.records.Length; bi++)
-                        if (chain.bones[bi] != null)
-                            chain.records[bi].anim_local = chain.bones[bi].localRotation;
 
                     // the root's animated world position: the solver seeds the
                     // root's SelfPosition from its own animated transform.
@@ -319,6 +339,33 @@ namespace UV2.Live
                         Vector3 root_pos = chain.root_transform.position;
                         Vector3 rel = tip - root_pos;
                         trace_log.write($"spring step: part {p.id} chain '{chain.root_transform.name}' bones {chain.solve_count} maxdelta {delta:0.00}deg tip_rel ({rel.x:0.000},{rel.y:0.000},{rel.z:0.000}) len {rel.magnitude:0.000}");
+                        // tail probe: the tail pinned near 180deg needs the
+                        // per-bone breakdown to localize the flip. aim is
+                        // the rest direction, dir the solved direction.
+                        if (p.id == spring_sim.part.tail && tail_probe_enabled)
+                        {
+                            for (int i = 0; i < chain.solve_count; i++)
+                            {
+                                var r = chain.records[i];
+                                Quaternion base_rot = r.parent_rot * r.init_local;
+                                Vector3 aim = base_rot * r.bone_axis;
+                                Vector3 dir = (r.target_position - r.self_position).normalized;
+                                float aim_dir = Vector3.Angle(aim, dir);
+                                float aim_anim = Vector3.Angle(aim, (chain.bones[i].rotation * r.bone_axis));
+                                trace_log.write($"tail probe: '{chain.root_transform.name}'[{i}] base {base_rot.x:0.000},{base_rot.y:0.000},{base_rot.z:0.000} axis {r.bone_axis.x:0.000},{r.bone_axis.y:0.000},{r.bone_axis.z:0.000} aim2dir {aim_dir:0.0} aim2anim {aim_anim:0.0} final2anim {Quaternion.Angle(r.final_rot, chain.bones[i].rotation):0.0} ratio {r.dynamic_ratio:0.000} lim {(int)r.is_limit} st {r.stiffness:0.000} drag {r.drag:0.000} g {r.gravity:0.000}");
+                            }
+                            if (resolved.TryGetValue(p.id, out var tcols) && tcols != null)
+                            {
+                                var r0 = chain.records[0];
+                                for (int ci = 0; ci < tcols.Length; ci++)
+                                {
+                                    var tc = tcols[ci];
+                                    float dist = Vector3.Distance(r0.target_position, tc.position);
+                                    float reach = r0.collision_radius + tc.radius;
+                                    trace_log.write($"tail col: '{chain.root_transform.name}' vs [{ci}] type {(int)tc.type} r {tc.radius:0.000} dist {dist:0.000} reach {reach:0.000} colpos {tc.position.x:0.000},{tc.position.y:0.000},{tc.position.z:0.000} tip {r0.target_position.x:0.000},{r0.target_position.y:0.000},{r0.target_position.z:0.000} self {r0.self_position.x:0.000},{r0.self_position.y:0.000},{r0.self_position.z:0.000} root {chain.root_transform.position.x:0.000},{chain.root_transform.position.y:0.000},{chain.root_transform.position.z:0.000}");
+                                }
+                            }
+                        }
                     }
                     chain.write_back(null);
                 }
@@ -358,13 +405,18 @@ namespace UV2.Live
             for (int i = 0; i < parts.Count; i++) ticks[i] = parts[i].bench_tick;
             for (int i = 0; i < n; i++)
             {
+                // the game's WarmUpCySpring runs the full BeginSimulation/
+                // EndSimulation path: collisions on, no history reset — the
+                // chain settles onto its true rest around the live pose.
                 begin(dt);
-                update(collision_switch: false);
+                update(collision_switch: true, dt);
                 end();
-                reset_history();
             }
             for (int i = 0; i < parts.Count; i++) parts[i].bench_tick = ticks[i];
         }
+
+        // tail flip diagnosis: dumps per-bone tail frames during bench runs.
+        public static bool tail_probe_enabled;
 
         // re-zeroes the velocity history so consecutive warm-up steps do not
         // accumulate velocity from the reset jumps (contract: history reset).

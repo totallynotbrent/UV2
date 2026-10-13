@@ -83,7 +83,13 @@ namespace UV2.Live
                 if (rf.instance != null)
                     rf.instance.transform.SetParent(transform, false);
 
-            sims.Add(new chara_sim { root = character_root, sim = sim, refs = refs.ToArray() });
+            var cs_entry = new chara_sim { root = character_root, sim = sim, refs = refs.ToArray() };
+            // the game reserves the 1s warm-up pre-roll at every character
+            // setup (ReserveWarmingUpCySpring): the first LateUpdate after the
+            // animation is live settles the chains onto the real start pose.
+            cs_entry.warm_scheduled = true;
+            cs_entry.warm_time = 1f;
+            sims.Add(cs_entry);
             // a formation key may have set the amplitude rate before the part
             // bound; every part starts at the current rate.
             if (pending_rate != 1f)
@@ -126,6 +132,17 @@ namespace UV2.Live
             foreach (var cs in sims)
                 if (cs.sim == sim) { cs.warm_scheduled = true; cs.warm_time = warm_time; }
         }
+
+        // the in-concert control panel iterates the bound sims (scrub and
+        // settings apply to every character on stage).
+        public System.Collections.Generic.IEnumerable<spring_sim> all_sims()
+        {
+            foreach (var cs in sims)
+                if (cs?.sim != null) yield return cs.sim;
+        }
+
+        // runtime collision kill switch (the control panel's toggle).
+        public static bool collisions_enabled = true;
 
         // per-part amplitude rate from the formation keys (CySpringRate).
         public void set_spring_rate(spring_sim sim, spring_sim.part part, float rate)
@@ -217,7 +234,7 @@ namespace UV2.Live
                     continue;
                 }
                 cs.sim.begin(PHYSICS_STEP * steps);
-                cs.sim.update(collision_switch: true);
+                cs.sim.update(physics_director.collisions_enabled, PHYSICS_STEP * steps);
                 cs.sim.end();
                 // the skirt knee-correction runs after the spring solve (the
                 // game's SkirtController pass rides LateUpdate too).

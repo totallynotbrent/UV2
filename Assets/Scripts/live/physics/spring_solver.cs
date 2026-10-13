@@ -138,12 +138,11 @@ namespace UV2.Live
                 }
             }
 
-            // hard length snap to the base position
-            Vector3 d = new_target - r.self_position;
-            float d_len = d.magnitude;
-            if (d_len > 1e-8f) d /= d_len;
-            else d = aim;
-            r.target_position = d * r.bone_distance + r.self_position;
+            // no hard length snap here: the binary keeps the verlet target
+            // world-anchored after the rebuild (the lag IS the physics) and
+            // enforces length only through the collision-path re-snap and the
+            // post-write re-projection. a snap against the moved self would
+            // inject the animation's motion into every record per frame.
 
             // collision push-out + re-snap, in index order
             if (collision_switch && r.check_chara_collision != 0 &&

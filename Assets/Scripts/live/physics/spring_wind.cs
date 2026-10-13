@@ -46,6 +46,9 @@ namespace UV2.Live
 
         // composes the pre-rotation wind vector for ONE root chain (the caller
         // applies the root-parent rotation and passes it to the solver).
+        // the game's CalculateWind returns a WORLD vector: the direction cones
+        // bake the root's local rotation at build time (is_local_direction);
+        // no per-frame rotation rides the character's spin.
         public Vector3 compose(float root_phase_shift, Quaternion parent_rot)
         {
             Vector3 raw = Vector3.zero;
@@ -69,7 +72,7 @@ namespace UV2.Live
                 horiz.x * power_scale * 0.005f,
                 n.y * power_scale * 0.015f,
                 horiz.z * power_scale * 0.005f);
-            return parent_rot * w;
+            return w;
         }
     }
 }

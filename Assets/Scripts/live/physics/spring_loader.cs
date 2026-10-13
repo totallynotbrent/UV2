@@ -135,9 +135,11 @@ namespace UV2.Live
                     if (target == null) continue;
                     var col_go = new GameObject(row.collision_name);
                     col_go.transform.SetParent(target, false);
-                    if (row.type == (int)spring_collider_type.sphere)
-                        col_go.transform.position += row.offset;
-                    else if (row.type == (int)spring_collider_type.capsule)
+                    // the game parents the rider at LOCAL offset (the fork's
+                    // ScaleParams_Sphere restores localPosition = defaultOffset;
+                    // a world-space add rides wrong once the target bone rotates).
+                    if (row.type == (int)spring_collider_type.sphere ||
+                        row.type == (int)spring_collider_type.capsule)
                         col_go.transform.localPosition = row.offset;
                     else
                     {
@@ -184,11 +186,13 @@ namespace UV2.Live
 
             // the tail split: body rows drop names the tail spring data uses;
             // the tail part's table keeps only those names.
-            split_tail_collisions(tables, refs);
+            // (the tail's collision table stays empty — its container ships no rows.)
 
             foreach (var kv in tables)
                 if (kv.Value.Count > 0)
                     sim.add_collision_table(kv.Key, kv.Value);
+            // the tail container's empty table still registers so the loader
+            // logs it faithfully (the game keeps the empty array too).
 
             sim.resolve_chain_collisions();
             sim.resolve_connected(character);
@@ -216,40 +220,11 @@ namespace UV2.Live
             return t;
         }
 
-        // the game's LoadSpringParam special cases: the tail part keeps only
-        // the body rows whose names the tail spring data references (its own
-        // container carries no collisionParam rows).
-        static void split_tail_collisions(Dictionary<spring_sim.part, List<collision_param>> tables,
-            List<container_ref> refs)
-        {
-            var tail_ref = refs.Find(r => r.source == spring_source.tail);
-            if (tail_ref == null || !tables.TryGetValue(spring_sim.part.body, out var body)) return;
-
-            var tail_names = new HashSet<string>();
-            foreach (var root in tail_ref.container.springParam)
-            {
-                if (root == null) continue;
-                add_names(tail_names, root._collisionNameList);
-                foreach (var ch in root._childElements)
-                    if (ch != null) add_names(tail_names, ch._collisionNameList);
-            }
-            if (tail_names.Count == 0) return;
-
-            var tail = table_for(tables, spring_sim.part.tail);
-            var moved = new List<collision_param>();
-            foreach (var row in body)
-                if (row != null && tail_names.Contains(row.collision_name))
-                    moved.Add(row);
-            foreach (var row in moved) body.Remove(row);
-            tail.AddRange(moved);
-        }
-
-        static void add_names(HashSet<string> set, List<string> names)
-        {
-            if (names == null) return;
-            foreach (var n in names)
-                if (!string.IsNullOrEmpty(n)) set.Add(n);
-        }
+        // katboi's container layout: each part's Cyspring builds its collision
+        // table from its OWN container. the tail's container ships no
+        // collisionParam rows, so the Col_B_Hip_Tail/Col_B_Chest_Tail names in
+        // its param lists resolve to nothing — those spheres are the tail's
+        // occupied space, guarding the BODY/skirt chains, never the tail.
 
         static Transform resolve_target(Transform character, collision_param row,
             System.Action<string> log)

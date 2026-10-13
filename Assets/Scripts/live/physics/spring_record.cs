@@ -12,7 +12,8 @@ namespace UV2.Live
         public Vector3 prev_target;        // previous frame's target (velocity proxy)
 
         // rotations
-        public Quaternion init_local;      // bind-pose local rotation
+        public Quaternion init_local;      // bind-pose local rotation (chases anim at ratio<1)
+        public Quaternion bind_local;      // the original bind pose (clip-animation detector)
         public Quaternion parent_rot;      // parent's final world rotation
         public Quaternion final_rot;       // this frame's solved world rotation
         public Quaternion anim_local;      // the animation's local rotation (gathered)
@@ -54,9 +55,20 @@ namespace UV2.Live
 
         public static spring_record bind(Transform bone, Transform parent_bone)
         {
+            // init_local must sit in the CHAIN parent's frame (the solver
+            // composes parent_rot = final[i-1] over it), not the transform
+            // hierarchy's frame: scaffold-mounted chains (the tail) live as
+            // flat children under the character root, so localRotation would
+            // carry the root frame and the aim compounds garbage per bone.
+            Quaternion parent_world = parent_bone != null
+                ? parent_bone.rotation
+                : (bone.parent != null ? bone.parent.rotation : Quaternion.identity);
+            Quaternion init_local = Quaternion.Inverse(parent_world) * bone.rotation;
+
             var r = new spring_record
             {
-                init_local = bone.localRotation,
+                init_local = init_local,
+                bind_local = init_local,
                 final_rot = bone.rotation,
                 anim_local = bone.localRotation,
                 target_position = bone.position,

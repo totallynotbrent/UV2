@@ -91,7 +91,11 @@ namespace UV2.App
                 // mask sweep script can step through configurations unattended.
                 float bench_stop = -1f;
                 for (int i = 0; i < pre_args.Length - 1; i++)
+                {
                     if (pre_args[i] == "-uv2bench" && float.TryParse(pre_args[i + 1], out var bs)) bench_stop = bs;
+                    if (pre_args[i] == "-uv2tailprobe") UV2.Live.spring_sim.tail_probe_enabled = true;
+                    if (pre_args[i] == "-uv2nocol") UV2.Live.physics_director.collisions_enabled = false;
+                }
                 if (bench_stop >= 0f)
                 {
                     // re-find the loader every frame: the concert window

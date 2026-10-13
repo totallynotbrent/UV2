@@ -66,6 +66,25 @@ namespace UV2.Live
                     apply_spring_keys(skv.Key, cur);
                 }
             }
+
+            // charaWind: the spring wind is gated by the timeline keys; a song
+            // with no enabled key runs its springs windless (1004 is one).
+            foreach (var kv in ws.chara_wind)
+            {
+                var keys = kv.Value;
+                if (keys == null || keys.Count == 0) continue;
+                int i = key_eval.bracket(keys, t);
+                if (i < 0) continue;
+                var cur = keys[i];
+                foreach (var skv in slots)
+                {
+                    int slot = group_index(kv.Key, skv.Key);
+                    if (slot < 0) continue;
+                    if (!root_chara.TryGetValue(skv.Value, out int chara_id)) continue;
+                    if (!spring_sims.TryGetValue(chara_id, out var sim) || sim == null) continue;
+                    sim.set_wind_enabled(cur.enable_wind != 0);
+                }
+            }
         }
 
         // fires the warm-up byte once per key and keeps the amplitude rate
@@ -86,7 +105,12 @@ namespace UV2.Live
                 physics_director.instance.schedule_warm_up(sim, cur.warm_up_cy_spring, cur.cy_spring_warm_up_time);
                 last_warm_time = clock.time;
             }
+            // the rate track is per locator: the game applies the same key to
+            // every spring part (head/body/tail, PARTS_NUM=3), so the tail and
+            // body chains get the rest-line pull too.
             physics_director.instance.set_spring_rate(sim, spring_sim.part.head, cur.cy_spring_rate);
+            physics_director.instance.set_spring_rate(sim, spring_sim.part.body, cur.cy_spring_rate);
+            physics_director.instance.set_spring_rate(sim, spring_sim.part.tail, cur.cy_spring_rate);
         }
 
         // chara id per root, wired by stage_loader after the cast loads.
