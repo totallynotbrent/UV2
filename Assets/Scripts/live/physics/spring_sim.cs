@@ -326,7 +326,7 @@ namespace UV2.Live
                     // across head/body/tail instead of letting the first
                     // parts consume every window.
                     int tick = p.bench_tick++;
-                    if (bench_sample(tick))
+                    if (bench_sample(tick) || (bench_dense && p.id == spring_sim.part.body))
                     {
                         float delta = 0f;
                         for (int i = 0; i < chain.solve_count; i++)
@@ -352,7 +352,7 @@ namespace UV2.Live
                                 Vector3 dir = (r.target_position - r.self_position).normalized;
                                 float aim_dir = Vector3.Angle(aim, dir);
                                 float aim_anim = Vector3.Angle(aim, (chain.bones[i].rotation * r.bone_axis));
-                                trace_log.write($"tail probe: '{chain.root_transform.name}'[{i}] base {base_rot.x:0.000},{base_rot.y:0.000},{base_rot.z:0.000} axis {r.bone_axis.x:0.000},{r.bone_axis.y:0.000},{r.bone_axis.z:0.000} aim2dir {aim_dir:0.0} aim2anim {aim_anim:0.0} final2anim {Quaternion.Angle(r.final_rot, chain.bones[i].rotation):0.0} ratio {r.dynamic_ratio:0.000} lim {(int)r.is_limit} st {r.stiffness:0.000} drag {r.drag:0.000} g {r.gravity:0.000}");
+                                trace_log.write($"tail probe: '{chain.root_transform.name}'[{i}] base {base_rot.x:0.000},{base_rot.y:0.000},{base_rot.z:0.000} axis {r.bone_axis.x:0.000},{r.bone_axis.y:0.000},{r.bone_axis.z:0.000} aim ({aim.x:0.000},{aim.y:0.000},{aim.z:0.000}) dir ({dir.x:0.000},{dir.y:0.000},{dir.z:0.000}) self ({r.self_position.x:0.000},{r.self_position.y:0.000},{r.self_position.z:0.000}) tgt ({r.target_position.x:0.000},{r.target_position.y:0.000},{r.target_position.z:0.000}) aim2dir {aim_dir:0.0} aim2anim {aim_anim:0.0} final2anim {Quaternion.Angle(r.final_rot, chain.bones[i].rotation):0.0} ratio {r.dynamic_ratio:0.000} lim {(int)r.is_limit} st {r.stiffness:0.000} drag {r.drag:0.000} g {r.gravity:0.000}");
                             }
                             if (resolved.TryGetValue(p.id, out var tcols) && tcols != null)
                             {
@@ -417,6 +417,7 @@ namespace UV2.Live
 
         // tail flip diagnosis: dumps per-bone tail frames during bench runs.
         public static bool tail_probe_enabled;
+        public static bool bench_dense;
 
         // re-zeroes the velocity history so consecutive warm-up steps do not
         // accumulate velocity from the reset jumps (contract: history reset).

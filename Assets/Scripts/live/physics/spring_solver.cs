@@ -138,11 +138,16 @@ namespace UV2.Live
                 }
             }
 
-            // no hard length snap here: the binary keeps the verlet target
-            // world-anchored after the rebuild (the lag IS the physics) and
-            // enforces length only through the collision-path re-snap and the
-            // post-write re-projection. a snap against the moved self would
-            // inject the animation's motion into every record per frame.
+            // hard length snap (register-proven step 10): the verlet target is
+            // re-anchored to the parent's solved position at exactly
+            // InitBoneDistance along the integrated direction. this is how
+            // root motion transports the chain — without it the targets stay
+            // world-anchored while the character dances away, and the
+            // (target - self) direction the rotation reads swings wildly.
+            Vector3 to_target = new_target - r.self_position;
+            if (to_target.sqrMagnitude > 1e-12f)
+                new_target = to_target.normalized * r.bone_distance + r.self_position;
+            r.target_position = new_target;
 
             // collision push-out + re-snap, in index order
             if (collision_switch && r.check_chara_collision != 0 &&
@@ -155,7 +160,9 @@ namespace UV2.Live
             Quaternion final = Quaternion.FromToRotation(aim, solved_dir) * base_rot;
 
             // limit clamp: the euler delta from the base pose, wrapped to
-            // (-180,180], clamped per axis against min/max, rebuilt on base.
+            // (-180,180], clamped per axis against min/max, rebuilt as the
+            // clamped delta applied OVER the base frame (FromEuler(e) *
+            // ParentRotation, the binary's order — not base * euler).
             if (r.is_limit != 0)
             {
                 Quaternion relative = final * Quaternion.Inverse(base_rot);
@@ -163,7 +170,7 @@ namespace UV2.Live
                 e.x = Mathf.Clamp(e.x, -r.limit_min.x, r.limit_max.x);
                 e.y = Mathf.Clamp(e.y, -r.limit_min.y, r.limit_max.y);
                 e.z = Mathf.Clamp(e.z, -r.limit_min.z, r.limit_max.z);
-                final = base_rot * Quaternion.Euler(e);
+                final = Quaternion.Euler(e) * base_rot;
             }
             r.final_rot = final;
 
@@ -174,12 +181,9 @@ namespace UV2.Live
             if (r.dynamic_ratio < 1f && r.dynamic_ratio != 1f)
                 r.init_local = Quaternion.Lerp(r.init_local,
                     r.anim_local, r.dynamic_ratio);
-
-            // re-project through the final rotation so the position the
-            // next bone anchors on and the written rotation agree (the
-            // binary's post-solve overwrite; a no-op without collisions).
-            Vector3 axis_dir = (r.final_rot * r.bone_axis).normalized;
-            r.target_position = axis_dir * r.bone_distance + r.self_position;
+            // the binary leaves TargetPosition untouched here — the verlet
+            // state (with the step-10 snap) is the carried position state,
+            // so the next bone anchors on it as-is.
         }
 
         // to-euler in [0,360) wrapped to (-180,180] (MakePositive + the

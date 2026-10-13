@@ -51,7 +51,8 @@ namespace UV2.Live
             crowd_rig.reset();
             audience_keys.reset();
             props_system.reset();
-            UV2.UI.load_progress.report($"binding worksheet ({ws.camera_pos.Count} cam keys)");
+            UV2.UI.load_progress.reset();
+            UV2.UI.load_progress.report($"binding worksheet ({ws.camera_pos.Count} cam keys)", 0.04f);
             trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
             yield return null;
 
@@ -60,7 +61,10 @@ namespace UV2.Live
             var stage_bundles = _stage_material_names.Concat(new[] { _stage_first_controller }).ToList();
             foreach (var name in stage_bundles)
             {
-                UV2.UI.load_progress.report($"loading stage {sel.stage_id}: bundle {++stage_step}/{stage_bundles.Count}");
+                // the trailing bundle name segment identifies what is loading.
+                string short_name = name.Split('/').Last();
+                UV2.UI.load_progress.report($"loading stage {sel.stage_id}: {short_name} ({++stage_step}/{stage_bundles.Count})",
+                    0.04f + 0.30f * stage_step / stage_bundles.Count);
                 yield return null;
                 if (!run_phase_stage_bundle(name)) yield break;
             }
@@ -79,7 +83,7 @@ namespace UV2.Live
             additional_light.bind(ws?.additional_tracks);
 
             // wires the audience, mob, and cyalume tracks onto the crowd rig.
-            UV2.UI.load_progress.report("binding crowd");
+            UV2.UI.load_progress.report("binding crowd", 0.36f);
             yield return null;
             bind_crowd(sel);
 
@@ -91,7 +95,8 @@ namespace UV2.Live
             physics.bind_clock(clock);
             foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
             {
-                UV2.UI.load_progress.report($"loading cast {++cast_step}/{cast_total}");
+                UV2.UI.load_progress.report($"loading {chara_name(slot.chara_id)} (cast {++cast_step}/{cast_total})",
+                    0.36f + 0.52f * cast_step / Mathf.Max(1, cast_total));
                 yield return null;
                 var root = run_phase_character(slot);
                 if (root == null) { _cast_missed++; continue; }
@@ -101,11 +106,11 @@ namespace UV2.Live
             }
             trace_log.write($"cast: {chara_roots.Count} loaded, {_cast_missed} missed, {chara_roots.Count} roots total");
             // resolves the song's props against the loaded cast.
-            UV2.UI.load_progress.report("binding props");
+            UV2.UI.load_progress.report("binding props", 0.90f);
             yield return null;
             bind_props(sel);
 
-            UV2.UI.load_progress.report("loading motion clips");
+            UV2.UI.load_progress.report("loading motion clips", 0.93f);
             yield return null;
             var clips = run_phase_clips(sel);
             if (clips == null) yield break;
@@ -116,13 +121,13 @@ namespace UV2.Live
             // the vocal stems: decode the banks but keep every stem silent
             // until its part row arrives — the bgm below is the timing
             // master and must start only once the whole stage is live.
-            UV2.UI.load_progress.report("starting vocals");
+            UV2.UI.load_progress.report("starting vocals", 0.96f);
             yield return null;
             var vocals_go = new GameObject("vocal_mixer");
             vocals = vocals_go.AddComponent<vocal_mixer>();
             vocals.open(clock, chara_roots, sel.slots, sel.music_id);
 
-            UV2.UI.load_progress.report("concert ready");
+            UV2.UI.load_progress.report("concert ready", 1f);
             _open_ok = true;
 
             // the music starts last, with everything visible: starting it
@@ -697,23 +702,25 @@ namespace UV2.Live
             string tail_stem = tail_instance.name.Replace("(Clone)", "");
             int renderers = tail_mount.mount(character, tail_instance, s => trace_log.write($"chara {chara_id}: {s}"));
             // textures load after the mount: the renderer must live under the
-            // character to be found; the material comes from the tail's own
-            // materials bundle when the prefab's slot did not resolve.
+            // character to be found. the tail stem in the manifest strips the
+            // pfb_ prefix (tex_tail0001_00_1001_diff, not tex_pfb_...).
             load_tail_textures(character, chara_id, tail_stem);
             return renderers;
         }
 
         // loads texture bundles named tex_{tail}_{head}_{suffix} into the
         // tail's materials: per-head rows first (diff/shad), then the shared
-        // _0000 base/ctrl set.
+        // _0000 base/ctrl set. the manifest names the tail without the pfb_
+        // prefix (tex_tail0001_00_1001_diff).
         private void load_tail_textures(Transform character, int chara_id, string tail_stem)
         {
-            string dir = $"3d/chara/tail/{tail_stem.Substring(4)}/textures";
+            string stem = tail_stem.StartsWith("pfb_") ? tail_stem.Substring(4) : tail_stem;
+            string dir = $"3d/chara/tail/{stem}/textures";
             var names = new HashSet<string>();
             foreach (var suffix in new[] { "diff", "shad_c" })
-                names.Add($"{dir}/tex_{tail_stem}_{chara_id}_{suffix}");
-            names.Add($"{dir}/tex_{tail_stem}_0000_base");
-            names.Add($"{dir}/tex_{tail_stem}_0000_ctrl");
+                names.Add($"{dir}/tex_{stem}_{chara_id}_{suffix}");
+            names.Add($"{dir}/tex_{stem}_0000_base");
+            names.Add($"{dir}/tex_{stem}_0000_ctrl");
             using var meta = meta_reader.reader.open(config.meta_db_path);
             if (meta == null) return;
             var rows = meta.lookup(names);
@@ -732,11 +739,12 @@ namespace UV2.Live
             int assigned = 0;
 
             // the tail prefab ships an unresolved material slot; the tail's
-            // own materials bundle (mtl_{stem}) carries the real material.
+            // own materials bundle (sourceresources/.../mtl_{stem}) carries
+            // the real material.
             Material tail_mat = null;
             try
             {
-                var mtl_row = meta_row($"3d/chara/tail/{tail_stem.Substring(4)}/materials/mtl_{tail_stem}");
+                var mtl_row = meta_row($"sourceresources/3d/chara/tail/{stem}/materials/mtl_{stem}");
                 if (mtl_row != null)
                 {
                     var mtl_bundle = game_assets.open(mtl_row, config.data_root);
@@ -754,14 +762,15 @@ namespace UV2.Live
                 for (int mi = 0; mi < mats.Length; mi++)
                 {
                     var m = mats[mi];
-                    if (m == null)
+                    // a null slot or a material whose shader never resolved
+                    // renders magenta: the mtl bundle's material replaces it.
+                    if ((m == null || m.shader == null) && tail_mat != null)
                     {
-                        if (tail_mat == null) continue;
                         m = tail_mat;
                         mats[mi] = m;
                         changed = true;
                     }
-                    if (m.shader == null) continue;
+                    if (m == null || m.shader == null) continue;
                     Texture tex = null;
                     try { tex = m.GetTexture("_MainTex"); } catch { }
                     if (tex != null) continue;
@@ -1317,6 +1326,26 @@ namespace UV2.Live
             if (!force_free_clock) clock.bind_master(_music_source);
             else trace_log.write("clock: forced free-run for this run");
             trace_log.write($"music: oke playing ({clip.frequency}Hz, {clip.length:0.0}s, {waves.Count} waves)");
+        }
+
+        // the cast slot's display name from the text table (category 6).
+        private string chara_name(int chara_id)
+        {
+            try
+            {
+                using var db = master_db.reader.open(config.master_db_path);
+                if (db == null) return $"chara {chara_id}";
+                foreach (var r in db.query(
+                    $"SELECT `index`, text FROM text_data WHERE category=6"))
+                    if ((int)r.get_int(0) == chara_id)
+                    {
+                        string n = r.get_text(1);
+                        db.Dispose();
+                        return string.IsNullOrEmpty(n) ? $"chara {chara_id}" : n;
+                    }
+            }
+            catch { }
+            return $"chara {chara_id}";
         }
 
         // picks the stage id from the song's livesettings for selections without one.

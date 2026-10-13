@@ -94,6 +94,7 @@ namespace UV2.App
                 {
                     if (pre_args[i] == "-uv2bench" && float.TryParse(pre_args[i + 1], out var bs)) bench_stop = bs;
                     if (pre_args[i] == "-uv2tailprobe") UV2.Live.spring_sim.tail_probe_enabled = true;
+                    if (pre_args[i] == "-uv2dense") UV2.Live.spring_sim.bench_dense = true;
                     if (pre_args[i] == "-uv2nocol") UV2.Live.physics_director.collisions_enabled = false;
                 }
                 if (bench_stop >= 0f)
