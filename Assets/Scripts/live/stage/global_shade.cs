@@ -76,6 +76,7 @@ namespace UV2.Live
         private static MaterialPropertyBlock _chara_mpb;
         private static Vector3 _last_light_dir = new(12345f, 0f, 0f);
         private static bool _pin_log_pending;
+        private static bool _pin_log_done;
 
         // applies the toon-light + rim block onto every character renderer.
         public static void publish_chara_block(List<Transform> chara_roots)
@@ -108,7 +109,10 @@ namespace UV2.Live
             // white-body wash. republish unconditionally.
             _chara_mpb.SetFloat(id_use_orig_light, 1f);
             _chara_mpb.SetVector(id_orig_light_dir, dir);
-            _pin_log_pending = true;
+            // arm the one-shot pin log only once per apply-pass owner; arming
+            // it every frame re-logged the whole cast at ~30 lines/sec and
+            // drowned the trace (the republish itself stays unconditional).
+            if (!_pin_log_done) _pin_log_pending = true;
 
             // the game publishes the toon light direction via Material::SetInt/SetVector
             // (ModelController::UpdateBodyLightDir 0x7ff8e51a8010) with NO HasProperty
@@ -155,6 +159,7 @@ namespace UV2.Live
                                 }
                                 trace_log.write($"shade pin: '{r.name}' mat '{m0.name}' acceptsUseOrig={m0.HasProperty(id_use_orig_light)} shader '{sh.name}' props({prop_count}) [{sb}]");
                                 _pin_log_pending = false;
+                                _pin_log_done = true;
                             }
                         }
                     }

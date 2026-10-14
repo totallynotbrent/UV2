@@ -58,20 +58,20 @@ namespace UV2.Live
 
         private timeline_clock clock;
         private bool bound;
+        private readonly List<System.Threading.Tasks.Task<(int id, int group,
+            (float[] pcm, int channels, int rate)[] pcm_set)>> decode_tasks = new();
+        private bool all_skipped;
         private Transform[] stem_roots;   // chara roots, parallel to stems
         private int last_section = -1;
         private int last_override_sec = -2;
 
-        // decodes each member's bank as a coroutine (18 hca decodes take
-        // ~15s and open waits on this method); the part table gates stems
-        // silent until they materialize.
-        public void open(timeline_clock clock_ref, IReadOnlyList<Transform> chara_roots,
-            List<slot_pick> slots, int music_id)
+        // begins the parallel stem decode as early as possible — the banks
+        // need only the selection, so this runs during stage/cast loading
+        // and the decode workers ride the load window instead of trailing
+        // the song start (1048's serial decode left the first vocal
+        // sections silent for 12s).
+        public void begin_decode(int music_id, List<slot_pick> slots)
         {
-            clock = clock_ref;
-            var go = new GameObject("live_vocals");
-            go.transform.SetParent(transform, false);
-
             var rows = load_part_table(music_id);
             if (rows != null && rows.Count > 0)
             {
@@ -88,8 +88,50 @@ namespace UV2.Live
                 part_rows = null;
             }
 
-            if (chara_roots.Count == 0) return;
+            int width = part_width();
+            var wanted = new List<(int chara_id, int col)>();
+            for (int i = 0; i < slots.Count; i++)
+            {
+                if (slots[i].chara_id <= 0) continue;
+                int col = position_column(slots[i].position, width);
+                if (col < 0)
+                {
+                    trace_log.write($"vocals: stem {slots[i].chara_id} backdancer column {col} skipped");
+                    continue;
+                }
+                wanted.Add((slots[i].chara_id, col));
+            }
+            if (wanted.Count == 0) { all_skipped = true; return; }
 
+            // one worker per stem, all launched at once: the serial decode
+            // serialized ~2.5s per stem and the early sections of the song
+            // played with no vocals on slower machines.
+            foreach (var (chara_id, col) in wanted)
+            {
+                var id = chara_id;
+                var group = col;
+                decode_tasks.Add(System.Threading.Tasks.Task.Run(() =>
+                {
+                    var bank_task = load_bank(music_id, id);
+                    if (bank_task.bank == null) return (id, group, null);
+                    var pcm = bank_task.waves.Select(w => live_audio.decode_wave_pcm(bank_task.bank, w)).ToArray();
+                    return (id, group, pcm);
+                }));
+            }
+            trace_log.write($"vocals: {decode_tasks.Count} stems decoding in parallel");
+        }
+
+        // binds the decoded stems to audio sources once the cast exists;
+        // runs as a coroutine so open can gate the music start on it.
+        public System.Collections.IEnumerator bind(timeline_clock clock_ref,
+            IReadOnlyList<Transform> chara_roots, List<slot_pick> slots, int music_id)
+        {
+            clock = clock_ref;
+            if (all_skipped || decode_tasks.Count == 0) yield break;
+            var go = new GameObject("live_vocals");
+            go.transform.SetParent(transform, false);
+
+            int width = part_width();
             int cast_index = 0;
             var roots_list = new List<Transform>();
             var chara_ids = new List<int>();
@@ -105,9 +147,54 @@ namespace UV2.Live
                 positions.Add(slot.position);
             }
             stem_roots = roots_list.ToArray();
-            trace_log.write($"vocals: {chara_ids.Count} stems pending (lazy decode)");
-            StartCoroutine(decode_stems(go.transform, music_id, chara_ids, positions));
+
+            // each finished task becomes its clips + sources; the music
+            // start waits for the last of them.
+            int done = 0;
+            foreach (var task in decode_tasks)
+            {
+                while (!task.IsCompleted) yield return null;
+                done++;
+                UV2.UI.load_progress.report($"binding vocals ({done}/{decode_tasks.Count})", 0.96f);
+                var (id, group, pcm_set) = task.Result;
+                if (pcm_set == null) { trace_log.write($"vocals: stem {id} decode failed"); continue; }
+                var clips = new List<AudioClip>();
+                foreach (var (pcm, channels, rate) in pcm_set)
+                {
+                    if (pcm == null || pcm.Length == 0) continue;
+                    var clip = AudioClip.Create($"voc_{id}_{clips.Count}",
+                        pcm.Length / channels, channels, rate, false);
+                    clip.SetData(pcm, 0);
+                    clips.Add(clip);
+                }
+                if (clips.Count == 0) { trace_log.write($"vocals: stem {id} produced no clips"); continue; }
+                // the game decodes every take into parallel wave streams and
+                // the lead switch only flips which buffer is audible
+                // (uv2_vocal_lead_switch_decoded.md): one source per take,
+                // all rolling from the same playhead, never re-seeked.
+                var sources = new AudioSource[clips.Count];
+                for (int c = 0; c < clips.Count; c++)
+                {
+                    var source = go.AddComponent<AudioSource>();
+                    source.clip = clips[c];
+                    source.loop = false;
+                    source.volume = 0f;
+                    sources[c] = source;
+                }
+                stems.Add(new stem { sources = sources, group = group,
+                    wave = -1, wave_target = 0, volume = 0f });
+                slot_positions.Add(positions[Mathf.Clamp(stems.Count - 1, 0, positions.Count - 1)]);
+            }
+            decode_tasks.Clear();
+            lock_positions();
+            trace_log.write($"vocals: {stems.Count} stems bound, positions " +
+                string.Join(",", slot_positions) + ", waves " +
+                string.Join(",", stems.Select(s => s.sources.Length)));
+            bound = stems.Count > 0;
         }
+
+        // true once every decode task has landed and the sources exist.
+        public bool stems_ready => all_skipped || bound;
 
         private readonly List<int> slot_positions = new();
 
@@ -122,67 +209,6 @@ namespace UV2.Live
             bool left = (position & 1) == 0;
             int col = left ? width / 2 - dist : width / 2 + dist;
             return col >= 0 && col < width ? col : -1;
-        }
-
-        private System.Collections.IEnumerator decode_stems(Transform parent, int music_id,
-            List<int> chara_ids, List<int> positions)
-        {
-            int width = part_width();
-            for (int i = 0; i < chara_ids.Count; i++)
-            {
-                // the hca decode runs on a worker (pure arrays, no unity api)
-                // and the AudioClip is created on the main thread when it
-                // lands: the load-phase frame hitches the main-thread decode
-                // caused (1s frames across the first 15s) are gone.
-                // backdancer columns are known before the bank loads: skip
-                // their ~15s decodes entirely — the mix gates them silent
-                // anyway (audit 4.2 cost note).
-                int col = position_column(positions[i], width);
-                if (col < 0) { trace_log.write($"vocals: stem {chara_ids[i]} backdancer column {col} skipped"); yield return null; continue; }
-                var bank_task = load_bank(music_id, chara_ids[i]);
-                if (bank_task.bank == null) { yield return null; continue; }
-                // decode every take (0 = main, n-1 = the lead-switch
-                // SelectorLabel_{n-1} alternates; 1059's banks carry 3 waves)
-                // in the worker; AudioClip.Create stays on the main thread
-                // (uv2_vocal_generality_audit.md 4.5).
-                float t0 = Time.realtimeSinceStartup;
-                var pcm_task = System.Threading.Tasks.Task.Run(() =>
-                    bank_task.waves.Select(w => live_audio.decode_wave_pcm(bank_task.bank, w)).ToArray());
-                while (!pcm_task.IsCompleted) yield return null;
-                trace_log.write($"vocals: stem {chara_ids[i]} decoded on worker in {Time.realtimeSinceStartup - t0:0.00}s");
-                var clips = new List<AudioClip>();
-                foreach (var (pcm, channels, rate) in pcm_task.Result)
-                {
-                    if (pcm == null || pcm.Length == 0) continue;
-                    var clip = AudioClip.Create($"voc_{chara_ids[i]}_{clips.Count}",
-                        pcm.Length / channels, channels, rate, false);
-                    clip.SetData(pcm, 0);
-                    clips.Add(clip);
-                }
-                if (clips.Count == 0) { yield return null; continue; }
-                // the game decodes every take into parallel wave streams and
-                // the lead switch only flips which buffer is audible
-                // (uv2_vocal_lead_switch_decoded.md): one source per take,
-                // all rolling from the same playhead, never re-seeked.
-                var sources = new AudioSource[clips.Count];
-                for (int c = 0; c < clips.Count; c++)
-                {
-                    var source = parent.gameObject.AddComponent<AudioSource>();
-                    source.clip = clips[c];
-                    source.loop = false;
-                    source.volume = 0f;
-                    sources[c] = source;
-                }
-                stems.Add(new stem { sources = sources, group = position_column(positions[i], width),
-                    wave = -1, wave_target = 0, volume = 0f });
-                slot_positions.Add(positions[i]);
-                yield return null;
-            }
-            lock_positions();
-            trace_log.write($"vocals: {stems.Count} stems bound, positions " +
-                string.Join(",", slot_positions) + ", waves " +
-                string.Join(",", stems.Select(s => s.sources.Length)));
-            bound = stems.Count > 0;
         }
 
         // reads the member's bank with its wave list (takes 0/1).

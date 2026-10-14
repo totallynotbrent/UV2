@@ -169,11 +169,11 @@ namespace UV2.UI
                 _progress_text.text = UV2.UI.load_progress.describe();
                 if (_bar_fill != null)
                 {
-                    float f = Mathf.Clamp01(UV2.UI.load_progress.fraction);
+                    float f = Mathf.Clamp01(UV2.UI.load_progress.bar_fraction());
                     _bar_fill.rectTransform.sizeDelta = new Vector2(_bar_width * f, 10f);
                 }
                 if (_pct_text != null)
-                    _pct_text.text = $"{Mathf.RoundToInt(Mathf.Clamp01(UV2.UI.load_progress.fraction) * 100f)}%";
+                    _pct_text.text = $"{Mathf.RoundToInt(Mathf.Clamp01(UV2.UI.load_progress.bar_fraction()) * 100f)}%";
                 if (_trail_text != null)
                     _trail_text.text = UV2.UI.load_progress.describe_trail();
             }

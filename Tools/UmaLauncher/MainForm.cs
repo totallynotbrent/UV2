@@ -385,6 +385,9 @@ namespace UmaLauncher
             // a stale control file from a previous run must not command this one.
             try { File.Delete(Path.Combine(dir, "control.json")); } catch { }
             try { File.Delete(Path.Combine(dir, "status.json")); } catch { }
+            // the player checks this marker to know a launcher owns its
+            // control window and it must not spawn an attach-mode one.
+            try { File.WriteAllText(Path.Combine(dir, "launcher.pid"), Environment.ProcessId.ToString()); } catch { }
             var player = Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dir, UseShellExecute = false });
             if (player != null)
             {

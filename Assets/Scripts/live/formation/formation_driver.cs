@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using UV2.App;
 using UV2.Live;
 
 namespace UV2.Live
@@ -99,6 +100,27 @@ namespace UV2.Live
             if (!spring_sims.TryGetValue(chara_id, out var sim) || sim == null) return;
             if (physics_director.instance == null) return;
 
+            // the song's first formation key teleports the cast to the start
+            // pose; the game re-arms bone suppression on that cut (spawn and
+            // cut/teleport share the SetSuppression path) so springs blend
+            // into the new pose instead of whipping from the bind-time pose.
+            // the t=0 bracket is the cut; later keys interpolate, not cut.
+            // armed for every sim in one pass — the per-slot loop would
+            // otherwise latch the flag after the first character.
+            if (!cut_suppressed && clock.time <= first_key_cut_window)
+            {
+                cut_suppressed = true;
+                int armed = 0;
+                foreach (var sim_kv in spring_sims)
+                {
+                    if (sim_kv.Value == null) continue;
+                    sim_kv.Value.arm_suppression();
+                    armed++;
+                }
+                if (armed > 0)
+                    trace_log.write($"formation: t={clock.time:0.0} start-pose cut, {armed} sims suppressed");
+            }
+
             if (cur.warm_up_cy_spring != 0 && last_warm_time != clock.time)
             {
                 // fire once per key change (bracket index movement).
@@ -115,6 +137,12 @@ namespace UV2.Live
 
         // chara id per root, wired by stage_loader after the cast loads.
         public readonly Dictionary<Transform, int> root_chara = new();
+        // one-shot arm of the start-pose cut suppression per concert.
+        private bool cut_suppressed;
+        // the t=0 formation bracket is the spawn-to-start-pose cut; anything
+        // inside this window after the clock starts is that cut, not an
+        // interpolated move.
+        private const float first_key_cut_window = 0.5f;
 
         // maps worksheet group names to selection slots: center=1, left1=2, right1=3, left2=4, right2=5, place06..20 -> 6..20.
         private int group_index(string group, int slot)

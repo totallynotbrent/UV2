@@ -56,6 +56,13 @@ namespace UV2.Live
             trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
             yield return null;
 
+            // the vocal stems decode in parallel with stage + cast loading
+            // (begun below) so the early song sections carry vocals on every
+            // song; the bind at the end gates the music start.
+            var vocals_go = new GameObject("vocal_mixer");
+            vocals = vocals_go.AddComponent<vocal_mixer>();
+            vocals.begin_decode(sel.music_id, sel.slots);
+
             if (!run_phase_stage(sel)) yield break;
             int stage_step = 0;
             var stage_bundles = _stage_material_names.Concat(new[] { _stage_first_controller }).ToList();
@@ -118,14 +125,12 @@ namespace UV2.Live
             wire_drivers(clips, sel.music_id, sel.slots.Select(x => x.chara_id).ToList());
             trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
 
-            // the vocal stems: decode the banks but keep every stem silent
-            // until its part row arrives — the bgm below is the timing
-            // master and must start only once the whole stage is live.
-            UV2.UI.load_progress.report("starting vocals", 0.96f);
-            yield return null;
-            var vocals_go = new GameObject("vocal_mixer");
-            vocals = vocals_go.AddComponent<vocal_mixer>();
-            vocals.open(clock, chara_roots, sel.slots, sel.music_id);
+            // the vocal stems: bind what the parallel decode produced and
+            // keep every stem silent until its part row arrives — the bgm
+            // below is the timing master and must start only once the whole
+            // stage is live and every stem exists.
+            UV2.UI.load_progress.report("binding vocals", 0.96f);
+            yield return vocals.bind(clock, chara_roots, sel.slots, sel.music_id);
 
             UV2.UI.load_progress.report("concert ready", 1f);
             _open_ok = true;

@@ -11,7 +11,8 @@ namespace UmaLauncher
     public class ControlForm : Form
     {
         private readonly string dir;
-        private readonly Process player;
+        private readonly Process? player;
+        private readonly bool owns_player;
         private readonly System.Windows.Forms.Timer poll = new() { Interval = 250 };
 
         private readonly TrackBar seek = new() { Minimum = 0, Maximum = 1000, TickFrequency = 0, Height = 40, Dock = DockStyle.Fill };
@@ -30,10 +31,11 @@ namespace UmaLauncher
         private int status_paused = -1, status_cam = -1;
         private bool exited;
 
-        public ControlForm(string base_dir, Process player_proc)
+        public ControlForm(string base_dir, Process? player_proc, bool owns = true)
         {
             dir = base_dir;
             player = player_proc;
+            owns_player = owns;
             Text = "concert";
             StartPosition = FormStartPosition.Manual;
             Size = new Size(560, 210);
@@ -92,7 +94,10 @@ namespace UmaLauncher
             FormClosed += (s, e) =>
             {
                 poll.Stop();
-                try { if (!player.HasExited) player.Kill(); } catch { }
+                // only a window that started the player kills it on close;
+                // the attach window leaves the concert running.
+                if (owns_player)
+                    try { if (player != null && !player.HasExited) player.Kill(); } catch { }
             };
         }
 
@@ -136,11 +141,27 @@ namespace UmaLauncher
         void Poll()
         {
             if (exited) return;
-            try
+            if (player != null)
             {
-                if (player.HasExited) { exited = true; Close(); return; }
+                try
+                {
+                    if (player.HasExited) { exited = true; Close(); return; }
+                }
+                catch { }
             }
-            catch { }
+            else
+            {
+                // attach mode: no player handle, follow the status file. when
+                // the player stops publishing (exited or never started) for a
+                // long stretch, close quietly.
+                try
+                {
+                    string path = Path.Combine(dir, "status.json");
+                    if (File.Exists(path) && File.GetLastWriteTimeUtc(path) < DateTime.UtcNow.AddSeconds(-30))
+                    { exited = true; Close(); return; }
+                }
+                catch { }
+            }
 
             try
             {

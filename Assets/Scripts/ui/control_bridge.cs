@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using UnityEngine;
 using UV2.App;
@@ -35,6 +36,64 @@ namespace UV2.UI
             control_path = Path.Combine(dir, "control.json");
             status_path = Path.Combine(dir, "status.json");
             trace_log.write($"control bridge: polling {control_path}");
+            maybe_spawn_control_window(dir);
+        }
+
+        // a direct UV2.exe run has no launcher alive to open the external
+        // control window; the player asks the bundled launcher (attach mode)
+        // to open one against this folder so the controls exist no matter
+        // which exe was started. a launcher-launched player skips this: its
+        // launcher is alive and owns the window.
+        void maybe_spawn_control_window(string dir)
+        {
+            try
+            {
+                // the launcher deletes control.json before starting the
+                // player and the control window writes it on the first user
+                // action; a file present this early means a launcher owns it.
+                if (File.Exists(control_path)) return;
+                string launcher = Path.Combine(dir, "UmaLauncher.exe");
+                if (!File.Exists(launcher)) return;
+                if (started_by_launcher(dir))
+                {
+                    trace_log.write("control bridge: launcher parent detected, skipping attach spawn");
+                    return;
+                }
+                var psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = launcher,
+                    Arguments = $"--control \"{dir}\"",
+                    UseShellExecute = false,
+                };
+                using var proc = System.Diagnostics.Process.Start(psi);
+                trace_log.write($"control bridge: spawned attach-mode control window ({launcher} --control)");
+            }
+            catch (Exception e)
+            {
+                trace_log.write($"control bridge: control window spawn failed: {e.Message}");
+            }
+        }
+
+        // true when the launcher started this player (its exe name appears
+        // in our parent chain). windows builds ship without System.Management
+        // so walk the chain via toolhelp-free heuristic: the launcher writes
+        // its own pid marker next to the exe right before it starts us.
+        bool started_by_launcher(string dir)
+        {
+            try
+            {
+                string marker = Path.Combine(dir, "launcher.pid");
+                if (!File.Exists(marker)) return false;
+                if (!long.TryParse(File.ReadAllText(marker).Trim(), out long pid)) return false;
+                var launcher_proc = System.Diagnostics.Process.GetProcessById((int)pid);
+                return launcher_proc != null && !launcher_proc.HasExited;
+            }
+            catch
+            {
+                // ArgumentException from GetProcessById = the pid is gone;
+                // a stale marker belongs to a dead launcher.
+                return false;
+            }
         }
 
         void Update()
