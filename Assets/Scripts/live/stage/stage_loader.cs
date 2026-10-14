@@ -582,6 +582,46 @@ namespace UV2.Live
         }
 
         // loads the character's body prefab and merges its head onto the skeleton.
+        // the game's per-character body scale (UmaContainerCharacter):
+        // Position.localScale = scale/160.7529, with scale = chara_data.scale
+        // in cm (135..180 across the cast). height 0/missing falls back to 1.
+        // spring bone distances are measured from the live rig at bind, and
+        // collider riders parent under the scaled bones, so both follow
+        // automatically; collider radii and record collision_radius are the
+        // authored values, which are correct under this scale by the game's
+        // own ScaleParams algebra (legacyScale cancels the bone lossyScale).
+        private void apply_chara_scale(Transform character_root, int chara_id)
+        {
+            float body_scale = 1f;
+            try
+            {
+                var db = UV2.Data.master_db.reader.open(config.master_db_path);
+                if (db != null)
+                {
+                    try
+                    {
+                        var rows = db.query($"SELECT scale FROM chara_data WHERE id={chara_id}");
+                        if (rows.Count > 0)
+                        {
+                            int cm = (int)rows[0].get_int(0);
+                            if (cm > 0) body_scale = cm / 160.7529f;
+                        }
+                    }
+                    finally { db.Dispose(); }
+                }
+            }
+            catch (System.Exception e)
+            {
+                trace_log.write($"chara {chara_id}: scale read failed ({e.Message}), using 1.0");
+            }
+            var position = character_root.Find("Position");
+            if (position != null)
+            {
+                position.localScale = new Vector3(body_scale, body_scale, body_scale);
+                trace_log.write($"chara {chara_id}: body scale {body_scale:0.000} applied to Position");
+            }
+        }
+
         private Transform load_character(int chara_id, int dress_id)
         {
             var body_opt = manifest_reader.chara_body(chara_id, dress_id);
@@ -634,6 +674,11 @@ namespace UV2.Live
             int chara_renderers = instance.GetComponentsInChildren<Renderer>(true).Length;
             trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: {chara_renderers} renderers (head +{head_renderers})");
             shader_manager.fix_game_shaders(instance.transform, $"chara {chara_id}");
+
+            // the game scales the whole rig by the chara's height
+            // (UmaContainerCharacter: Position.localScale = scale/160.7529),
+            // and every spring length/collider offset rides that scale.
+            apply_chara_scale(instance.transform, chara_id);
 
             // generic bodies ship null texture slots; assign them after the shader swap.
             assign_generic_body_textures(instance.transform, chara_id, body.bundle);
