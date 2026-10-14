@@ -326,7 +326,7 @@ namespace UV2.Live
                     // across head/body/tail instead of letting the first
                     // parts consume every window.
                     int tick = p.bench_tick++;
-                    if (bench_sample(tick) || (bench_dense && p.id == spring_sim.part.body))
+                    if (bench_sample(tick) || (bench_dense && (p.id == spring_sim.part.body || p.id == spring_sim.part.head)))
                     {
                         float delta = 0f;
                         for (int i = 0; i < chain.solve_count; i++)
@@ -338,7 +338,7 @@ namespace UV2.Live
                         Vector3 tip = chain.records[chain.solve_count - 1].target_position;
                         Vector3 root_pos = chain.root_transform.position;
                         Vector3 rel = tip - root_pos;
-                        trace_log.write($"spring step: part {p.id} chain '{chain.root_transform.name}' bones {chain.solve_count} maxdelta {delta:0.00}deg tip_rel ({rel.x:0.000},{rel.y:0.000},{rel.z:0.000}) len {rel.magnitude:0.000}");
+                        trace_log.write($"spring step: part {p.id} chain '{chain.root_transform.name}' bones {chain.solve_count} maxdelta {delta:0.00}deg tip_rel ({rel.x:0.000},{rel.y:0.000},{rel.z:0.000}) len {rel.magnitude:0.000} owner {(owner != null ? owner.name : "?")}");
                         // tail probe: the tail pinned near 180deg needs the
                         // per-bone breakdown to localize the flip. aim is
                         // the rest direction, dir the solved direction.
@@ -406,11 +406,14 @@ namespace UV2.Live
             for (int i = 0; i < n; i++)
             {
                 // the game's WarmUpCySpring runs the full BeginSimulation/
-                // EndSimulation path: collisions on, no history reset — the
-                // chain settles onto its true rest around the live pose.
+                // EndSimulation path, then the history-reset helper re-zeroes
+                // Diff/PrevTargetPosition/Force (register-proven @
+                // 0x7ff8e4961d70) so the burst settles the chain instead of
+                // accumulating snap velocity from the bind jump.
                 begin(dt);
                 update(collision_switch: true, dt);
                 end();
+                reset_history();
             }
             for (int i = 0; i < parts.Count; i++) parts[i].bench_tick = ticks[i];
         }

@@ -67,7 +67,7 @@ namespace UV2.Live
                 cloth_index, bust_index, chara_specific_body, tail_model_id,
                 load_prefab);
             if (refs.Count == 0) return null;
-            var sim = new spring_sim();
+            var sim = new spring_sim(character_root);
             var log = new Action<string>(m => trace_log.write(m));
             if (character_root == null || !spring_loader.attach(character_root, refs, sim, log))
             {
