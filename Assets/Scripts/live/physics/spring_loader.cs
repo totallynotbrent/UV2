@@ -184,9 +184,41 @@ namespace UV2.Live
                 foreach (var row in entry.connected) sim.pending_connected.Add(row);
             }
 
-            // the tail split: body rows drop names the tail spring data uses;
-            // the tail part's table keeps only those names.
-            // (the tail's collision table stays empty — its container ships no rows.)
+            // the tail split (the game's LoadSpringParam): body rows drop the
+            // names the tail spring data references; the tail part's table is
+            // the BODY rows FILTERED to those names. the tail container ships
+            // no collisionParam rows of its own.
+            List<collision_param> body_rows = null;
+            tables.TryGetValue(spring_sim.part.body, out body_rows);
+
+            if (body_rows != null && body_rows.Count > 0)
+            {
+                var tail_names = new HashSet<string>();
+                foreach (var t_part in sim.parts)
+                    if (t_part != null && t_part.id == spring_sim.part.tail)
+                        foreach (var ch in t_part.chains)
+                            for (int bi = 0; bi < ch.element_of.Length; bi++)
+                                if (ch.element_of[bi] != null)
+                                    foreach (var n in ch.element_of[bi].collision_names)
+                                        tail_names.Add(n);
+
+                if (tail_names.Count > 0)
+                {
+                    // body keeps only rows the tail does not claim
+                    var body_kept = new List<collision_param>();
+                    foreach (var row in body_rows)
+                        if (!tail_names.Contains(row.collision_name))
+                            body_kept.Add(row);
+                    tables[spring_sim.part.body] = body_kept;
+
+                    // tail gets the claimed rows, in body order
+                    var tail_rows = new List<collision_param>();
+                    foreach (var row in body_rows)
+                        if (tail_names.Contains(row.collision_name))
+                            tail_rows.Add(row);
+                    tables[spring_sim.part.tail] = tail_rows;
+                }
+            }
 
             foreach (var kv in tables)
                 if (kv.Value.Count > 0)
@@ -203,8 +235,18 @@ namespace UV2.Live
                 if (p != null && p.chains.Count > 0)
                 {
                     int bones = 0;
-                    foreach (var c in p.chains) bones += c.solve_count;
-                    log?.Invoke($"spring bind: part {p.id} chains {p.chains.Count} bones {bones}");
+                    int with_coll = 0;
+                    int list_miss = 0;
+                    foreach (var c in p.chains)
+                    {
+                        bones += c.solve_count;
+                        for (int bi = 0; bi < c.records.Length && bi < c.element_of.Length; bi++)
+                        {
+                            if (c.records[bi].active_collisions > 0) with_coll++;
+                            else if (c.element_of[bi] != null && c.element_of[bi].collision_names.Count > 0) list_miss++;
+                        }
+                    }
+                    log?.Invoke($"spring bind: part {p.id} chains {p.chains.Count} bones {bones} colliders {with_coll} missing {list_miss}");
                 }
             return true;
         }
