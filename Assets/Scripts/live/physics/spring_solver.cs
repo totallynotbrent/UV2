@@ -202,10 +202,16 @@ namespace UV2.Live
         // the shipped build: skipped here.
         private static void resolve_collisions(ref spring_record r, spring_collider[] colliders)
         {
+            // the native contract: the bone's resolved index list selects the
+            // colliders (AddCollisionIndex slots), NOT table order — a back
+            // hair strand tests its chest/hip spheres, never the face set.
+            var idx = r.collision_indices;
             for (int c = 0; c < r.active_collisions; c++)
             {
-                if (c >= colliders.Length) break;
-                var col = colliders[c];
+                if (idx == null || c >= idx.Length) break;
+                int ci = idx[c];
+                if ((uint)ci >= (uint)colliders.Length) continue;
+                var col = colliders[ci];
                 float reach = r.collision_radius + col.radius;
                 Vector3 pos = r.target_position;
 
