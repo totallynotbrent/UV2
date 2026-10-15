@@ -318,9 +318,13 @@ namespace UV2.Live
                     // animation pose, sampled every ~2s (trace-scan friendly).
                     // the tick counter is per part: the gate shares samples
                     // across head/body/tail instead of letting the first
-                    // parts consume every window.
+                    // parts consume every window. sampling only runs under
+                    // the explicit bench flags — an 18-member cast at
+                    // default cadence wrote 55k lines (20mb trace) in one
+                    // normal listening run.
                     int tick = p.bench_tick++;
-                    if (bench_sample(tick) || (bench_dense && (p.id == spring_sim.part.body || p.id == spring_sim.part.head)))
+                    bool want_trace = bench_dense || tail_probe_enabled;
+                    if (want_trace && (bench_sample(tick) || (bench_dense && (p.id == spring_sim.part.body || p.id == spring_sim.part.head))))
                     {
                         float delta = 0f;
                         for (int i = 0; i < chain.solve_count; i++)

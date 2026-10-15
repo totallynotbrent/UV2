@@ -16,7 +16,11 @@ namespace UV2.Live
 
         public void set_timescale(float scale)
         {
-            _rate = scale <= 0f ? 1f : scale;
+            // zero is a no-op, never a rate; negatives play in reverse (the
+            // control window's fine-speed control goes down to -3x, and a
+            // negative master pitch plays the clip backward natively).
+            if (scale == 0f) return;
+            _rate = scale;
             // the speed modifier rides the master's pitch too: without this
             // the music position wins in advance() and no transport speed
             // applies at all once the song is live.

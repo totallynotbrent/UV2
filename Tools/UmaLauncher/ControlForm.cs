@@ -18,7 +18,10 @@ namespace UmaLauncher
         private readonly TrackBar seek = new() { Minimum = 0, Maximum = 1000, TickFrequency = 0, Height = 40, Dock = DockStyle.Fill };
         private readonly Label time_label = new() { Text = "0:00 / 0:00", AutoSize = true, TextAlign = ContentAlignment.MiddleCenter };
         private readonly Button pause = new() { Text = "pause", Width = 90, Height = 32 };
-        private readonly ComboBox speed = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 90 };
+        // fine speed control: 0.01 steps via arrows or the mouse wheel once
+        // focused, range [-3, 3] so reverse playback is reachable (the
+        // player clamps the same range on its side).
+        private readonly NumericUpDown speed = new() { DecimalPlaces = 2, Increment = 0.01m, Minimum = -3m, Maximum = 3m, Value = 1.00m, Width = 76 };
         private readonly ComboBox camera = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
         private readonly CheckBox collisions = new() { Text = "collisions", AutoSize = true, Checked = true };
         private readonly TrackBar spring = new() { Minimum = 0, Maximum = 200, Value = 100, TickFrequency = 50, Width = 180 };
@@ -85,14 +88,16 @@ namespace UmaLauncher
 
             Controls.Add(root);
 
-            speed.Items.AddRange(["0.5x", "0.75x", "1x", "1.25x", "1.5x", "2x"]);
-            speed.SelectedIndex = 2;
             camera.Items.AddRange(["camera full", "camera partial", "camera free"]);
             camera.SelectedIndex = 0;
 
             pause.Click += (s, e) => Send(paused: status_paused == 1 ? 0 : 1);
-            speed.SelectedIndexChanged += (s, e) => Send(speed: ParseSpeed(speed.SelectedIndex));
-            camera.SelectedIndexChanged += (s, e) => Send(camera_mode: camera.SelectedIndex);
+            speed.ValueChanged += (s, e) => Send(speed: (float)speed.Value);
+            camera.SelectedIndexChanged += (s, e) =>
+            {
+                last_camera_pick = DateTime.UtcNow;
+                Send(camera_mode: camera.SelectedIndex);
+            };
             collisions.CheckedChanged += (s, e) => Send(collisions: collisions.Checked ? 1 : 0);
             spring.ValueChanged += (s, e) =>
             {
@@ -114,28 +119,28 @@ namespace UmaLauncher
             };
         }
 
-        static float ParseSpeed(int index) => index switch
-        {
-            0 => 0.5f, 1 => 0.75f, 2 => 1f, 3 => 1.25f, 4 => 1.5f, _ => 2f
-        };
-
         // writes one command block. the player applies the whole block when
         // the sequence number advances, so every field ships every time —
-        // absent fields must not fall back to parser defaults.
-        void Send(float seek_val = -1f, int paused = -1, float speed = 0f,
+        // absent fields must not fall back to parser defaults. fields the
+        // user has not touched keep their last SENT value, but seek is
+        // single-shot: re-shipping an old seek on every later button made
+        // each spring-rate tweak yank the song back (the trace showed every
+        // seq carrying seek 12.4 after one scrub). the player treats a
+        // negative seek as "no seek this block".
+        void Send(float seek_val = float.NaN, int paused = -1, float speed = 0f,
             int collisions = -1, float spring_rate = 0f, int camera_mode = -1)
         {
             seq++;
-            if (seek_val < 0f) seek_val = _last_seek;
+            if (float.IsNaN(seek_val)) seek_val = _no_seek;
             if (paused < 0) paused = _last_paused;
-            if (speed <= 0f) speed = _last_speed;
+            if (speed == 0f) speed = _last_speed;
             if (collisions < 0) collisions = _last_collisions;
             if (spring_rate <= 0f) spring_rate = _last_spring;
             if (camera_mode < 0) camera_mode = _last_camera;
             _last_seek = seek_val; _last_paused = paused; _last_speed = speed;
             _last_collisions = collisions; _last_spring = spring_rate; _last_camera = camera_mode;
             string json = "{\"seq\": " + seq +
-                ", \"seek\": " + seek_val.ToString("0.###") +
+                ", \"seek\": " + (seek_val < 0f ? "-1" : seek_val.ToString("0.###")) +
                 ", \"paused\": " + paused +
                 ", \"speed\": " + speed.ToString("0.###") +
                 ", \"collisions\": " + collisions +
@@ -144,6 +149,7 @@ namespace UmaLauncher
             try { File.WriteAllText(Path.Combine(dir, "control.json"), json); } catch { }
         }
 
+        const float _no_seek = -1f;
         float _last_seek = -1f;
         int _last_paused;
         float _last_speed = 1f;
@@ -151,6 +157,17 @@ namespace UmaLauncher
         float _last_spring = 1f;
         int _last_camera;
 
+        // user-owned camera selection: the poll used to snap the combo from
+        // the player's (up to 250ms stale) status, which fired
+        // SelectedIndexChanged again and re-sent the OLD mode — the camera
+        // flip-flop (1 -> 0 -> 0 -> 1) in the trace. the combo only follows
+        // the player when the player disagrees AND the user is not mid-
+        // selection (no local change in the last second).
+        DateTime last_camera_pick = DateTime.MinValue;
+
+        // the seek trackbar follows the player's status only when the user
+        // is not dragging and no local seek command is outstanding (the
+        // player echoes seeks in status; following it re-sent the same seek).
         void Poll()
         {
             if (exited) return;
@@ -192,7 +209,11 @@ namespace UmaLauncher
                 time_label.Text = $"{Fmt(status_time)} / {Fmt(status_length)}" +
                     (status_paused == 1 ? "  (paused)" : "");
                 if (status_paused == 1) pause.Text = "resume"; else pause.Text = "pause";
-                if (status_cam >= 0 && camera.SelectedIndex != status_cam)
+                // follow the player's camera mode only outside the grace
+                // window after a user pick; the player applies the pick and
+                // echoes it back, and from then the echo is in sync.
+                if (status_cam >= 0 && camera.SelectedIndex != status_cam &&
+                    (DateTime.UtcNow - last_camera_pick).TotalSeconds > 1.0)
                     camera.SelectedIndex = status_cam;
                 if (root.TryGetProperty("loading", out var loading) &&
                     loading.GetString() is string phase && phase.Length > 0)

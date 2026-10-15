@@ -123,7 +123,9 @@ namespace UV2.UI
                 if (cmd.seek >= 0f) clock.seek(cmd.seek);
                 if (cmd.paused == 1) clock.pause();
                 else clock.resume();
-                if (cmd.speed > 0f) clock.set_timescale(cmd.speed);
+                // negatives are reverse playback: only a true zero is "no
+                // command" (the window never sends one, but keep the guard).
+                if (cmd.speed != 0f) clock.set_timescale(cmd.speed);
                 physics_director.collisions_enabled = cmd.collisions == 1;
                 if (cmd.spring_rate > 0f && physics_director.instance != null)
                     foreach (var sim in physics_director.instance.all_sims())

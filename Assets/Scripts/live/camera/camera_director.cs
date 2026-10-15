@@ -34,7 +34,8 @@ namespace UV2.Live
         private bool free_seeded;
 
         // manual fly: right-drag looks, wasd/qe moves along the view, shift
-        // sprints, the scroll wheel dollies forward and back.
+        // sprints, the scroll wheel zooms the field of view.
+
         private void free_fly()
         {
             if (!free_seeded)
@@ -61,9 +62,11 @@ namespace UV2.Live
             float speed = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift) ? 12f : 3f;
             if (move != Vector3.zero)
                 cam.transform.position += cam.transform.rotation * move * (speed * Time.deltaTime);
+            // scroll adjusts fov in freecam (w/s already dollies, so the
+            // wheel is free for zoom); clamped to unity's sane band.
             float wheel = Input.GetAxis("Mouse ScrollWheel");
             if (!Mathf.Approximately(wheel, 0f))
-                cam.transform.position += cam.transform.forward * (wheel * 8f);
+                cam.fieldOfView = Mathf.Clamp(cam.fieldOfView - wheel * 12f, 5f, 120f);
         }
 
         // handshake state: the authored key params + the running noise time.

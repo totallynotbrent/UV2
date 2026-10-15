@@ -10,6 +10,46 @@ namespace UV2.App
         public string type_name;
         public string method_name;
 
+        // applies a pending update's locked files (backup/pending.txt +
+        // pending.zip written by the launcher's updater) before anything
+        // else runs: the player itself was one of the locked files, so
+        // without this a leftover update set never lands on the player
+        // and it boots the old build until a manual reinstall.
+        static void apply_pending_update()
+        {
+            try
+            {
+                string dir = AppDomain.CurrentDomain.BaseDirectory;
+                string pending_path = System.IO.Path.Combine(dir, "backup", "pending.txt");
+                string zip_path = System.IO.Path.Combine(dir, "backup", "pending.zip");
+                if (!System.IO.File.Exists(pending_path) || !System.IO.File.Exists(zip_path)) return;
+                var pending = new System.Collections.Generic.HashSet<string>(
+                    System.IO.File.ReadAllLines(pending_path));
+                using var archive = System.IO.Compression.ZipFile.OpenRead(zip_path);
+                foreach (var entry in archive.Entries)
+                {
+                    if (!pending.Contains(entry.FullName)) continue;
+                    if (entry.FullName.EndsWith("/")) continue;
+                    string target = System.IO.Path.Combine(dir, entry.FullName);
+                    System.IO.Directory.CreateDirectory(
+                        System.IO.Path.GetDirectoryName(target));
+                    // manual extract: the FileSystem assembly's ExtractToFile
+                    // extension is not referenced in the player profile.
+                    using var input = entry.Open();
+                    using var output = System.IO.File.Create(target);
+                    input.CopyTo(output);
+                }
+                System.IO.File.Delete(pending_path);
+                System.IO.File.Delete(zip_path);
+                trace_log.write("pending update applied on player boot");
+            }
+            catch (Exception e)
+            {
+                // a failed catch-up must never block boot.
+                trace_log.write($"pending update apply failed: {e.Message}");
+            }
+        }
+
         private IEnumerator Start()
         {
             var pre_args = System.Environment.GetCommandLineArgs();
@@ -27,6 +67,12 @@ namespace UV2.App
 
             trace_log.open();
             trace_log.write($"args: {string.Join(" ", System.Environment.GetCommandLineArgs())}");
+
+            // heals files an update could not overwrite while the old player
+            // was still running (the launcher writes backup/pending.txt +
+            // pending.zip): the player applies them before anything else so
+            // it never runs a half-updated install.
+            apply_pending_update();
 
             if (pose_probe)
             {

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http;
 using System.Text.Json;
+using System.Threading;
 
 namespace UmaLauncher
 {
@@ -99,6 +100,10 @@ namespace UmaLauncher
 
         // re-extracts entries that were locked while the old process was still
         // alive; runs before the form opens so the app boots fully updated.
+        // the update flow now kills player + attach windows before extract,
+        // so this only carries leftovers from an unusually stubborn lock
+        // (e.g. an antivirus scan holding a file); it must skip its own exe
+        // (the cmd swap owns that now).
         public static void ApplyPending()
         {
             try
@@ -113,6 +118,7 @@ namespace UmaLauncher
                 foreach (ZipArchiveEntry entry in archive.Entries)
                 {
                     if (!pending.Contains(entry.FullName)) continue;
+                    if (Path.GetFileName(entry.FullName) == "UmaLauncher.exe") continue;
                     string target = Path.Combine(appDir, entry.FullName);
                     Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                     entry.ExtractToFile(target, true);
@@ -133,11 +139,31 @@ namespace UmaLauncher
             string backupDir = Path.Combine(appDir, "backup");
             Directory.CreateDirectory(backupDir);
 
+            // a running concert player (and any attach-mode control window)
+            // locks UV2.exe and GameAssembly.dll, so an update with a concert
+            // open silently skipped them and the player ran the old build
+            // until a manual reinstall. kill every uv2/launcher instance
+            // except this process before extracting; the files unlock the
+            // moment the processes die.
+            int self = Environment.ProcessId;
+            foreach (string name in new[] { "UV2", "UmaLauncher" })
+            {
+                foreach (var proc in Process.GetProcessesByName(name))
+                {
+                    try { if (proc.Id != self) proc.Kill(); }
+                    catch { }
+                }
+            }
+            // give windows a moment to release the file locks.
+            try { Thread.Sleep(1500); } catch { }
+
             string exePath = Environment.ProcessPath ?? "";
             if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
                 File.Copy(exePath, Path.Combine(backupDir, "UmaLauncher.exe.bak"), true);
 
             List<string> pending = [];
+            string ownExeNew = Path.Combine(appDir, "UmaLauncher.exe.new");
+            try { File.Delete(ownExeNew); } catch { }
             using ZipArchive archive = ZipFile.OpenRead(zipPath);
             foreach (ZipArchiveEntry entry in archive.Entries)
             {
@@ -148,6 +174,15 @@ namespace UmaLauncher
                     continue;
                 }
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                if (Path.GetFileName(entry.FullName) == "UmaLauncher.exe")
+                {
+                    // our own image is locked by this very process; extract
+                    // beside it and let the restart script swap it in after
+                    // we exit (the old self-replace via ApplyPending could
+                    // never work — it re-extracted while the exe ran).
+                    entry.ExtractToFile(ownExeNew, true);
+                    continue;
+                }
                 try
                 {
                     entry.ExtractToFile(target, true);
@@ -164,8 +199,34 @@ namespace UmaLauncher
                 File.Copy(zipPath, Path.Combine(backupDir, "pending.zip"), true);
             }
 
-            if (!string.IsNullOrEmpty(exePath))
+            // swap our own exe and relaunch: the script waits for this
+            // process to die, moves the new image over the old name, and
+            // starts it. falls back to starting the old exe if the move
+            // fails so the user is never left with a dead launcher.
+            if (!string.IsNullOrEmpty(exePath) && File.Exists(ownExeNew))
+            {
+                string script =
+                    "@echo off\r\n" +
+                    ":wait\r\n" +
+                    "tasklist /fi \"PID eq " + self + "\" | find \"" + self + "\" >nul\r\n" +
+                    "if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n" +
+                    "move /y \"UmaLauncher.exe.new\" \"UmaLauncher.exe\" >nul\r\n" +
+                    "start \"\" \"" + exePath + "\"\r\n";
+                string scriptPath = Path.Combine(appDir, "apply_update.cmd");
+                File.WriteAllText(scriptPath, script);
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = "/c apply_update.cmd",
+                    WorkingDirectory = appDir,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                });
+            }
+            else if (!string.IsNullOrEmpty(exePath))
+            {
                 Process.Start(exePath);
+            }
             Environment.Exit(0);
         }
     }
