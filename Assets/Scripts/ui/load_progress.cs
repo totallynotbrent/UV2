@@ -40,18 +40,23 @@ namespace UV2.UI
             current = key;
         }
 
-        // the value the bar renders: creeps toward the loader's mark at a
-        // rate that reaches it just as the next phase lands (~35s worst-case
-        // cast phase), so the bar is always visibly moving.
+        // the value the bar renders: creeps toward the loader's mark on a
+        // linear schedule that always lands within a few seconds, so the bar
+        // is visibly moving through the multi-second stalls (cast load
+        // ~2s/chara). proportional-only easing was exponential decay — 8% of
+        // the remaining gap per second never got anywhere and the bar sat
+        // visually frozen on slow machines.
         public static float bar_fraction()
         {
             if (render_fraction < 0f) render_fraction = 0f;
             float gap = fraction - render_fraction;
             if (gap > 0f)
             {
-                // ease toward the mark; never overshoot. the creep rate is
-                // scaled to the remaining gap so a long stall still moves.
-                render_fraction = Mathf.Min(fraction, render_fraction + Mathf.Max(gap * 0.08f, 0.0004f) * Time.deltaTime);
+                // cover whatever gap exists in about 4 seconds, never
+                // overshooting the mark; a floor keeps tiny gaps crawling
+                // visibly instead of snapping.
+                float rate = Mathf.Max(gap / 4f, 0.005f);
+                render_fraction = Mathf.Min(fraction, render_fraction + rate * Time.deltaTime);
             }
             return render_fraction;
         }

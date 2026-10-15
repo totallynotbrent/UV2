@@ -14,7 +14,14 @@ namespace UV2.Live
         public float rate => _rate;
         public bool paused { get; private set; }
 
-        public void set_timescale(float scale) => _rate = scale <= 0f ? 1f : scale;
+        public void set_timescale(float scale)
+        {
+            _rate = scale <= 0f ? 1f : scale;
+            // the speed modifier rides the master's pitch too: without this
+            // the music position wins in advance() and no transport speed
+            // applies at all once the song is live.
+            if (_master != null) _master.pitch = _rate;
+        }
 
         public void pause()
         {

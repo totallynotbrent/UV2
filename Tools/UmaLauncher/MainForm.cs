@@ -392,7 +392,10 @@ namespace UmaLauncher
             if (player != null)
             {
                 ControlForm control = new(dir, player);
-                control.Show(this);
+                // un-owned: an owner-attached tool window drags the launcher
+                // forward whenever it is raised; the control window floats
+                // independently and never pulls the launcher up with it.
+                control.Show();
             }
         }
 

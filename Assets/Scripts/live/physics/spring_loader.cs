@@ -135,11 +135,15 @@ namespace UV2.Live
                     if (target == null) continue;
                     var col_go = new GameObject(row.collision_name);
                     col_go.transform.SetParent(target, false);
-                    // the game parents the rider at LOCAL offset (the fork's
-                    // ScaleParams_Sphere restores localPosition = defaultOffset;
-                    // a world-space add rides wrong once the target bone rotates).
-                    if (row.type == (int)spring_collider_type.sphere ||
-                        row.type == (int)spring_collider_type.capsule)
+                    // the game's ScaleParams algebra (v1's vendored
+                    // ScaleParams_Sphere/Capsule): the sphere rider sits at
+                    // defaultOffset / bodyScale; the capsule rider keeps the
+                    // RAW defaultOffset (its axis and radius carry the
+                    // lossy/bodyScale factor at eval time instead).
+                    float body_scale = position_body_scale(character);
+                    if (row.type == (int)spring_collider_type.sphere)
+                        col_go.transform.localPosition = row.offset / body_scale;
+                    else if (row.type == (int)spring_collider_type.capsule)
                         col_go.transform.localPosition = row.offset;
                     else
                     {
@@ -148,6 +152,7 @@ namespace UV2.Live
                         continue;
                     }
                     row.rider = col_go.transform;
+                    row.body_scale = body_scale;
                     table.Add(row);
                 }
 
@@ -292,6 +297,16 @@ namespace UV2.Live
                 if (r != null) return r;
             }
             return null;
+        }
+
+        // the rig's body scale: Position.localScale.y (the game's bodyScale
+        // lives on the Position node; the character root stays at 1).
+        static float position_body_scale(Transform character)
+        {
+            var position = find_deep(character, "Position");
+            if (position == null) return 1f;
+            float s = position.localScale.y;
+            return s > 1e-5f ? s : 1f;
         }
     }
 

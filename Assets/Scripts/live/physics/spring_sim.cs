@@ -133,7 +133,10 @@ namespace UV2.Live
             pending_connected.Clear();
         }
 
-        // arms the one-shot suppression pass (spawn/cut/teleport).
+        // arms the one-shot suppression pass (spawn/cut/teleport): the root
+        // anchor's first solve after the arm runs v1's UpdateSuppression —
+        // a 1cm clamp toward the animated pose when the gap exceeds 1m, so
+        // the chain glides over instead of whipping through the teleport.
         public void arm_suppression() => suppression_armed = true;
 
         spring_chain owning_chain(Transform t)
@@ -279,15 +282,6 @@ namespace UV2.Live
                         stiffness_rate, drag_rate, gravity_rate,
                         wind_vec, wind_power, 1f, true, collision_switch,
                         part_colliders, p.spring_rate, p.hip_rate, p.hip_rate);
-
-                    // suppression easing toward the animated pose (1cm/frame)
-                    if (suppression_pending)
-                    {
-                        var r = chain.records[0];
-                        spring_solver.suppress(ref r, root_anim_pos, 0.01f);
-                        chain.records[0] = r;
-                        chain_propagate_suppression(chain);
-                    }
                 }
             }
             suppression_pending = false;
@@ -418,6 +412,77 @@ namespace UV2.Live
             for (int i = 0; i < parts.Count; i++) parts[i].bench_tick = ticks[i];
         }
 
+        // the game binds AFTER placement: CySpringBoneBase.Initialize seeds
+        // Target/PrevTarget from the placed pose and freezes InitLocalRotation
+        // from it (v1's viewer binds post-placement, so its rest frame IS the
+        // start pose). UV2 binds at load, so the start-pose cut must REPLAY
+        // the seed: targets re-seeded to the placed pose (zero velocity) and
+        // the rest frame re-captured relative to each bone's parent — hair
+        // aims down from the tilted start-pose head, the tail behind, no
+        // crawl from the stale load-pose state.
+        public void reset_to_pose()
+        {
+            foreach (var p in parts)
+                foreach (var chain in p.chains)
+                {
+                    if (chain?.records == null || chain.bones == null) continue;
+                    for (int i = 0; i < chain.records.Length && i < chain.bones.Length; i++)
+                    {
+                        var bone = chain.bones[i];
+                        if (bone == null) continue;
+                        var r = chain.records[i];
+                        r.target_position = bone.position;
+                        r.prev_target = bone.position;
+                        r.self_position = bone.position;
+                        r.force = Vector3.zero;
+                        r.connected_force = Vector3.zero;
+                        r.final_rot = bone.rotation;
+                        // rest frame re-captured in the chain-parent frame
+                        // (bind's algebra): Inverse(parent world) * bone world.
+                        // the chain parent is the previous bone's solved
+                        // frame, the hierarchy parent for the root — never
+                        // raw localRotation (scaffold chains carry the
+                        // character-root frame in it).
+                        Quaternion parent_world = i > 0 && chain.bones[i - 1] != null
+                            ? chain.bones[i - 1].rotation
+                            : (bone.parent != null ? bone.parent.rotation : Quaternion.identity);
+                        r.anim_local = bone.localRotation;
+                        r.init_local = Quaternion.Inverse(parent_world) * bone.rotation;
+                        chain.records[i] = r;
+                    }
+
+                    // full Initialize replay: the segment axis/distance are
+                    // also bind-pose captures (the child writes its parent's
+                    // rest direction; the leaf inherits). re-derived from the
+                    // placed pose, the aim stops pointing where the stale
+                    // load-pose pointed.
+                    for (int i = 1; i < chain.records.Length; i++)
+                    {
+                        if (chain.bones[i] == null || chain.bones[i - 1] == null) continue;
+                        Vector3 delta = chain.bones[i].position - chain.bones[i - 1].position;
+                        float dist = delta.magnitude;
+                        if (dist < 1e-4f) continue;
+                        var pr = chain.records[i - 1];
+                        Quaternion inv = Quaternion.Inverse(chain.bones[i - 1].rotation);
+                        pr.bone_axis = (inv * delta).normalized;
+                        pr.bone_distance = dist;
+                        chain.records[i - 1] = pr;
+                    }
+                    int n = chain.records.Length;
+                    if (n >= 2)
+                    {
+                        var leaf = chain.records[n - 1];
+                        leaf.bone_axis = chain.records[n - 2].bone_axis;
+                        leaf.bone_distance = chain.records[n - 2].bone_distance;
+                        chain.records[n - 1] = leaf;
+                    }
+                    var root_rec = chain.records[0];
+                    root_rec.bone_axis = Vector3.up;
+                    root_rec.bone_distance = 1f;
+                    chain.records[0] = root_rec;
+                }
+        }
+
         // tail flip diagnosis: dumps per-bone tail frames during bench runs.
         public static bool tail_probe_enabled;
         public static bool bench_dense;
@@ -441,10 +506,14 @@ namespace UV2.Live
                 }
         }
 
+        // armed on spawn/cut: the game's suppression clamps ONLY the root's
+        // anchor toward its animated position for one frame (the child verlet
+        // state is never rewritten); a one-frame clamp on the anchor then
+        // lets the verlet drag the chain over. copying the eased position
+        // onto every record collapses the chain to a point that re-extends
+        // as a spike — the tail forward-phasing and the hair splayed out.
         void apply_suppression()
         {
-            // armed on spawn/cut: ease each root toward its animated position
-            // when the gap exceeds the squared threshold (game default 1.0).
             foreach (var p in parts)
                 foreach (var chain in p.chains)
                 {
@@ -453,23 +522,16 @@ namespace UV2.Live
                     Vector3 diff = anim_world - chain.records[0].target_position;
                     float check = suppression_length > 0f ? suppression_length : 1f;
                     if (diff.sqrMagnitude >= check * check)
-                        suppression_pending = true;
+                    {
+                        // v1's UpdateSuppression: one 1cm step toward the
+                        // animated pose, root anchor only, both history
+                        // slots seeded so no velocity impulse survives.
+                        var r = chain.records[0];
+                        spring_solver.suppress(ref r, anim_world, 0.01f);
+                        chain.records[0] = r;
+                    }
                 }
-        }
-
-        void chain_propagate_suppression(spring_chain chain)
-        {
-            // the contract's propagation loop: each next record copies the
-            // previous record's eased target/prev and resets its rotation.
-            for (int i = 1; i < chain.records.Length; i++)
-            {
-                var r = chain.records[i];
-                var prev = chain.records[i - 1];
-                r.target_position = prev.target_position;
-                r.prev_target = prev.prev_target;
-                r.final_rot = prev.final_rot;
-                chain.records[i] = r;
-            }
+            suppression_pending = false;
         }
 
         // connected-bone forces: pair distance error pulls both records

@@ -24,6 +24,8 @@ namespace UV2.Live
 
         // evaluates world-space placement from one collision row's rider
         // transform (the GameObject parented under the target bone).
+        // the scale algebra is the game's ScaleParams: effective values are
+        // the authored ones times (bone lossyScale / bodyScale).
         public static spring_collider from_rider(collision_param p)
         {
             var c = new spring_collider
@@ -34,19 +36,23 @@ namespace UV2.Live
             Transform rider = p.rider;
             if (rider == null) return c;
 
+            float body_scale = p.body_scale > 1e-5f ? p.body_scale : 1f;
             if (p.type == (int)spring_collider_type.capsule)
             {
                 Vector3 parent_scale = rider.parent != null
                     ? rider.parent.lossyScale
                     : Vector3.one;
-                Vector3 axis = Vector3.Scale(p.offset2 - p.offset, parent_scale);
+                Vector3 axis = Vector3.Scale(p.offset2 - p.offset, parent_scale) / body_scale;
                 c.position = rider.position;
                 c.position2 = rider.position + axis;
-                c.radius *= parent_scale.y > 1e-6f ? parent_scale.y : 1f;
+                float cap_scale = parent_scale.y > 1e-6f ? parent_scale.y / body_scale : 1f;
+                c.radius *= cap_scale;
             }
             else
             {
                 c.position = rider.position;
+                float sp_scale = rider.lossyScale.y > 1e-6f ? rider.lossyScale.y / body_scale : 1f;
+                c.radius *= sp_scale;
             }
             return c;
         }
@@ -65,5 +71,6 @@ namespace UV2.Live
         public float radius;
         public byte is_other_target;       // resolve against another character
         public Transform rider;            // the created child transform
+        public float body_scale = 1f;      // the rig's body scale at bind
     }
 }

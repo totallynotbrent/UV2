@@ -65,6 +65,13 @@ namespace UV2.Live
         private Transform[] stem_roots;   // chara roots, parallel to stems
         private int last_section = -1;
         private int last_override_sec = -2;
+        // transport ride state: pause parking, seek-jump detection, and the
+        // last pitch pushed to the sources (the stems are free-running
+        // sources — without this the clock's pause/seek/speed leave them
+        // rolling and the voices dislodge from the instrumental).
+        private bool stems_paused;
+        private float prev_t = -1f;
+        private float last_pitch = 1f;
         // the song clock is only authoritative once the oke is playing; stems
         // must never start against the pre-music free-run clock or every
         // take begins mid-song and the mix runs ahead of the instrumental.
@@ -362,6 +369,7 @@ namespace UV2.Live
                 trace_log.write($"vocals: music live at t={clock.time:0.00}s, stems starting");
             }
             float t = clock?.time ?? 0f;
+            ride_transport(t);
             int[] active = part_flags(t);
             bool uncut = active == null;
 
@@ -489,6 +497,61 @@ namespace UV2.Live
                 if (src_audio == null || src_audio.clip == null) continue;
                 if (src_audio.clip.length > 0f) src_audio.time = t % src_audio.clip.length;
                 src_audio.Play();
+            }
+        }
+
+        // rides the stems against the clock's transport so pause/seek/speed
+        // stay glued to the instrumental: pause parks every source, resume
+        // un-parks, a seek beyond one frame re-seats the playhead (the stems
+        // are full-song takes, so the seat is absolute against the clock),
+        // and the speed modifier scales the sources' pitch the same way the
+        // master rides it. free-running stems dislodge on every transport
+        // move — the paused voices kept singing and the speed box did
+        // nothing once the audio clock was trusted.
+        private void ride_transport(float t)
+        {
+            bool want_pause = clock.paused;
+            if (want_pause != stems_paused)
+            {
+                stems_paused = want_pause;
+                foreach (var s in stems)
+                    foreach (var src_audio in s.sources)
+                    {
+                        if (src_audio == null || src_audio.clip == null) continue;
+                        if (want_pause) src_audio.Pause();
+                        else if (src_audio.isPlaying) src_audio.UnPause();
+                        else src_audio.Play();
+                    }
+                trace_log.write($"vocals: transport {(want_pause ? "pause" : "resume")} at t={t:0.0}s");
+            }
+
+            // a seek shows up as a time delta the playback rate cannot
+            // explain: re-seat every take against the clock.
+            float rate = clock.rate;
+            float frame = Time.unscaledDeltaTime * rate;
+            if (prev_t >= 0f && Mathf.Abs(t - prev_t) > frame + 0.25f)
+            {
+                foreach (var s in stems)
+                    foreach (var src_audio in s.sources)
+                    {
+                        if (src_audio == null || src_audio.clip == null) continue;
+                        if (src_audio.clip.length > 0f)
+                            src_audio.time = t % src_audio.clip.length;
+                        if (stems_paused) src_audio.Pause();
+                    }
+                trace_log.write($"vocals: transport seek reseat at t={t:0.0}s (jump {t - prev_t:0.0}s)");
+            }
+            prev_t = t;
+
+            // the speed modifier applies to the stems the same way it does
+            // the master: pitch scales playback rate (and pitch, the
+            // acceptable cost of the built-in dsp route).
+            if (!stems_paused && !Mathf.Approximately(last_pitch, rate))
+            {
+                last_pitch = rate;
+                foreach (var s in stems)
+                    foreach (var src_audio in s.sources)
+                        if (src_audio != null) src_audio.pitch = rate;
             }
         }
 

@@ -38,13 +38,22 @@ namespace UmaLauncher
             owns_player = owns;
             Text = "concert";
             StartPosition = FormStartPosition.Manual;
-            Size = new Size(560, 210);
+            // a fixed 210px height clips the bottom control row on
+            // high-dpi laptop screens (windows scales the title bar and
+            // fonts but the table's implicit row heights overflow the
+            // client area): explicit percent row styles stretch all three
+            // rows into whatever height the window has.
+            MinimumSize = new Size(560, 220);
+            Size = new Size(600, 240);
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
             MinimizeBox = false;
 
             TableLayoutPanel root = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Padding = new Padding(12) };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62f));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 38f));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 30f));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 35f));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 35f));
 
             // row 0: seek bar across the top.
             root.Controls.Add(seek, 0, 0);
@@ -61,6 +70,10 @@ namespace UmaLauncher
             root.Controls.Add(right, 1, 1);
 
             // row 2: camera combo, collisions checkbox, spring slider.
+            // the bottom row carries five controls; a non-wrapping flow
+            // at 560px pushed the spring slider's label off the edge —
+            // the loading label shares the row now that the window is
+            // wider and the row carries an explicit 35% band.
             FlowLayoutPanel bottom = new() { Dock = DockStyle.Fill, WrapContents = false };
             bottom.Controls.Add(camera);
             bottom.Controls.Add(collisions);
