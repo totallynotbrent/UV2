@@ -49,6 +49,11 @@ namespace UV2.Live
         // device-less containers report the clip end from the first read.
         private bool _audio_trusted;
 
+        // true once the master audio source is playing: the song clock is
+        // authoritative only from this point, and consumers that must not
+        // advance on the pre-music free-run time gate on it.
+        public bool music_live => _master != null && _master.isPlaying;
+
         // one frame step: the audio position once it has proven it advances
         // plausibly, else real-time accumulation. a paused clock holds the
         // seeked frame for the -uv2frame capture mode.

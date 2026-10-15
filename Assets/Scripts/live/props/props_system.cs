@@ -41,6 +41,12 @@ namespace UV2.Live
             public readonly Dictionary<string, Vector3> last_target = new();
             public readonly Dictionary<string, float> last_weight = new();
             public readonly HashSet<string> engaged = new();
+
+            // the accumulated scale of the attach chain at spawn: the stand
+            // divides it out so the pole stays world-size under any body scale.
+            public Vector3 attach_scale = Vector3.one;
+
+            public Vector3 attach_lossy_scale() => attach_loc != null ? attach_loc.lossyScale : Vector3.one;
         }
 
         private static readonly List<chara_prop> chara_props = new();
@@ -358,7 +364,9 @@ namespace UV2.Live
             float d = head_y - position_y;
             if (props._isInfluenceOfCharaHeight != 0)
             {
-                float body_scale = chara_root.localScale.y;
+                // bodyScale lives on the Position bone (the chara root stays
+                // at 1); the game's lmc._bodyScale is the same value.
+                float body_scale = position_node.localScale.y;
                 if (body_scale > 0f) d /= body_scale;
             }
 
@@ -446,7 +454,14 @@ namespace UV2.Live
             instance.transform.SetParent(rig.attach_loc, false);
             instance.transform.localPosition = Vector3.zero;
             instance.transform.localRotation = Quaternion.identity;
-            instance.transform.localScale = Vector3.one;
+            // the stand is a stage object, not part of the rig: cancel the
+            // parent's body scale so the world-size pole the game authors
+            // (and the world-unit telescope below) survives short casts.
+            Vector3 parent_scale = rig.attach_lossy_scale();
+            instance.transform.localScale = new Vector3(
+                parent_scale.x > 1e-5f ? 1f / parent_scale.x : 1f,
+                parent_scale.y > 1e-5f ? 1f / parent_scale.y : 1f,
+                parent_scale.z > 1e-5f ? 1f / parent_scale.z : 1f);
 
             var sp = new stage_prop
             {
@@ -585,16 +600,31 @@ namespace UV2.Live
                             sp.instance.transform.SetParent(parent, false);
                             trace_log.write($"props: slot {sp.slot} stand transferred to {cur.attach_joint_name} at f{cur.frame} (t={time_sec:0.0}s)");
                         }
+                        // authored offsets are world units for a stage-fixed
+                        // stand; the carried parent's body scale divides out
+                        // so the pole sits at the authored spot under any rig.
                         Vector3 off = cur.offset_position;
                         if (next != null && (next.setting_flags & sp.flag_bit) != 0)
                         {
                             float k = key_eval.interp(cur, next, time_sec);
                             off = key_eval.lerp_v3(cur.offset_position, next.offset_position, k);
                         }
+                        Vector3 ps = parent.lossyScale;
+                        off = new Vector3(
+                            ps.x > 1e-5f ? off.x / ps.x : off.x,
+                            ps.y > 1e-5f ? off.y / ps.y : off.y,
+                            ps.z > 1e-5f ? off.z / ps.z : off.z);
                         sp.instance.transform.localPosition = off;
                         sp.instance.transform.localRotation = Quaternion.Euler(cur.offset_rotate);
                         Vector3 sc = cur.offset_scale;
-                        if (sc.x > 0f || sc.y > 0f || sc.z > 0f) sp.instance.transform.localScale = sc;
+                        if (sc.x > 0f || sc.y > 0f || sc.z > 0f)
+                        {
+                            Vector3 ps2 = parent.lossyScale;
+                            sp.instance.transform.localScale = new Vector3(
+                                ps2.x > 1e-5f ? sc.x / ps2.x : sc.x,
+                                ps2.y > 1e-5f ? sc.y / ps2.y : sc.y,
+                                ps2.z > 1e-5f ? sc.z / ps2.z : sc.z);
+                        }
                         break;
                     }
                 }
@@ -746,7 +776,13 @@ namespace UV2.Live
         // game formula: clamp((totalScale - 0.827) / 0.338, 0, 1.6665).
         private static float height_rate(Transform chara)
         {
-            float total_scale = Mathf.Max(0.01f, chara.lossyScale.y);
+            // the game's totalScale = _scale * _bodyScale where _bodyScale is
+            // the height ratio the rig carries (Position.localScale) and
+            // _scale resets to 1: the chara root itself never carries it.
+            var position = find_bone(chara, "Position");
+            float total_scale = position != null
+                ? Mathf.Max(0.01f, position.lossyScale.y)
+                : Mathf.Max(0.01f, chara.lossyScale.y);
             return Mathf.Clamp((total_scale - 0.827f) / 0.338f, 0f, 1.6665f);
         }
 

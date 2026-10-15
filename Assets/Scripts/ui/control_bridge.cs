@@ -63,9 +63,10 @@ namespace UV2.UI
                 {
                     FileName = launcher,
                     Arguments = $"--control \"{dir}\"",
-                    UseShellExecute = false,
+                    WorkingDirectory = dir,
+                    UseShellExecute = true,
                 };
-                using var proc = System.Diagnostics.Process.Start(psi);
+                System.Diagnostics.Process.Start(psi);
                 trace_log.write($"control bridge: spawned attach-mode control window ({launcher} --control)");
             }
             catch (Exception e)

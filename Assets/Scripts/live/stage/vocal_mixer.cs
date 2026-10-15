@@ -33,7 +33,8 @@ namespace UV2.Live
         private float[][] part_pans; // per row: per-position pan overrides (>=900 unset)
         private float[] part_rates;  // per row: global volume-rate override (>=900 unset)
         private float last_volume = 1f;
-        private const float fade_rate = 20f;  // ~50ms ramp between gain steps
+        private const float fade_rate = 20f;  // release ramp between gain steps
+        private const float attack_rate = 300f; // near-instant up-ramp so a section's first word is never shaved
         private const float unset = 900f;     // the game's unset-override sentinel
 
         // the game's gain tables (AudioManager container +0x30/+0x40): gain
@@ -64,6 +65,10 @@ namespace UV2.Live
         private Transform[] stem_roots;   // chara roots, parallel to stems
         private int last_section = -1;
         private int last_override_sec = -2;
+        // the song clock is only authoritative once the oke is playing; stems
+        // must never start against the pre-music free-run clock or every
+        // take begins mid-song and the mix runs ahead of the instrumental.
+        private bool music_live;
 
         // begins the parallel stem decode as early as possible — the banks
         // need only the selection, so this runs during stage/cast loading
@@ -346,6 +351,16 @@ namespace UV2.Live
         private void Update()
         {
             if (!bound) return;
+            // stems wait for the oke: the clock free-runs during the load
+            // phase and snaps to zero when the music binds, so a take started
+            // now would open mid-song and ride ahead of the instrumental for
+            // the whole set (the user's early/duplicated voices).
+            if (!music_live)
+            {
+                if (!clock.music_live) return;
+                music_live = true;
+                trace_log.write($"vocals: music live at t={clock.time:0.00}s, stems starting");
+            }
             float t = clock?.time ?? 0f;
             int[] active = part_flags(t);
             bool uncut = active == null;
@@ -433,19 +448,24 @@ namespace UV2.Live
                     // 4.5, uv2_vocal_lead_switch_decoded.md 3-4).
                     int wave = !uncut ? Mathf.Clamp(active[s.group] - 1, 0, s.sources.Length - 1) : 0;
                     s.wave_target = wave;
-                    if (!s.started && s.sources.Length > 0)
-                    {
-                        // every take starts together at the song playhead and
-                        // rolls unbroken for the whole song; the switch below
-                        // only moves the volume, so both takes stay sample
-                        // aligned across the switch like the game's two
-                        // always-running wave streams.
-                        start_stem(s, t);
-                        s.started = true;
-                    }
                 }
 
-                s.volume = Mathf.MoveTowards(s.volume, target * last_volume, fade_rate * Time.deltaTime);
+                // every take starts together at the song playhead and rolls
+                // unbroken for the whole song; the mix above only moves the
+                // volume, so a take is already rolling when its section flag
+                // arrives and the first word of each entry is never shaved
+                // (starting at the flag left the head of each vocal muted).
+                if (!s.started && s.sources.Length > 0)
+                {
+                    start_stem(s, t);
+                    s.started = true;
+                }
+
+                // the game attacks a section's gain immediately (the cue
+                // starts at full volume at the flag) and only releases with
+                // a ramp, so an entry's first word is never faded in.
+                float vol_rate = target > s.volume ? attack_rate : fade_rate;
+                s.volume = Mathf.MoveTowards(s.volume, target * last_volume, vol_rate * Time.deltaTime);
                 if (s.wave_target != s.wave && s.wave >= 0)
                     trace_log.write($"vocals: take switch g{s.group} {s.wave} -> {s.wave_target} at t={t:0.0}s");
                 s.wave = s.wave_target;

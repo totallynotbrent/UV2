@@ -115,10 +115,17 @@ namespace UV2.Live
                 {
                     if (sim_kv.Value == null) continue;
                     sim_kv.Value.arm_suppression();
+                    // the game's warm-up runs once the character stands at
+                    // her placed start pose (TryUpdateWarmUp's delay counter
+                    // waits out setup); the bind-time burst settled the load
+                    // pose, so re-run it here to settle the placed pose or
+                    // the chains carry the teleport into the song's open.
+                    physics_director.instance.schedule_warm_up(
+                        sim_kv.Value, 1, cur.cy_spring_warm_up_time > 0f ? cur.cy_spring_warm_up_time : 1f);
                     armed++;
                 }
                 if (armed > 0)
-                    trace_log.write($"formation: t={clock.time:0.0} start-pose cut, {armed} sims suppressed");
+                    trace_log.write($"formation: t={clock.time:0.0} start-pose cut, {armed} sims suppressed + warm-up");
             }
 
             if (cur.warm_up_cy_spring != 0 && last_warm_time != clock.time)

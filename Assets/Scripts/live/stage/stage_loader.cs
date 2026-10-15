@@ -63,6 +63,10 @@ namespace UV2.Live
             vocals = vocals_go.AddComponent<vocal_mixer>();
             vocals.begin_decode(sel.music_id, sel.slots);
 
+            // the instrumental decodes on a worker too: its ~1.2s hca decode
+            // was a single long main-thread frame right at the open.
+            var oke_task = start_oke_decode(sel.music_id);
+
             if (!run_phase_stage(sel)) yield break;
             int stage_step = 0;
             var stage_bundles = _stage_material_names.Concat(new[] { _stage_first_controller }).ToList();
@@ -73,7 +77,8 @@ namespace UV2.Live
                 UV2.UI.load_progress.report($"loading stage {sel.stage_id}: {short_name} ({++stage_step}/{stage_bundles.Count})",
                     0.04f + 0.30f * stage_step / stage_bundles.Count);
                 yield return null;
-                if (!run_phase_stage_bundle(name)) yield break;
+                yield return run_phase_stage_bundle(name);
+                if (!stage_bundles_ok) yield break;
             }
 
             // instantiates the laser and spotlight fixtures for the stage.
@@ -105,11 +110,14 @@ namespace UV2.Live
                 UV2.UI.load_progress.report($"loading {chara_name(slot.chara_id)} (cast {++cast_step}/{cast_total})",
                     0.36f + 0.52f * cast_step / Mathf.Max(1, cast_total));
                 yield return null;
-                var root = run_phase_character(slot);
-                if (root == null) { _cast_missed++; continue; }
+                var staged = new System.Collections.Generic.List<Transform>();
+                yield return run_phase_character_steps(slot, staged);
+                if (staged.Count == 0) { _cast_missed++; continue; }
+                var root = staged[0];
                 chara_roots.Add(root);
                 UV2.Live.chara_parts.record(root);
                 UV2.Live.chara_parts.record_height(root, slot.chara_id);
+                yield return null;
             }
             trace_log.write($"cast: {chara_roots.Count} loaded, {_cast_missed} missed, {chara_roots.Count} roots total");
             // resolves the song's props against the loaded cast.
@@ -138,7 +146,7 @@ namespace UV2.Live
             // the music starts last, with everything visible: starting it
             // mid-load made the song audible during the loading phase and
             // led the visible concert by the remaining load time.
-            start_music(sel.music_id);
+            start_music(sel.music_id, oke_task);
         }
 
         // loads the worksheet and resolves the stage manifest; false on failure.
@@ -354,15 +362,18 @@ namespace UV2.Live
 
         private bool run_phase_stage(selection_state sel) => true;
 
-        private bool run_phase_stage_bundle(string name)
+        private System.Collections.IEnumerator run_phase_stage_bundle(string name)
         {
-            try
+            var b = load_bundle_keep_safe(name);
+            Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
+            if (b != null && name.Contains("controller"))
             {
-                var b = load_bundle_keep(name);
-                Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
-                if (b != null && name.Contains("controller"))
+                // the prereq chain yields between bundle groups; runs outside
+                // try/catch so the paint can happen (cs1626 forbids yielding
+                // inside a try that catches).
+                yield return load_controller_prereqs_steps(name);
+                try
                 {
-                    load_controller_prereqs(name);
                     string[] all = b.GetAllAssetNames();
                     string prefab_name = all.FirstOrDefault(n => n.EndsWith(".prefab"));
                     if (prefab_name != null)
@@ -453,21 +464,28 @@ namespace UV2.Live
                         }
                     }
                 }
-                return true;
-            }
-            catch (Exception e)
-            {
-                last_error = $"{e.GetType().Name}: {e.Message}";
-                Debug.LogError($"[stage_loader] stage bundle phase failed: {e}");
-                return false;
+                catch (Exception e)
+                {
+                    last_error = $"{e.GetType().Name}: {e.Message}";
+                    Debug.LogError($"[stage_loader] stage bundle phase failed: {e}");
+                    _stage_bundle_failed = true;
+                }
             }
         }
 
+        private bool _stage_bundle_failed;
+
+        // true when every stage bundle phase finished without a failure.
+        private bool stage_bundles_ok => !_stage_bundle_failed;
+
         // opens the controller's prereq bundles so its external refs resolve on load.
-        private void load_controller_prereqs(string controller_name)
+        // opens a batch of prereq bundles with yields between groups so the
+        // loading bar paints; the stage controller's 33-bundle chain was one
+        // ~7.6s main-thread block that froze the window.
+        private System.Collections.IEnumerator load_controller_prereqs_steps(string controller_name)
         {
             var row = meta_row(controller_name);
-            if (row == null || string.IsNullOrEmpty(row.prereq)) return;
+            if (row == null || string.IsNullOrEmpty(row.prereq)) yield break;
             int opened = 0;
             foreach (var pre in row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
             {
@@ -485,6 +503,8 @@ namespace UV2.Live
                         if (pre2_row != null) game_assets.open(pre2_row, config.data_root);
                     }
                 }
+                // the ui paints between each bundle group.
+                yield return null;
             }
             trace_log.write($"stage controller prereqs: {opened} opened for {controller_name}");
         }
@@ -534,6 +554,35 @@ namespace UV2.Live
             }
         }
 
+        // the per-character load split into yield points so the loading bar
+        // paints between its heavy halves: the load phase held one ~1.8s
+        // main-thread frame per chara (bundle open + head merge + shader fix)
+        // and the window could not pump between characters, freezing the bar.
+        private System.Collections.IEnumerator run_phase_character_steps(UV2.App.slot_pick slot,
+            System.Collections.Generic.List<Transform> sink)
+        {
+            Transform root = null;
+            try { root = load_character_head(slot.chara_id, slot.dress_id); }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] character phase failed: {e}");
+            }
+            if (root == null) yield break;
+            // let the ui paint the bar before the shader fix + physics bind.
+            yield return null;
+            try
+            {
+                finish_character(root, slot.chara_id, slot.dress_id);
+                sink.Add(root);
+            }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] character finish failed: {e}");
+            }
+        }
+
         private System.Collections.Generic.Dictionary<string, AnimationClip> run_phase_clips(selection_state sel)
         {
             try
@@ -571,6 +620,20 @@ namespace UV2.Live
         private AudioSource _music_source;
 
         public System.Collections.IEnumerator open(selection_state sel) { yield return open_core(sel); }
+
+        // load_bundle_keep wrapped for the coroutine path: a throw here must
+        // mark the stage failed instead of aborting the open coroutine.
+        private AssetBundle load_bundle_keep_safe(string name)
+        {
+            try { return load_bundle_keep(name); }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] stage bundle open failed: {e}");
+                _stage_bundle_failed = true;
+                return null;
+            }
+        }
 
         private AssetBundle load_bundle_keep(string name)
         {
@@ -619,6 +682,103 @@ namespace UV2.Live
             {
                 position.localScale = new Vector3(body_scale, body_scale, body_scale);
                 trace_log.write($"chara {chara_id}: body scale {body_scale:0.000} applied to Position");
+            }
+        }
+
+        // loads the character's bundles and instantiates the body with its
+        // head merged and tail mounted (the half of the load that resolves
+        // asset references); the finish half below does the runtime passes.
+        private Transform load_character_head(int chara_id, int dress_id)
+        {
+            var body_opt = manifest_reader.chara_body(chara_id, dress_id);
+            if (body_opt == null)
+            {
+                Debug.LogWarning($"[stage_loader] no body entry for chara {chara_id} dress {dress_id}");
+                return null;
+            }
+            var body = body_opt.Value;
+
+            var row = meta_row(body.bundle);
+            if (row == null) { Debug.LogWarning($"[stage_loader] chara {chara_id}: no meta row for {body.bundle}"); return null; }
+
+            // loads the prereq bundles first so the prefab's material refs resolve.
+            if (!string.IsNullOrEmpty(row.prereq))
+            {
+                foreach (var pre in row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var pre_row = meta_row(pre.Trim());
+                    var pre_bundle = pre_row == null ? null : game_assets.open(pre_row, config.data_root);
+                    Debug.Log($"[stage_loader] chara {chara_id} prereq {pre.Trim()}: {(pre_bundle == null ? "FAILED" : "ok, assets: " + pre_bundle.GetAllAssetNames().Length)}");
+                }
+            }
+
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) { Debug.LogWarning($"[stage_loader] chara {chara_id}: bundle open failed {body.bundle}"); return null; }
+
+            string[] all = bundle.GetAllAssetNames();
+            string prefab_name = all.FirstOrDefault(n => n.EndsWith(body.prefab + ".prefab"))
+                                 ?? all.FirstOrDefault(n => n.EndsWith(".prefab"));
+            if (prefab_name == null)
+            {
+                Debug.LogWarning($"[stage_loader] chara {chara_id}: no prefab in {body.bundle} (want {body.prefab}; assets: {string.Join(", ", all.Take(4))})");
+                bundle.Unload(true);
+                return null;
+            }
+
+            var prefab = bundle.LoadAsset<GameObject>(prefab_name);
+            bundle.Unload(false);
+            if (prefab == null) { Debug.LogWarning($"[stage_loader] chara {chara_id}: LoadAsset null for {prefab_name}"); return null; }
+
+            var instance = Instantiate(prefab);
+
+            // the body prefab ships without a head; it merges on from the head bundle.
+            int head_renderers = attach_head(instance.transform, chara_id);
+
+            // the tail mesh carries the Sp_Hi_Tail bones the spring chains bind.
+            int tail_renderers = mount_tail(instance.transform, chara_id, dress_id);
+            trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: "
+                + $"{instance.GetComponentsInChildren<Renderer>(true).Length} renderers (head +{head_renderers}, tail +{tail_renderers})");
+            return instance.transform;
+        }
+
+        // the runtime half of the character load: shader fix, height scale,
+        // generic textures, and the spring container bind.
+        private void finish_character(Transform instance, int chara_id, int dress_id)
+        {
+            var body_opt = manifest_reader.chara_body(chara_id, dress_id);
+            var body = body_opt.Value;
+
+            shader_manager.fix_game_shaders(instance, $"chara {chara_id}");
+
+            // the game scales the whole rig by the chara's height
+            // (UmaContainerCharacter: Position.localScale = scale/160.7529),
+            // and every spring length/collider offset rides that scale.
+            apply_chara_scale(instance, chara_id);
+
+            // generic bodies ship null texture slots; assign them after the shader swap.
+            assign_generic_body_textures(instance, chara_id, body.bundle);
+
+            // spring physics: containers load after the skeleton is complete
+            // (head merged), so every spring root resolves by name.
+            if (physics_director.instance != null)
+            {
+                var (body_folder, chara_body, bust, tail_id) = chara_container_info(chara_id, dress_id);
+                if (body_folder != null)
+                {
+                    int cloth_idx = cloth_slot(dress_id);
+                    var sim = physics_director.instance.attach_character(
+                        chara_id, body_folder, cloth_idx, bust,
+                        chara_body, tail_id, instance, load_container_prefab);
+                    if (sim != null)
+                    {
+                        chara_springs[chara_id] = sim;
+                        chara_springs_roots[instance] = chara_id;
+                        // the skirt knee-correction pass rides the same sim.
+                        physics_director.instance.attach_skirt(chara_id, body_folder,
+                            cloth_idx, instance, load_asset_object);
+                    }
+                    else trace_log.write($"physics: chara {chara_id} no containers bound");
+                }
             }
         }
 
@@ -1325,8 +1485,49 @@ namespace UV2.Live
             }
         }
 
+        // resolves the instrumental bank and starts its decode on a worker;
+        // null task when the bank is missing (start_music falls back to the
+        // old inline decode path).
+        private System.Threading.Tasks.Task<(float[] pcm, int channels, int rate)?> start_oke_decode(int music_id)
+        {
+            var candidates = new[]
+            {
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_02.awb",
+            };
+            meta_reader.asset_row bank_row = null;
+            foreach (var c in candidates)
+            {
+                bank_row = meta_row(c);
+                if (bank_row != null) break;
+            }
+            if (bank_row == null)
+            {
+                trace_log.write($"music: no oke bank for song {music_id}");
+                return null;
+            }
+
+            string path = System.IO.Path.Combine(config.data_root, "dat", bank_row.hash.Substring(0, 2), bank_row.hash);
+            if (!System.IO.File.Exists(path))
+            {
+                trace_log.write($"music: oke bank missing on disk: {path}");
+                return null;
+            }
+            byte[] bank = System.IO.File.ReadAllBytes(path);
+            var waves = live_audio.parse_afs2(bank);
+            if (waves.Count == 0)
+            {
+                trace_log.write("music: afs2 parse found no waves");
+                return null;
+            }
+            trace_log.write($"music: oke decode started on worker ({waves.Count} waves)");
+            return System.Threading.Tasks.Task.Run<(float[] pcm, int channels, int rate)?>(
+                () => live_audio.decode_wave_pcm(bank, waves[0]));
+        }
+
         // decodes the song's instrumental bank and starts playback; the clock locks to it.
-        private void start_music(int music_id)
+        private void start_music(int music_id,
+            System.Threading.Tasks.Task<(float[] pcm, int channels, int rate)?> oke_task = null)
         {
             // tries the _01 and _02 oke variants; take whichever the install carries.
             var candidates = new[]
@@ -1361,7 +1562,27 @@ namespace UV2.Live
                 return;
             }
 
-            var clip = live_audio.decode_wave(bank, waves[0], $"oke_{music_id}");
+            AudioClip clip = null;
+            if (oke_task != null)
+            {
+                // the worker rode the load window; this wait is the leftover
+                // tail only, not a fresh ~1.2s main-thread decode.
+                var decoded = oke_task.Result;
+                if (decoded.HasValue)
+                {
+                    var (pcm, channels, rate) = decoded.Value;
+                    if (pcm != null && pcm.Length > 0)
+                    {
+                        clip = AudioClip.Create($"oke_{music_id}", pcm.Length / channels, channels, rate, false);
+                        clip.SetData(pcm, 0);
+                    }
+                }
+                if (clip == null) trace_log.write("music: worker oke decode failed, decoding inline");
+            }
+            if (clip == null)
+            {
+                clip = live_audio.decode_wave(bank, waves[0], $"oke_{music_id}");
+            }
             if (clip == null)
             {
                 trace_log.write("music: oke decode failed");
