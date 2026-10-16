@@ -1490,10 +1490,12 @@ namespace UV2.Live
         // old inline decode path).
         private System.Threading.Tasks.Task<(float[] pcm, int channels, int rate)?> start_oke_decode(int music_id)
         {
+            // oke_02 is the karaoke master; oke_01 carries guide vocals on
+            // some songs and doubles the chara stems when played with them.
             var candidates = new[]
             {
-                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
                 $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_02.awb",
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
             };
             meta_reader.asset_row bank_row = null;
             foreach (var c in candidates)
@@ -1520,7 +1522,7 @@ namespace UV2.Live
                 trace_log.write("music: afs2 parse found no waves");
                 return null;
             }
-            trace_log.write($"music: oke decode started on worker ({waves.Count} waves)");
+            trace_log.write($"music: oke decode started on worker (take {bank_row.name.Substring(bank_row.name.LastIndexOf('_') + 1)}, {waves.Count} waves)");
             return System.Threading.Tasks.Task.Run<(float[] pcm, int channels, int rate)?>(
                 () => live_audio.decode_wave_pcm(bank, waves[0]));
         }
@@ -1529,11 +1531,12 @@ namespace UV2.Live
         private void start_music(int music_id,
             System.Threading.Tasks.Task<(float[] pcm, int channels, int rate)?> oke_task = null)
         {
-            // tries the _01 and _02 oke variants; take whichever the install carries.
+            // tries the _02 (karaoke) oke first, falls back to _01; take
+            // whichever the install carries.
             var candidates = new[]
             {
-                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
                 $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_02.awb",
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
             };
             meta_reader.asset_row bank_row = null;
             foreach (var c in candidates)
@@ -1596,7 +1599,7 @@ namespace UV2.Live
             _music_source.Play();
             if (!force_free_clock) clock.bind_master(_music_source);
             else trace_log.write("clock: forced free-run for this run");
-            trace_log.write($"music: oke playing ({clip.frequency}Hz, {clip.length:0.0}s, {waves.Count} waves)");
+            trace_log.write($"music: oke playing ({clip.frequency}Hz, {clip.length:0.0}s, take {bank_row.name.Substring(bank_row.name.LastIndexOf('_') + 1)})");
         }
 
         // the cast slot's display name from the text table (category 6).

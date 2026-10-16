@@ -13,7 +13,8 @@ namespace UV2.Live
     //   diff   = prev_target - target               (halved when !is60fps)
     //   force  = aim * (stiffRate*stiffness/1000/30)
     //   force += diff * (dragRate*drag/100/30)
-    //   force.y -= gravityRate*gravity/10000/30
+    //   force.y += gravityRate*gravity/10000/30 (sign flipped after in-game
+    //   test: hair/tail hang requires positive-y)
     //   force += wind lerped by per-bone slow/fast slot pairs
     //   force += connected/30
     //   new    = target - diff*ts + force*pool*ts   (pool 1.5@60fps, 3.0 else)
@@ -97,7 +98,7 @@ namespace UV2.Live
             Vector3 force = aim * stiff_f;
             float drag_f = drag_rate * r.drag / (DRAG_DIV * FORCE_SCALE);
             force += diff * drag_f;
-            force.y -= gravity_rate * r.gravity / (GRAVITY_DIV * FORCE_SCALE);
+            force.y += gravity_rate * r.gravity / (GRAVITY_DIV * FORCE_SCALE);
 
             // wind: per-bone slow/fast slot pairs lerped by the clamped
             // power; the vertical pair drives y, the horizontal pair x/z.
