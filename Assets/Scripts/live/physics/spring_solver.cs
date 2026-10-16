@@ -75,7 +75,11 @@ namespace UV2.Live
             }
         }
 
-        // one bone, one step.
+        // one bone, one step. the per-part group rate scales every force
+        // amplitude (stiffness/drag/gravity), matching the binary's 3-layer
+        // rate path: serializedParam x globalRate x groupRate x stepScaleDiv
+        // (Q8 register-verified: SetStiffnessRate -> UpdateSpringThread ->
+        // UpdateSpring -> UpdateNativeCloth stack-arg block).
         private static void step(ref spring_record r, float stiffness_rate, float drag_rate,
             float gravity_rate, Vector3 wind, float wind_power, float timescale,
             bool is_60fps, bool collision_switch, spring_collider[] colliders,
@@ -95,12 +99,14 @@ namespace UV2.Live
             // UpdateForce: rebuilt fresh every step, all terms carry the
             // serialized divisors and the constant scale of 30. gravity
             // subtracts from force.y (subss xmm0, xmm7 @ 0x7ff8e49a8b7d,
-            // register-verified against the shipped binary).
-            float stiff_f = stiffness_rate * r.stiffness / (STIFFNESS_DIV * FORCE_SCALE);
+            // register-verified against the shipped binary). the group rate
+            // scales all three amplitudes (Q8): a key pushing rate > 1
+            // stiffens the pull toward rest instead of disabling the damper.
+            float stiff_f = stiffness_rate * spring_rate * r.stiffness / (STIFFNESS_DIV * FORCE_SCALE);
             Vector3 force = aim * stiff_f;
-            float drag_f = drag_rate * r.drag / (DRAG_DIV * FORCE_SCALE);
+            float drag_f = drag_rate * spring_rate * r.drag / (DRAG_DIV * FORCE_SCALE);
             force += diff * drag_f;
-            force.y -= gravity_rate * r.gravity / (GRAVITY_DIV * FORCE_SCALE);
+            force.y -= gravity_rate * spring_rate * r.gravity / (GRAVITY_DIV * FORCE_SCALE);
 
             // wind: per-bone slow/fast slot pairs lerped by the clamped
             // power; the vertical pair drives y, the horizontal pair x/z.
