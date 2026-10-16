@@ -25,12 +25,42 @@ namespace UV2.Live
             spring_sims = springs;
             // slot order = the selection json's position order (1-based) onto the roots
             for (int i = 0; i < chara_roots.Count; i++) slots[i + 1] = chara_roots[i];
+            // per-concert hold: every open re-arms it (a second concert in one
+            // process would otherwise inherit the released state), and the
+            // cut_suppressed one-shot below consumes it exactly once.
+            physics_director.springs_held = spring_sims != null && spring_sims.Count > 0;
         }
 
         private void LateUpdate()
         {
             if (ws == null || clock == null) return;
             float t = clock.time;
+
+            // no formation groups at all, or the driver carries no spring sims
+            // (nothing can fire the start-pose cut): release the pre-cut hold
+            // on the first frame — otherwise springs stay held forever.
+            if (physics_director.springs_held &&
+                (ws.formation == null || ws.formation.Count == 0 ||
+                 spring_sims == null || spring_sims.Count == 0))
+            {
+                physics_director.springs_held = false;
+                trace_log.write("formation: no formation keys, releasing the spring hold");
+            }
+            // failsafe: the audio clock synced (t is song-relative from here)
+            // and the cut window passed without the cut firing (group names
+            // that never map to this cast's slots) — release rather than
+            // hold the springs for the whole song. gated on audio_synced,
+            // not raw t or music_live: the clock free-runs real seconds
+            // between concert open and music start (bench: t read 8.6-9.4
+            // while the oke had not started), and music_live flips true
+            // mid-frame while _time still carries the free-run value —
+            // either gate alone releases one frame before the snap.
+            else if (physics_director.springs_held &&
+                     clock.audio_synced && t > first_key_cut_window + 1f)
+            {
+                physics_director.springs_held = false;
+                trace_log.write($"formation: t={t:0.0} cut window passed without the cut, releasing the spring hold");
+            }
 
             foreach (var kv in ws.formation)
             {
@@ -127,8 +157,14 @@ namespace UV2.Live
                         sim_kv.Value, 1, cur.cy_spring_warm_up_time > 0f ? cur.cy_spring_warm_up_time : 1f);
                     armed++;
                 }
+                // release the pre-cut hold AFTER the reset is staged: the
+                // warm-up runs on this frame's physics pass, from the placed
+                // pose — the game's ResetNativeCloth → WarmUpCySpring order.
                 if (armed > 0)
+                {
+                    physics_director.springs_held = false;
                     trace_log.write($"formation: t={clock.time:0.0} start-pose cut, {armed} sims reset + suppressed + warm-up");
+                }
             }
 
             if (cur.warm_up_cy_spring != 0 && last_warm_time != clock.time)

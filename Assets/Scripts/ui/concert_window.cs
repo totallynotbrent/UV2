@@ -37,24 +37,38 @@ namespace UV2.UI
 
             var progress_rect = ui_theme.make_text(root, "progress", "starting concert...", 17, ui_theme.text_main).GetComponent<RectTransform>();
             progress_rect.anchorMin = progress_rect.anchorMax = new Vector2(0.5f, 0f);
-            progress_rect.pivot = new Vector2(0.5f, 0.5f);
-            progress_rect.anchoredPosition = new Vector2(0, 170);
+            progress_rect.pivot = new Vector2(0.5f, 0f);
+            progress_rect.sizeDelta = new Vector2(900f, 26f);
+            progress_rect.anchoredPosition = new Vector2(0, 176f);
 
             var progress_text = progress_rect.GetComponent<TMPro.TextMeshProUGUI>();
+            progress_text.alignment = TMPro.TextAlignmentOptions.Bottom;
 
             // the loading bar + percent: a slim track under the status line.
+            // the cluster stacks upward (progress 176..202, bar 135..145,
+            // pct 104..124, trail 12..92) with real gaps so no two rects
+            // intersect — the first cut reused the 100-tall default text
+            // boxes and every label overlapped the bar.
             var bar_track = ui_theme.panel(root, "bar_track",
                 new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), Vector2.zero, Vector2.zero,
                 new Color(0.13f, 0.13f, 0.16f, 1f));
             bar_track.pivot = new Vector2(0.5f, 0.5f);
-            bar_track.anchoredPosition = new Vector2(0, 128);
+            bar_track.anchoredPosition = new Vector2(0, 140f);
             bar_track.sizeDelta = new Vector2(420f, 10f);
+            // fill grows left->right inside the track: pinned to the track's
+            // left edge with pivot (0, .5) and full-height y anchors — the
+            // earlier center-pivot version centered the fill on the left
+            // corner and spilled left outside the track as it grew.
             var bar_fill_rect = ui_theme.panel(bar_track, "fill", new Vector2(0f, 0f), new Vector2(0f, 1f),
                 Vector2.zero, Vector2.zero, ui_theme.accent);
+            bar_fill_rect.pivot = new Vector2(0f, 0.5f);
+            bar_fill_rect.anchoredPosition = Vector2.zero;
+            bar_fill_rect.sizeDelta = new Vector2(0f, 0f);
             var pct_label = ui_theme.make_text(root, "pct", "", 15, ui_theme.text_dim);
-            place_bottom_center(pct_label.transform, new Vector2(0, 96));
+            place_bottom_center(pct_label.transform, new Vector2(0, 104f), new Vector2(900f, 20f));
+            pct_label.alignment = TMPro.TextAlignmentOptions.Bottom;
             var trail_label = ui_theme.make_text(root, "trail", "", 14, ui_theme.text_dim);
-            place_bottom_center(trail_label.transform, new Vector2(0, 60));
+            place_bottom_center(trail_label.transform, new Vector2(0, 12f), new Vector2(900f, 80f));
             trail_label.alignment = TMPro.TextAlignmentOptions.Bottom;
 
             var pct_text = pct_label;
@@ -134,10 +148,12 @@ namespace UV2.UI
         private TMPro.TextMeshProUGUI _pct_text;
         private TMPro.TextMeshProUGUI _trail_text;
 
-        static void place_bottom_center(Transform t, Vector2 pos)
+        static void place_bottom_center(Transform t, Vector2 pos, Vector2? size = null)
         {
             var r = (RectTransform)t;
             r.anchorMin = r.anchorMax = r.pivot = new Vector2(0.5f, 0f);
+            if (size.HasValue)
+                r.sizeDelta = size.Value;
             r.anchoredPosition = pos;
         }
 
@@ -170,7 +186,9 @@ namespace UV2.UI
                 if (_bar_fill != null)
                 {
                     float f = Mathf.Clamp01(UV2.UI.load_progress.bar_fraction());
-                    _bar_fill.rectTransform.sizeDelta = new Vector2(_bar_width * f, 10f);
+                    // y stays 0: the fill stretches to the track's height
+                    // through its 0..1 y anchors; only the width is driven.
+                    _bar_fill.rectTransform.sizeDelta = new Vector2(_bar_width * f, 0f);
                 }
                 if (_pct_text != null)
                     _pct_text.text = $"{Mathf.RoundToInt(Mathf.Clamp01(UV2.UI.load_progress.bar_fraction()) * 100f)}%";

@@ -24,7 +24,7 @@ namespace UmaLauncher
         private readonly List<SlotPick> slots = [];
         private readonly Dictionary<int, Image> jacketCache = [];
         private readonly Dictionary<int, Image?> portraitCache = [];
-        private readonly ImageList slotImages = new() { ImageSize = new Size(50, 50), ColorDepth = ColorDepth.Depth32Bit };
+        private readonly ImageList slotImages = new() { ImageSize = new Size(100, 100), ColorDepth = ColorDepth.Depth32Bit };
         private readonly Dictionary<int, int> portraitIndex = [];
 
         // character portrait from the charicons folder exported by the player.
@@ -300,7 +300,7 @@ namespace UmaLauncher
 
                 Button slotButton = new()
                 {
-                    Size = new Size(130, 160),
+                    Size = new Size(130, 210),
                     Text = SlotLabel(pick),
                     TextAlign = ContentAlignment.BottomCenter,
                     ImageList = slotImages,

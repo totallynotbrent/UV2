@@ -54,7 +54,7 @@ namespace UmaLauncher
             charaList.Dock = DockStyle.Fill;
             charaList.IntegralHeight = false;
             charaList.DrawMode = DrawMode.OwnerDrawFixed;
-            charaList.ItemHeight = 65;
+            charaList.ItemHeight = 105;
             charaList.DrawItem += (s, e) => DrawCharaRow(e);
             charaList.SelectedIndexChanged += (s, e) => RefreshDresses();
             root.Controls.Add(charaList, 0, 1);
@@ -99,13 +99,13 @@ namespace UmaLauncher
 
             Image? portrait = PortraitFor(entry.Id);
             if (portrait is not null)
-                e.Graphics.DrawImage(portrait, e.Bounds.Left + 6, e.Bounds.Top + 2, 60, 60);
+                e.Graphics.DrawImage(portrait, e.Bounds.Left + 6, e.Bounds.Top + 4, 96, 96);
 
             bool selected = e.State.HasFlag(DrawItemState.Selected);
             using var nameBrush = new SolidBrush(selected ? SystemColors.HighlightText : SystemColors.ControlText);
             using var dimBrush = new SolidBrush(SystemColors.GrayText);
-            e.Graphics.DrawString(entry.Name, Font, nameBrush, e.Bounds.Left + 74, e.Bounds.Top + 18);
-            e.Graphics.DrawString(entry.Id.ToString(), Font, dimBrush, e.Bounds.Left + 74, e.Bounds.Top + 40);
+            e.Graphics.DrawString(entry.Name, Font, nameBrush, e.Bounds.Left + 112, e.Bounds.Top + 30);
+            e.Graphics.DrawString(entry.Id.ToString(), Font, dimBrush, e.Bounds.Left + 112, e.Bounds.Top + 56);
             if (selected) e.DrawFocusRectangle();
         }
 

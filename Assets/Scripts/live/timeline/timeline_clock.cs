@@ -65,6 +65,13 @@ namespace UV2.Live
         // advance on the pre-music free-run time gate on it.
         public bool music_live => _master != null && _master.isPlaying;
 
+        // true once the clock has snapped to the audio position: the free-run
+        // value is discarded at that moment and t becomes song-relative. the
+        // pre-cut spring hold releases on this, not on music_live — Play()
+        // makes isPlaying true mid-frame while _time still carries the
+        // free-run seconds, and a raw-t gate releases one frame early.
+        public bool audio_synced => _audio_trusted;
+
         // one frame step: the audio position once it has proven it advances
         // plausibly, else real-time accumulation. a paused clock holds the
         // seeked frame for the -uv2frame capture mode.

@@ -11,6 +11,16 @@ namespace UV2.Live
     // per rendered frame; the song clock gates dt (paused = no phase advance).
     public class physics_director : MonoBehaviour
     {
+        // springs hold from concert open until the formation driver applies
+        // the start-pose cut: stepping between the animation snap and the cut
+        // whips the chains off their anchors, and the cut's reset then
+        // captures that mid-whip frame (compressed segment lengths, up-point
+        // axes) — the "hair points up after the cut" defect. the game runs
+        // ResetNativeCloth synchronously with the pose change, before the
+        // first live solve; the hold reproduces that ordering without
+        // depending on script execution order.
+        public static bool springs_held = true;
+
         public static physics_director instance { get; private set; }
 
         // kill switch: UV2_PHYSICS=0 disables the whole pass (benching).
@@ -222,6 +232,16 @@ namespace UV2.Live
                     // no collisions. runs once, on the frame it is scheduled.
                     cs.sim.warm_up(cs.warm_time);
                     cs.warm_scheduled = false;
+                    continue;
+                }
+                if (springs_held)
+                {
+                    // pre-cut hold: take no physics steps and write nothing —
+                    // the animator's start pose must reach the cut untouched
+                    // (write-back here would paint the stale bind-pose rotations
+                    // over it). the cut's reset is the first thing allowed to
+                    // touch the verlet state after the pose change.
+                    if (cs.skirt != null) cs.skirt.update();
                     continue;
                 }
                 if (!step_frame)
