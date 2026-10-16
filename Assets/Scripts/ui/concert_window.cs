@@ -40,7 +40,7 @@ namespace UV2.UI
             progress_rect.pivot = new Vector2(0.5f, 0.5f);
             progress_rect.anchoredPosition = new Vector2(0, 170);
 
-            var progress_text = progress_rect.GetComponent<UnityEngine.UI.Text>();
+            var progress_text = progress_rect.GetComponent<TMPro.TextMeshProUGUI>();
 
             // the loading bar + percent: a slim track under the status line.
             var bar_track = ui_theme.panel(root, "bar_track",
@@ -128,7 +128,7 @@ namespace UV2.UI
         // frame; tears the ui down on success, keeps it on failure.
         private UV2.Live.stage_loader _pending_loader;
         private GameObject _pending_canvas;
-        private UnityEngine.UI.Text _progress_text;
+        private TMPro.TextMeshProUGUI _progress_text;
         private UnityEngine.UI.Image _bar_fill;
         private float _bar_width = 420f;
         private TMPro.TextMeshProUGUI _pct_text;
@@ -141,7 +141,7 @@ namespace UV2.UI
             r.anchoredPosition = pos;
         }
 
-        private System.Collections.IEnumerator run_open(UV2.Live.stage_loader loader, UnityEngine.UI.Text progress_text)
+        private System.Collections.IEnumerator run_open(UV2.Live.stage_loader loader, TMPro.TextMeshProUGUI progress_text)
         {
             yield return loader.open(selection_store.load());
             if (loader.opened)

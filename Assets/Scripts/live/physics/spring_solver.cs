@@ -13,8 +13,8 @@ namespace UV2.Live
     //   diff   = prev_target - target               (halved when !is60fps)
     //   force  = aim * (stiffRate*stiffness/1000/30)
     //   force += diff * (dragRate*drag/100/30)
-    //   force.y += gravityRate*gravity/10000/30 (sign flipped after in-game
-    //   test: hair/tail hang requires positive-y)
+    //   force.y -= gravityRate*gravity/10000/30 (subss @ 0x7ff8e49a8b7d; the
+    //   in-game "flip" test was a misread of the placeholder-anchor defect)
     //   force += wind lerped by per-bone slow/fast slot pairs
     //   force += connected/30
     //   new    = target - diff*ts + force*pool*ts   (pool 1.5@60fps, 3.0 else)
@@ -93,12 +93,14 @@ namespace UV2.Live
             r.prev_target = r.target_position;
 
             // UpdateForce: rebuilt fresh every step, all terms carry the
-            // serialized divisors and the constant scale of 30.
+            // serialized divisors and the constant scale of 30. gravity
+            // subtracts from force.y (subss xmm0, xmm7 @ 0x7ff8e49a8b7d,
+            // register-verified against the shipped binary).
             float stiff_f = stiffness_rate * r.stiffness / (STIFFNESS_DIV * FORCE_SCALE);
             Vector3 force = aim * stiff_f;
             float drag_f = drag_rate * r.drag / (DRAG_DIV * FORCE_SCALE);
             force += diff * drag_f;
-            force.y += gravity_rate * r.gravity / (GRAVITY_DIV * FORCE_SCALE);
+            force.y -= gravity_rate * r.gravity / (GRAVITY_DIV * FORCE_SCALE);
 
             // wind: per-bone slow/fast slot pairs lerped by the clamped
             // power; the vertical pair drives y, the horizontal pair x/z.

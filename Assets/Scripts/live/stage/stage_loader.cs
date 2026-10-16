@@ -1560,8 +1560,7 @@ namespace UV2.Live
             var waves = live_audio.parse_afs2(bank);
             if (waves.Count == 0)
             {
-                UV2.UI.load_progress.report("starting music");
-            trace_log.write("music: afs2 parse found no waves");
+                trace_log.write("music: afs2 parse found no waves");
                 return;
             }
 

@@ -480,10 +480,12 @@ namespace UV2.Live
                         leaf.bone_distance = chain.records[n - 2].bone_distance;
                         chain.records[n - 1] = leaf;
                     }
-                    var root_rec = chain.records[0];
-                    root_rec.bone_axis = Vector3.up;
-                    root_rec.bone_distance = 1f;
-                    chain.records[0] = root_rec;
+                    // record 0 keeps the segment axis/distance the child fill
+                    // just wrote: Initialize's axis-up/dist-1 root values are a
+                    // placeholder that the first child's init overwrites, not a
+                    // final state. re-clobbering them here parks a 1m verlet
+                    // ghost one meter off every root and the whole chain
+                    // anchors on it (tips solve 90-170deg off, up-pointing).
                 }
         }
 
