@@ -66,6 +66,15 @@ jobs:
       - name: Pre-pull Unity editor image (survives Docker Hub rate limits)
         shell: pwsh
         run: |
+          # windows-2022 runners occasionally boot with the docker service
+          # not listening yet; wait for the daemon before pulling so a
+          # slow boot does not burn every pull attempt against a dead pipe.
+          foreach ($i in 1..12) {
+            docker info *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Write-Host "docker daemon not up (attempt $i); waiting 10s"
+            Start-Sleep -Seconds 10
+          }
           $img = "unityci/editor:windows-2022.3.62f2-windows-il2cpp-3"
           # pull from the mirror (no auth.docker.io token round-trip) and
           # retag under the canonical name; fall back to a direct pull.
