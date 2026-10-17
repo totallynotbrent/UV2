@@ -364,6 +364,52 @@ namespace UV2.Live
                                 }
                             }
                         }
+                        // contact probe: for skirt and hair chains, measure the
+                        // deepest bone-vs-collider overlap each sample so the
+                        // bench can prove contact holds (or measure the
+                        // penetration) without a human eyeballing renders.
+                        if ((p.id == spring_sim.part.body || p.id == spring_sim.part.head) && tail_probe_enabled)
+                        {
+                            if (resolved.TryGetValue(p.id, out var ccols) && ccols != null)
+                            {
+                                // measure ONLY the bone's own collision slots
+                                // (the native AddCollisionIndex contract) — a
+                                // table-wide scan flags colliders the game
+                                // deliberately lets the chain sit inside.
+                                float worst = 0f; int worst_bone = 0; int worst_col = 0;
+                                float near = float.MaxValue; int near_col = -1; int tested = 0;
+                                for (int bi = 0; bi < chain.solve_count; bi++)
+                                {
+                                    var rb = chain.records[bi];
+                                    var idx = rb.collision_indices;
+                                    if (idx == null) continue;
+                                    for (int c = 0; c < rb.active_collisions && c < idx.Length; c++)
+                                    {
+                                        int ci = idx[c];
+                                        if ((uint)ci >= (uint)ccols.Length) continue;
+                                        var cc = ccols[ci];
+                                        tested++;
+                                        float dist, reach;
+                                        if (cc.type == spring_collider_type.capsule)
+                                        {
+                                            Vector3 ab = cc.position2 - cc.position;
+                                            float ab2 = Vector3.Dot(ab, ab);
+                                            float t = ab2 > 1e-9f ? Mathf.Clamp01(Vector3.Dot(rb.target_position - cc.position, ab) / ab2) : 0f;
+                                            dist = Vector3.Distance(rb.target_position, cc.position + t * ab);
+                                        }
+                                        else
+                                        {
+                                            dist = Vector3.Distance(rb.target_position, cc.position);
+                                        }
+                                        reach = rb.collision_radius + cc.radius;
+                                        float overlap = reach - dist;
+                                        if (overlap > worst) { worst = overlap; worst_bone = bi; worst_col = ci; }
+                                        if (dist < near) { near = dist; near_col = ci; }
+                                    }
+                                }
+                                trace_log.write($"contact probe: part {p.id} chain '{chain.root_transform.name}' bones {chain.solve_count} tested {tested} worst_ov {worst:0.000} bone {worst_bone} col {worst_col} nearest {near:0.000} col {near_col} tip_rel ({(chain.records[chain.solve_count - 1].target_position - chain.root_transform.position).x:0.000},{(chain.records[chain.solve_count - 1].target_position - chain.root_transform.position).y:0.000},{(chain.records[chain.solve_count - 1].target_position - chain.root_transform.position).z:0.000}) owner {(owner != null ? owner.name : "?")}");
+                            }
+                        }
                     }
                     chain.write_back(null);
                 }
