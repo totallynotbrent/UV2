@@ -45,13 +45,17 @@ namespace UV2.Live
                 Vector3 axis = Vector3.Scale(p.offset2 - p.offset, parent_scale) / body_scale;
                 c.position = rider.position;
                 c.position2 = rider.position + axis;
-                float cap_scale = parent_scale.y > 1e-6f ? parent_scale.y / body_scale : 1f;
+                float cap_scale = parent_scale.y > 1e-6f ? parent_scale.y / 1.2f : 1f;
                 c.radius *= cap_scale;
             }
             else
             {
                 c.position = rider.position;
-                float sp_scale = rider.lossyScale.y > 1e-6f ? rider.lossyScale.y / body_scale : 1f;
+                // v1's ScaleParams(1.2): radius = default * (lossy / 1.2) —
+                // the collision-scale divisor, NOT bodyScale. the bodyScale
+                // divisor oversizes the tail spheres ~1.2x past the tail
+                // root and the constant radial push-out parks the tail up.
+                float sp_scale = rider.lossyScale.y > 1e-6f ? rider.lossyScale.y / 1.2f : 1f;
                 c.radius *= sp_scale;
             }
             return c;

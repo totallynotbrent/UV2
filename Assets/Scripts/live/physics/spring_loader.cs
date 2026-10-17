@@ -140,9 +140,18 @@ namespace UV2.Live
                     // defaultOffset / bodyScale; the capsule rider keeps the
                     // RAW defaultOffset (its axis and radius carry the
                     // lossy/bodyScale factor at eval time instead).
+                    // v1's collision scale (LivePhysicsConfig SetScale 1.2):
+                    // ScaleParams(legacyScale=1.2) divides BOTH the sphere
+                    // rider's local offset and the collider radius by 1.2 —
+                    // the effective world values land at ~the raw dump numbers
+                    // while the unscaled algebra puts them 1.2x over. the
+                    // oversized hip sphere reaches past the tail root and its
+                    // radial push-out parks the tail up-back every step
+                    // (bench16: col off = tail falls to the gravity hang).
                     float body_scale = position_body_scale(character);
+                    float collision_scale = 1.2f;
                     if (row.type == (int)spring_collider_type.sphere)
-                        col_go.transform.localPosition = row.offset / body_scale;
+                        col_go.transform.localPosition = row.offset / collision_scale;
                     else if (row.type == (int)spring_collider_type.capsule)
                         col_go.transform.localPosition = row.offset;
                     else
