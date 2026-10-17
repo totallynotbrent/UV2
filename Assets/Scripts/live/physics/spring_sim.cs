@@ -426,6 +426,15 @@ namespace UV2.Live
         // crawl from the stale load-pose state.
         public void reset_to_pose()
         {
+            // the game's ResetNativeCloth write set is ONLY the verlet state:
+            // TargetPosition, PrevTargetPosition, FinalRotation
+            // (0x7ff8e49ae42a/437/491/497/4a6, register-proven). it never
+            // re-captures the rest frame — InitLocalRotation/BoneAxis/
+            // InitBoneDistance keep their BIND-time values, so a start pose
+            // that raises the tail still relaxes back toward the bind hang.
+            // re-capturing the rest frame at the cut froze the raised opening
+            // pose into the stiffness target and the tail pointed up all
+            // song (bench13: bone1 bind aim -0.999 down, post-cut +0.66 up).
             foreach (var p in parts)
                 foreach (var chain in p.chains)
                 {
@@ -441,51 +450,11 @@ namespace UV2.Live
                         r.force = Vector3.zero;
                         r.connected_force = Vector3.zero;
                         r.final_rot = bone.rotation;
-                        // rest frame re-captured in the chain-parent frame
-                        // (bind's algebra): Inverse(parent world) * bone world.
-                        // the chain parent is the previous bone's solved
-                        // frame, the hierarchy parent for the root — never
-                        // raw localRotation (scaffold chains carry the
-                        // character-root frame in it).
-                        Quaternion parent_world = i > 0 && chain.bones[i - 1] != null
-                            ? chain.bones[i - 1].rotation
-                            : (bone.parent != null ? bone.parent.rotation : Quaternion.identity);
+                        // the ratio-relax input (the animated pose this frame);
+                        // the rest frame itself stays the bind capture.
                         r.anim_local = bone.localRotation;
-                        r.init_local = Quaternion.Inverse(parent_world) * bone.rotation;
                         chain.records[i] = r;
                     }
-
-                    // full Initialize replay: the segment axis/distance are
-                    // also bind-pose captures (the child writes its parent's
-                    // rest direction; the leaf inherits). re-derived from the
-                    // placed pose, the aim stops pointing where the stale
-                    // load-pose pointed.
-                    for (int i = 1; i < chain.records.Length; i++)
-                    {
-                        if (chain.bones[i] == null || chain.bones[i - 1] == null) continue;
-                        Vector3 delta = chain.bones[i].position - chain.bones[i - 1].position;
-                        float dist = delta.magnitude;
-                        if (dist < 1e-4f) continue;
-                        var pr = chain.records[i - 1];
-                        Quaternion inv = Quaternion.Inverse(chain.bones[i - 1].rotation);
-                        pr.bone_axis = (inv * delta).normalized;
-                        pr.bone_distance = dist;
-                        chain.records[i - 1] = pr;
-                    }
-                    int n = chain.records.Length;
-                    if (n >= 2)
-                    {
-                        var leaf = chain.records[n - 1];
-                        leaf.bone_axis = chain.records[n - 2].bone_axis;
-                        leaf.bone_distance = chain.records[n - 2].bone_distance;
-                        chain.records[n - 1] = leaf;
-                    }
-                    // record 0 keeps the segment axis/distance the child fill
-                    // just wrote: Initialize's axis-up/dist-1 root values are a
-                    // placeholder that the first child's init overwrites, not a
-                    // final state. re-clobbering them here parks a 1m verlet
-                    // ghost one meter off every root and the whole chain
-                    // anchors on it (tips solve 90-170deg off, up-pointing).
                 }
         }
 

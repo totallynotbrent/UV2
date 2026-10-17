@@ -151,6 +151,27 @@ namespace UV2.Live
                 if (cs?.sim != null) yield return cs.sim;
         }
 
+        // a seek is a teleport: the game re-runs ResetNativeCloth on every
+        // cut/teleport, and without it the verlet targets keep pointing at
+        // the old pose's world positions — the chains whip toward a frame
+        // that no longer exists. replays the full reset + suppression +
+        // warm-up so the springs re-capture the post-seek pose.
+        public void reset_all_to_pose()
+        {
+            int n = 0;
+            foreach (var cs in sims)
+            {
+                if (cs?.sim == null) continue;
+                cs.sim.reset_to_pose();
+                cs.sim.arm_suppression();
+                cs.warm_scheduled = true;
+                if (cs.warm_time <= 0f) cs.warm_time = 1f;
+                n++;
+            }
+            if (n > 0)
+                trace_log.write($"seek reset: {n} sims reset + suppressed + warm-up");
+        }
+
         // runtime collision kill switch (the control panel's toggle).
         public static bool collisions_enabled = true;
 

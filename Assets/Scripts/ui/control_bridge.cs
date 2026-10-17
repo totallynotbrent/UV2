@@ -120,7 +120,14 @@ namespace UV2.UI
                 if (cmd.seq <= last_seq) return;
                 last_seq = cmd.seq;
 
-                if (cmd.seek >= 0f) clock.seek(cmd.seek);
+                if (cmd.seek >= 0f)
+                {
+                    clock.seek(cmd.seek);
+                    // a scrub is a teleport: re-seed every sim from the
+                    // post-seek pose (the game's ResetNativeCloth path).
+                    if (physics_director.instance != null)
+                        physics_director.instance.reset_all_to_pose();
+                }
                 if (cmd.paused == 1) clock.pause();
                 else clock.resume();
                 // negatives are reverse playback: only a true zero is "no
