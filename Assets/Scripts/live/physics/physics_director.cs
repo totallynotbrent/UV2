@@ -42,6 +42,7 @@ namespace UV2.Live
             public bool warm_scheduled;
             public bool reseed_on_warm;     // re-seed verlet before a mid-song warm-up
             public skirt_controller skirt;   // knee-correction pass (may be null)
+            public int warm_steps_pending;  // async burst: steps left to run
         }
 
         readonly List<chara_sim> sims = new();
@@ -54,6 +55,10 @@ namespace UV2.Live
         // frame so a stall never produces giant solve steps.
         const float PHYSICS_STEP = 1f / 60f;
         const int MAX_STEPS_PER_FRAME = 2;
+        // amortized warm-up: burst steps run per frame while a warm is in
+        // flight. 4 steps/frame = a 60-step burst over ~15 frames, each
+        // paying ~4 solves instead of one frame paying 60 (~180ms).
+        const int WARM_STEPS_PER_FRAME = 4;
         float step_acc;
         int render_count;
         int solve_count;
@@ -254,28 +259,64 @@ namespace UV2.Live
                 probe_t = 0f;
             }
 
+            // one sim's warm burst per frame, not all at once: a seek or cut
+            // schedules 18 characters and running 18 x 60-step bursts in a
+            // single frame was the 123ms lag spikes (the game staggers the
+            // same work across its own frames). the first scheduled sim
+            // (list order = bind order) wins each frame; the rest keep their
+            // chains held for the frames they wait, which is also the
+            // pre-cut posture so nothing regresses while queued.
+            chara_sim warm_pick = null;
+            foreach (var cs in sims)
+                if (cs != null && cs.sim != null && cs.warm_scheduled)
+                {
+                    warm_pick = cs;
+                    break;
+                }
+
             foreach (var cs in sims)
             {
                 if (cs?.sim == null) continue;
                 if (cs.warm_scheduled)
                 {
-                    // warm-up: fixed 60fps steps, history re-zeroed each step,
-                    // no collisions. runs once, on the frame it is scheduled.
-                    // a mid-song warm-up key co-locates with a motion-clip swap:
-                    // the verlet still points at the pre-swap pose while the
-                    // bones sit in the new one, and a warm-up from that folded
-                    // state leaves the chain stuck 100+deg off (the aim pull
-                    // cannot unfold a target that passed through its base).
-                    // the game re-seeds (ResetNativeCloth) before every
-                    // warm-up, not just the t=0 cut — do the same here.
+                    if (!ReferenceEquals(cs, warm_pick)) continue;
+                    // warm-up: the game's 60-step settle burst, spread
+                    // across real frames instead of one synchronous chunk.
+                    // a synchronous burst cost 60 full solves in a single
+                    // frame (~180ms in C#) at every warm key — the
+                    // user-visible lag spike. async: begin the burst (park,
+                    // colliders, suppression) on this frame, then amortize
+                    // the steps at WARM_STEPS_PER_FRAME until done, history
+                    // re-zeroed each step, collisions off throughout.
+                    // a mid-song warm-up key co-locates with a motion-clip
+                    // swap: the verlet still points at the pre-swap pose
+                    // while the bones sit in the new one, and a warm-up from
+                    // that folded state leaves the chain stuck 100+deg off
+                    // (the aim pull cannot unfold a target that passed
+                    // through its base). the game re-seeds (ResetNativeCloth)
+                    // before every warm-up, not just the t=0 cut.
                     if (cs.reseed_on_warm)
                     {
                         cs.sim.reset_to_pose();
                         cs.sim.arm_suppression();
                         cs.reseed_on_warm = false;
                     }
-                    cs.sim.warm_up(cs.warm_time);
+                    cs.sim.warm_begin(cs.warm_time);
+                    cs.warm_steps_pending = cs.sim.warm_steps_total();
                     cs.warm_scheduled = false;
+                    continue;
+                }
+                if (cs.warm_steps_pending > 0)
+                {
+                    // amortized burst steps: run a few per frame. the sim
+                    // stays parked across the whole burst; live stepping for
+                    // this character resumes once the burst completes (the
+                    // one-frame synchronous burst behaved identically: the
+                    // character is settled and invisible-twitch-free either
+                    // way, just without stalling the frame).
+                    int ran = cs.sim.warm_step(Mathf.Min(WARM_STEPS_PER_FRAME, cs.warm_steps_pending));
+                    cs.warm_steps_pending -= ran;
+                    if (cs.warm_steps_pending == 0) cs.sim.warm_end();
                     continue;
                 }
                 if (springs_held)

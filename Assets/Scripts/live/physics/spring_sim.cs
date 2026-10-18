@@ -454,6 +454,23 @@ namespace UV2.Live
             }
         }
 
+        // transform writes only, no bench sampling, no owner restore — the
+        // warm burst's per-step shape: the park span must hold across all
+        // burst steps (see warm_up), so end() itself runs once after the
+        // loop. shares the write loop above.
+        void end_transform_writes()
+        {
+            foreach (var p in parts)
+            {
+                if (p == null || !p.apply_transform) continue;
+                foreach (var chain in p.chains)
+                {
+                    if (chain?.records == null || chain.records.Length == 0) continue;
+                    chain.write_back(null);
+                }
+            }
+        }
+
         // samples 5 consecutive steps at startup then every 120th step (~2s).
         static bool bench_sample(int n) => n <= 5 || n % 120 == 0;
 
@@ -472,39 +489,78 @@ namespace UV2.Live
             return 1f - (max_distance - hip_dist) / (max_distance - influence);
         }
 
-        // warm-up: n = ceil(60 * t) full begin/update/end passes at dt=1/60
-        // (the game always warms at 60; fork WarmUpCySpring), history reset
-        // between steps, no collisions, no rendering.
-        public void warm_up(float warm_time)
+        // warm-up: n = ceil(60 * t) settle steps at dt=1/60 (the game always
+        // warms at 60; fork WarmUpCySpring), history reset between steps, no
+        // collisions, no rendering. three-phase so the director can amortize
+        // the burst across frames (see physics_director): warm_begin parks
+        // once and pre-advances the wind, warm_step runs the settle steps,
+        // warm_end writes the settled pose and restores the owner. the
+        // synchronous warm_up() equivalent is begin + n*step + end.
+        public void warm_begin(float warm_time)
         {
             if (warm_time <= 0f) warm_time = 1f;
-            int n = Mathf.Max(1, Mathf.CeilToInt(warm_time * 60f));
-            float dt = 1f / 60f;
-            // the warm-up burst must not advance the bench sampling gate:
+            warm_n = Mathf.Max(1, Mathf.CeilToInt(warm_time * 60f));
+            warm_dt = 1f / 60f;
+            // the game's WarmUpCySpring runs the whole burst inside ONE
+            // BeginSimulation/EndSimulation span, then the history-reset
+            // helper re-zeroes Diff/PrevTargetPosition/Force (register-proven
+            // @ 0x7ff8e4961d70) so the burst settles the chain instead of
+            // accumulating snap velocity from the bind jump. per-step
+            // begin()/end() parks the owner root 60 times — each park dirties
+            // the whole transform hierarchy and re-reads every collider
+            // rider, which stacked 18 characters x 60 steps into 123ms
+            // frames at every warm key (user-visible lag). the burst only
+            // needs the park span ONCE: the owner is motionless during it.
+            // collisions stay OFF through the burst: at a mid-song key the
+            // re-seeded pose can legitimately sit inside a blocker's reach
+            // (the choreography pins the tail against the hip sphere), and a
+            // warm-step push-out along the contact normal teleports the
+            // target to the sphere's far side — the 160deg flip and the
+            // forward phase-through at the f836 key.
+            begin(warm_dt);
+            if (wind != null) wind.advance((warm_n - 1) * warm_dt);
+            // the warm burst must not advance the bench sampling gate:
             // record the tick before the burst and roll the counters back
             // after, so cadence evidence only counts live solves.
-            int[] ticks = new int[parts.Count];
-            for (int i = 0; i < parts.Count; i++) ticks[i] = parts[i].bench_tick;
-            for (int i = 0; i < n; i++)
-            {
-                // the game's WarmUpCySpring runs the full BeginSimulation/
-                // EndSimulation path, then the history-reset helper re-zeroes
-                // Diff/PrevTargetPosition/Force (register-proven @
-                // 0x7ff8e4961d70) so the burst settles the chain instead of
-                // accumulating snap velocity from the bind jump.
-                // collisions stay OFF through the burst: at a mid-song key
-                // the re-seeded pose can legitimately sit inside a blocker's
-                // reach (the choreography pins the tail against the hip
-                // sphere), and a warm-step push-out along the contact normal
-                // teleports the target to the sphere's far side — the
-                // 160deg flip and the forward phase-through at the f836 key.
-                begin(dt);
-                update(collision_switch: false, dt);
-                end();
-                reset_history();
-            }
-            for (int i = 0; i < parts.Count; i++) parts[i].bench_tick = ticks[i];
+            warm_ticks = new int[parts.Count];
+            for (int i = 0; i < parts.Count; i++) warm_ticks[i] = parts[i].bench_tick;
         }
+
+        public int warm_steps_total() => warm_n;
+
+        // runs up to `count` burst steps; returns how many ran.
+        public int warm_step(int count)
+        {
+            if (warm_n <= 0) return 0;
+            int ran = Mathf.Min(count, warm_n);
+            for (int i = 0; i < ran; i++)
+            {
+                update(collision_switch: false, warm_dt);
+                reset_history();
+                accumulate_connected_forces();
+            }
+            warm_n -= ran;
+            return ran;
+        }
+
+        public void warm_end()
+        {
+            // one transform write for the whole burst: the game keeps the
+            // intermediate poses in native memory and PostSpring writes once
+            // after the burst.
+            end_transform_writes();
+            end();
+            if (warm_ticks != null)
+            {
+                for (int i = 0; i < parts.Count && i < warm_ticks.Length; i++)
+                    parts[i].bench_tick = warm_ticks[i];
+                warm_ticks = null;
+            }
+        }
+
+        int warm_n;
+        float warm_dt;
+        int[] warm_ticks;
 
         // the game binds AFTER placement: CySpringBoneBase.Initialize seeds
         // Target/PrevTarget from the placed pose and freezes InitLocalRotation
