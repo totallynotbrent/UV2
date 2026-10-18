@@ -295,11 +295,28 @@ namespace UV2.Live
                     Transform rt = chain.root_transform;
                     if (rt == null) continue;
                     // the root's parent work: the live rig transform above it.
-                    Quaternion parent_rot = rt.parent != null ? rt.parent.rotation : Quaternion.identity;
-
-                    // the root's animated world position: the solver seeds the
-                    // root's SelfPosition from its own animated transform.
-                    Vector3 root_anim_pos = rt.position;
+                    // an async warm burst must settle against the pose it
+                    // started from: the motion system advances the bones every
+                    // frame, and re-reading the live transforms mid-burst lets
+                    // a moving pose re-fold the tail ~150deg off rest (bench45:
+                    // 7 forward-at-rest flips at the seek + one mid-song key,
+                    // all aim2dir 112-158 with the anim at rest). the
+                    // synchronous burst never saw this — all 60 steps ran in
+                    // one frame against a pose the frame had frozen. snapshot
+                    // per part+chain at burst start and hold for the burst.
+                    Quaternion parent_rot;
+                    Vector3 root_anim_pos;
+                    if (warm_pose_freeze && warm_roots != null &&
+                        warm_roots.TryGetValue(rt, out var frozen) && frozen.valid)
+                    {
+                        parent_rot = frozen.parent_rot;
+                        root_anim_pos = frozen.root_pos;
+                    }
+                    else
+                    {
+                        parent_rot = rt.parent != null ? rt.parent.rotation : Quaternion.identity;
+                        root_anim_pos = rt.position;
+                    }
 
                     Vector3 wind_vec = Vector3.zero;
                     if (wind != null && wind_power > 0f)
@@ -377,7 +394,7 @@ namespace UV2.Live
                                 Vector3 dir = (r.target_position - r.self_position).normalized;
                                 float aim_dir = Vector3.Angle(aim, dir);
                                 float aim_anim = Vector3.Angle(aim, (chain.bones[i].rotation * r.bone_axis));
-                                trace_log.write($"tail probe: '{chain.root_transform.name}'[{i}] base {base_rot.x:0.000},{base_rot.y:0.000},{base_rot.z:0.000} axis {r.bone_axis.x:0.000},{r.bone_axis.y:0.000},{r.bone_axis.z:0.000} aim ({aim.x:0.000},{aim.y:0.000},{aim.z:0.000}) dir ({dir.x:0.000},{dir.y:0.000},{dir.z:0.000}) self ({r.self_position.x:0.000},{r.self_position.y:0.000},{r.self_position.z:0.000}) tgt ({r.target_position.x:0.000},{r.target_position.y:0.000},{r.target_position.z:0.000}) aim2dir {aim_dir:0.0} aim2anim {aim_anim:0.0} final2anim {Quaternion.Angle(r.final_rot, chain.bones[i].rotation):0.0} ratio {r.dynamic_ratio:0.000} lim {(int)r.is_limit} st {r.stiffness:0.000} drag {r.drag:0.000} g {r.gravity:0.000}");
+                                trace_log.write($"tail probe: '{chain.root_transform.name}'[{i}] owner {(owner != null ? owner.name : "?")} base {base_rot.x:0.000},{base_rot.y:0.000},{base_rot.z:0.000} axis {r.bone_axis.x:0.000},{r.bone_axis.y:0.000},{r.bone_axis.z:0.000} aim ({aim.x:0.000},{aim.y:0.000},{aim.z:0.000}) dir ({dir.x:0.000},{dir.y:0.000},{dir.z:0.000}) self ({r.self_position.x:0.000},{r.self_position.y:0.000},{r.self_position.z:0.000}) tgt ({r.target_position.x:0.000},{r.target_position.y:0.000},{r.target_position.z:0.000}) aim2dir {aim_dir:0.0} aim2anim {aim_anim:0.0} final2anim {Quaternion.Angle(r.final_rot, chain.bones[i].rotation):0.0} ratio {r.dynamic_ratio:0.000} lim {(int)r.is_limit} st {r.stiffness:0.000} drag {r.drag:0.000} g {r.gravity:0.000}");
                             }
                             if (resolved.TryGetValue(p.id, out var tcols) && tcols != null)
                             {
@@ -519,6 +536,28 @@ namespace UV2.Live
             // forward phase-through at the f836 key.
             begin(warm_dt);
             if (wind != null) wind.advance((warm_n - 1) * warm_dt);
+            // freeze the pose the burst settles against (see update()'s
+            // warm_pose_freeze read): the burst spans real frames now and the
+            // motion pass moves the bones under it.
+            if (warm_roots == null) warm_roots = new();
+            warm_roots.Clear();
+            foreach (var p in parts)
+            {
+                if (p == null) continue;
+                foreach (var chain in p.chains)
+                {
+                    if (chain?.root_transform == null) continue;
+                    warm_roots[chain.root_transform] = new warm_root
+                    {
+                        parent_rot = chain.root_transform.parent != null
+                            ? chain.root_transform.parent.rotation
+                            : Quaternion.identity,
+                        root_pos = chain.root_transform.position,
+                        valid = true,
+                    };
+                }
+            }
+            warm_pose_freeze = true;
             // the warm burst must not advance the bench sampling gate:
             // record the tick before the burst and roll the counters back
             // after, so cadence evidence only counts live solves.
@@ -545,6 +584,7 @@ namespace UV2.Live
 
         public void warm_end()
         {
+            warm_pose_freeze = false;
             // one transform write for the whole burst: the game keeps the
             // intermediate poses in native memory and PostSpring writes once
             // after the burst.
@@ -561,6 +601,18 @@ namespace UV2.Live
         int warm_n;
         float warm_dt;
         int[] warm_ticks;
+        bool warm_pose_freeze;
+
+        // per-chain root pose snapshot for an in-flight warm burst: the
+        // async steps must settle against the pose the burst started from,
+        // not the live (moving) rig transforms.
+        struct warm_root
+        {
+            public Quaternion parent_rot;
+            public Vector3 root_pos;
+            public bool valid;
+        }
+        Dictionary<Transform, warm_root> warm_roots;
 
         // the game binds AFTER placement: CySpringBoneBase.Initialize seeds
         // Target/PrevTarget from the placed pose and freezes InitLocalRotation
