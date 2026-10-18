@@ -64,7 +64,13 @@ namespace UV2.Live
                 {
                     // the driver: this bone's base rides the previous bone's
                     // solved position; its parent frame = the previous
-                    // bone's solved world rotation.
+                    // bone's solved world rotation. (the decoded doc's
+                    // 'InitLocalRotation[i] * FinalRotation[i]' chain-driver
+                    // reading was benched today: tail tip stretch 2x, hair4
+                    // tip 1.118 vs 0.73 bind — that composition describes
+                    // the native's local-slot bookkeeping, not a world-frame
+                    // change. parent_rot = final_rot is the correct
+                    // transcription.)
                     rs[i].self_position = rs[i - 1].target_position;
                     rs[i].parent_rot = rs[i - 1].final_rot;
                 }
@@ -188,12 +194,12 @@ namespace UV2.Live
                 r.init_local = Quaternion.Lerp(r.init_local,
                     r.anim_local, r.dynamic_ratio);
 
-            // the binary leaves TargetPosition untouched after the rotation
-            // write — the snapped verlet target is the carried position state
-            // and the next bone anchors on it as-is. re-projecting through
-            // the clamped final rotation compounds the clamp's frame error
-            // down the chain (three benches: tail p50 141-161deg with it,
-            // 0.3deg without).
+            // the carried position state stays the snapped verlet target —
+            // re-projecting through the written rotation was benched twice
+            // (world-space 10-12, owner-parked today): flips 8406 -> 10368
+            // with it, the write amplifies antipode flips instead of damping
+            // them. the overnight note's 'post-solve overwrite' reading does
+            // not survive contact with the bench in either frame.
         }
 
         // to-euler in [0,360) wrapped to (-180,180] (MakePositive + the

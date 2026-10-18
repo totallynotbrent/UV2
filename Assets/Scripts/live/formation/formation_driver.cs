@@ -119,8 +119,13 @@ namespace UV2.Live
         }
 
         // fires the warm-up byte once per key and keeps the amplitude rate
-        // current while the bracket holds (the game's per-key path).
-        float last_warm_time = -1f;
+        // current while the bracket holds (the game's per-key path). the latch
+        // is PER CHARACTER: the per-slot loop calls this once per slot per
+        // frame, and a single shared latch would schedule only the first
+        // slot's sim — the other 17 never warmed at the key (the tail spikes
+        // survived every warm-up change because 17/18 characters never got
+        // one).
+        readonly Dictionary<int, float> last_warm_time = new();
         private void apply_spring_keys(int slot, formation_key cur)
         {
             if (spring_sims == null) return;
@@ -167,11 +172,15 @@ namespace UV2.Live
                 }
             }
 
-            if (cur.warm_up_cy_spring != 0 && last_warm_time != clock.time)
+            if (cur.warm_up_cy_spring != 0 &&
+                (!last_warm_time.TryGetValue(chara_id, out float lw) || lw != clock.time))
             {
-                // fire once per key change (bracket index movement).
-                physics_director.instance.schedule_warm_up(sim, cur.warm_up_cy_spring, cur.cy_spring_warm_up_time);
-                last_warm_time = clock.time;
+                // fire once per key change (bracket index movement). mid-song
+                // keys co-locate with motion-clip swaps: re-seed the verlet to
+                // the post-swap pose before settling (the t=0 cut's
+                // reset + suppress + warm triple, per key).
+                physics_director.instance.schedule_warm_up(sim, cur.warm_up_cy_spring, cur.cy_spring_warm_up_time, reseed: true);
+                last_warm_time[chara_id] = clock.time;
             }
             // the rate track is per locator: the game applies the same key to
             // every spring part (head/body/tail, PARTS_NUM=3), so the tail and

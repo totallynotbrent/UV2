@@ -9,6 +9,12 @@ namespace UV2.Live
     // registered by stage_loader. runs in LateUpdate AFTER the pose (motion
     // sampled in Update) — the decoded order the game uses. one solver step
     // per rendered frame; the song clock gates dt (paused = no phase advance).
+    // execution order 10: after formation_driver (default 0) so a warm-up key
+    // that crosses this frame schedules + reseeds BEFORE the step consumes the
+    // pose the motion pass just wrote — the mid-song keys co-locate with clip
+    // swaps and a late reseed lets the first post-swap step ingest the pose
+    // jump as velocity (the 150+deg tail spike at the f836 key).
+    [DefaultExecutionOrder(10)]
     public class physics_director : MonoBehaviour
     {
         // springs hold from concert open until the formation driver applies
@@ -34,6 +40,7 @@ namespace UV2.Live
             public spring_loader.container_ref[] refs;
             public float warm_time;         // 0 = default 1.0s
             public bool warm_scheduled;
+            public bool reseed_on_warm;     // re-seed verlet before a mid-song warm-up
             public skirt_controller skirt;   // knee-correction pass (may be null)
         }
 
@@ -136,11 +143,14 @@ namespace UV2.Live
 
         // schedules the warm-up pass from the formation keys (the game's
         // warmUpCySpring byte: 0 = skip, else run; warm time 0 = 1.0s).
-        public void schedule_warm_up(spring_sim sim, byte warm_up_flag, float warm_time)
+        // reseed: also re-seed the verlet (ResetNativeCloth) before the warm-up
+        // burst — the t=0 cut path reseeds itself and passes false; mid-song keys
+        // pass true (their verlet state points at the pre-swap clip pose).
+        public void schedule_warm_up(spring_sim sim, byte warm_up_flag, float warm_time, bool reseed = false)
         {
             if (sim == null || warm_up_flag == 0) return;
             foreach (var cs in sims)
-                if (cs.sim == sim) { cs.warm_scheduled = true; cs.warm_time = warm_time; }
+                if (cs.sim == sim) { cs.warm_scheduled = true; cs.warm_time = warm_time; cs.reseed_on_warm = reseed; }
         }
 
         // the in-concert control panel iterates the bound sims (scrub and
@@ -251,6 +261,19 @@ namespace UV2.Live
                 {
                     // warm-up: fixed 60fps steps, history re-zeroed each step,
                     // no collisions. runs once, on the frame it is scheduled.
+                    // a mid-song warm-up key co-locates with a motion-clip swap:
+                    // the verlet still points at the pre-swap pose while the
+                    // bones sit in the new one, and a warm-up from that folded
+                    // state leaves the chain stuck 100+deg off (the aim pull
+                    // cannot unfold a target that passed through its base).
+                    // the game re-seeds (ResetNativeCloth) before every
+                    // warm-up, not just the t=0 cut — do the same here.
+                    if (cs.reseed_on_warm)
+                    {
+                        cs.sim.reset_to_pose();
+                        cs.sim.arm_suppression();
+                        cs.reseed_on_warm = false;
+                    }
                     cs.sim.warm_up(cs.warm_time);
                     cs.warm_scheduled = false;
                     continue;

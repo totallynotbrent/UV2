@@ -189,6 +189,14 @@ namespace UV2.Live
 
         Transform owner;
         bool simulating;
+        // owner posture saved at begin() and restored at end() — the solve runs
+        // with the owner parked at origin/identity (the game's
+        // UpdatePrevousPosture/EndSimulation contract), so root motion never
+        // enters the verlet as world-space velocity.
+        Vector3 owner_pos;
+        Quaternion owner_rot = Quaternion.identity;
+        Vector3 owner_scale = Vector3.one;
+        bool owner_parked;
         // one-shot suppression arm (SetSuppression on spawn/cut/teleport)
         public bool suppression_armed;
 
@@ -196,13 +204,32 @@ namespace UV2.Live
 
         public spring_sim(Transform character) { owner = character; }
 
-        // BeginSimulation: advance wind phases, refresh colliders, apply the
-        // armed suppression once, accumulate connected-bone forces.
+        // BeginSimulation: advance wind phases, park the owner, refresh
+        // colliders, apply the armed suppression once, accumulate
+        // connected-bone forces.
         public void begin(float dt)
         {
             simulating = true;
 
             if (wind != null && dt > 0f) wind.advance(dt);
+
+            // the game's BeginSimulation parks the owner root at origin and
+            // identity for the whole solve (UpdatePrevousPosture with
+            // IsAffectOwnerPosition/Rotation default false) and EndSimulation
+            // restores it after PostSpring. solving in live world space
+            // instead injects every root step (walks, formation shifts,
+            // teleports) into the verlet as velocity — the chains overshoot
+            // the animated pose and phase through the body on root-heavy
+            // choreography.
+            if (owner != null)
+            {
+                owner_pos = owner.position;
+                owner_rot = owner.rotation;
+                owner_scale = owner.localScale;
+                owner.position = Vector3.zero;
+                owner.rotation = Quaternion.identity;
+                owner_parked = true;
+            }
 
             refresh_colliders();
 
@@ -414,6 +441,17 @@ namespace UV2.Live
                     chain.write_back(null);
                 }
             }
+
+            // restore the owner posture AFTER the transform writes (the game's
+            // EndSimulation runs PostSpring under the parked owner, then
+            // restores position/rotation/scale).
+            if (owner_parked && owner != null)
+            {
+                owner.position = owner_pos;
+                owner.rotation = owner_rot;
+                owner.localScale = owner_scale;
+                owner_parked = false;
+            }
         }
 
         // samples 5 consecutive steps at startup then every 120th step (~2s).
@@ -454,8 +492,14 @@ namespace UV2.Live
                 // Diff/PrevTargetPosition/Force (register-proven @
                 // 0x7ff8e4961d70) so the burst settles the chain instead of
                 // accumulating snap velocity from the bind jump.
+                // collisions stay OFF through the burst: at a mid-song key
+                // the re-seeded pose can legitimately sit inside a blocker's
+                // reach (the choreography pins the tail against the hip
+                // sphere), and a warm-step push-out along the contact normal
+                // teleports the target to the sphere's far side — the
+                // 160deg flip and the forward phase-through at the f836 key.
                 begin(dt);
-                update(collision_switch: true, dt);
+                update(collision_switch: false, dt);
                 end();
                 reset_history();
             }
@@ -481,6 +525,21 @@ namespace UV2.Live
             // re-capturing the rest frame at the cut froze the raised opening
             // pose into the stiffness target and the tail pointed up all
             // song (bench13: bone1 bind aim -0.999 down, post-cut +0.66 up).
+            //
+            // the records hold solve-space positions: the solve runs with the
+            // owner parked at origin (begin/end contract), so the re-seed
+            // must park the owner too or the first parked step would mix
+            // live-space seeds with parked-space self positions.
+            bool was_parked = owner_parked;
+            if (!was_parked && owner != null)
+            {
+                owner_pos = owner.position;
+                owner_rot = owner.rotation;
+                owner_scale = owner.localScale;
+                owner.position = Vector3.zero;
+                owner.rotation = Quaternion.identity;
+                owner_parked = true;
+            }
             foreach (var p in parts)
                 foreach (var chain in p.chains)
                 {
@@ -502,6 +561,13 @@ namespace UV2.Live
                         chain.records[i] = r;
                     }
                 }
+            if (!was_parked && owner_parked && owner != null)
+            {
+                owner.position = owner_pos;
+                owner.rotation = owner_rot;
+                owner.localScale = owner_scale;
+                owner_parked = false;
+            }
         }
 
         // tail flip diagnosis: dumps per-bone tail frames during bench runs.
