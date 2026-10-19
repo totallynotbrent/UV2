@@ -132,7 +132,9 @@ namespace UV2.Live
         public byte is_limit;
         public Vector3 limit_min;
         public Vector3 limit_max;
-        public Vector4 wind_rates = Vector4.one;
+        // game native default = zeroed memory: bones without wind data
+        // contribute nothing (the per-bone 'wind bit' is the rates being 0)
+        public Vector4 wind_rates = Vector4.zero;
         public List<string> collision_names = new List<string>();
         public byte need_env_collision;
 

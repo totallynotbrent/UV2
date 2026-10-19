@@ -51,28 +51,27 @@ namespace UV2.Live
         // no per-frame rotation rides the character's spin.
         public Vector3 compose(float root_phase_shift, Quaternion parent_rot)
         {
-            Vector3 raw = Vector3.zero;
+            // the game sums two independently-normalized cone directions,
+            // each with its own constant: the VERTICAL cone rides 0.005 and
+            // the HORIZONTAL cone 0.015 (CalculateWind, doc Q5). the old
+            // normalize-the-sum-then-split version collapsed both cones
+            // into one vector and misattached the constants to axes.
+            Vector3 w = Vector3.zero;
             if (enable_vertical)
             {
                 float t = Mathf.Clamp01(Mathf.Sin(v_phase + root_phase_shift) * 0.5f + 0.5f);
-                raw += Vector3.Lerp(dir_upper, dir_downer, t);
+                Vector3 dv = Vector3.Lerp(dir_upper, dir_downer, t);
+                if (dv.sqrMagnitude > 1e-10f)
+                    w += dv.normalized * (power_scale * 0.005f);
             }
             if (enable_horizontal)
             {
                 float t = Mathf.Clamp01(Mathf.Sin(h_phase + root_phase_shift) * 0.5f + 0.5f);
-                raw += Vector3.Lerp(dir_right, dir_left, t);
+                Vector3 dh = Vector3.Lerp(dir_right, dir_left, t);
+                if (dh.sqrMagnitude > 1e-10f)
+                    w += dh.normalized * (power_scale * 0.015f);
             }
-            if (raw.sqrMagnitude <= 1e-10f) return Vector3.zero;
-
-            Vector3 n = raw.normalized;
-            Vector3 horiz = new Vector3(n.x, 0f, n.z);
-            if (horiz.sqrMagnitude > 1e-10f) horiz.Normalize();
-
-            Vector3 w = new Vector3(
-                horiz.x * power_scale * 0.005f,
-                n.y * power_scale * 0.015f,
-                horiz.z * power_scale * 0.005f);
-            return w;
+            return parent_rot * w;
         }
     }
 }

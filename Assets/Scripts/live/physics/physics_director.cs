@@ -48,28 +48,12 @@ namespace UV2.Live
         readonly List<chara_sim> sims = new();
         timeline_clock clock;
 
-        // fixed 60hz physics stepping: the solver's constants are authored
-        // for exactly 60 steps per second (the game's own scheduling at
-        // fps mode 1). rendering may run faster or stall; the accumulator
-        // steps the sim on a 1/60s grid.
-        // catch-up: the sim MUST hit 60 steps/s wall time even when the
-        // render loop is slow — the headless bench crawls at 4-7 renders/s
-        // and the old 2-step cap starved the solver to 12-14 steps/s there,
-        // so every bench verdict was measured on springs running at quarter
-        // rate (softer, calmer, hiding exactly the whipsaw the user sees at
-        // full rate on his machine). the backlog is now drained up to 2x
-        // realtime (120 steps) per frame; anything beyond that is a real
-        // stall (minimize, debugger) and discards — the stall-gap reseed
-        // handles the spring state instead.
-        const float PHYSICS_STEP = 1f / 60f;
-        const int MAX_STEPS_PER_FRAME = 120;
         // amortized warm-up: burst steps run per frame while a warm is in
         // flight. 4 steps/frame = a 60-step burst over ~15 frames, each
         // paying ~4 solves instead of one frame paying 60 (~180ms).
         const int WARM_STEPS_PER_FRAME = 4;
-        float step_acc;
         int render_count;
-        int solve_count;
+        int real_solve_count;
         float probe_t;
 
         void Awake()
@@ -209,12 +193,10 @@ namespace UV2.Live
                 if (cs?.sim == null) continue;
                 cs.sim.reset_to_pose();
                 cs.sim.arm_suppression();
-                cs.warm_scheduled = true;
-                if (cs.warm_time <= 0f) cs.warm_time = 1f;
                 n++;
             }
             if (n > 0)
-                trace_log.write($"stall reseed: {n} sims reset + suppressed + warm-up");
+                trace_log.write($"stall reseed: {n} sims reset + suppressed");
         }
 
         // runtime collision kill switch (the control panel's toggle).
@@ -260,42 +242,29 @@ namespace UV2.Live
             // second. bench evidence of the accumulator's actual rate.
             render_count++;
 
-            // gate the whole pass on the accumulator: at 120fps the sim
-            // steps every other frame; below 60 it catches up at most 2
-            // steps per frame. warm-up runs outside the gate (once, on
-            // scheduling). every stepping frame steps ALL characters so
-            // their phases stay in lockstep.
-            bool step_frame = !paused;
-            int steps = 0;
-            if (step_frame)
-            {
-                step_acc += dt;
-                while (step_acc >= PHYSICS_STEP && steps < MAX_STEPS_PER_FRAME)
-                {
-                    step_acc -= PHYSICS_STEP;
-                    steps++;
-                }
-                // a stall longer than the 2x-realtime drain window discards
-                // the backlog and the stall-gap reseed re-seats the springs:
-                // the pose advanced underneath them while no steps ran, and
-                // stepping from the stale verlet would whip the chains.
-                if (step_acc > MAX_STEPS_PER_FRAME * PHYSICS_STEP)
-                {
-                    step_acc = 0f;
-                    if (!paused && !springs_held)
-                        schedule_stall_reseed();
-                }
-                step_frame = steps > 0;
-            }
+            // CONTRACT SCHEDULING (doc lines 488-496, Q7): the live path is
+            // a per-render-frame discrete step — ONE verlet step per solve
+            // call, every rate divided by the caller's step scale. no
+            // accumulator, no catch-up, no substepping. the previous
+            // wall-clock accumulator burst up to 120 steps after a stall and
+            // ran the sim at render-rate-scaled time whenever fps != 60 —
+            // diverging from the game everywhere fps wasn't exactly 60.
+            // the step scale normalizes the force response for render rate:
+            // at 120fps each step carries half a frame's forces.
+            // a real stall (dt over half a second) is a pose discontinuity
+            // like a teleport: re-seed every live sim so the verlet never
+            // steps from a pose that no longer exists.
+            if (!paused && dt > 0.5f && !springs_held)
+                schedule_stall_reseed();
 
-            // probe tally AFTER the gate math, logged once per second.
-            solve_count += steps;
+            bool step_frame = !paused;
+            if (step_frame) real_solve_count++;
             probe_t += dt;
             if (probe_t >= 1f)
             {
-                UV2.App.trace_log.write($"phys cadence: {render_count} renders/s, {solve_count} solves/s, avg dt {probe_t / render_count * 1000f:0.0}ms");
+                UV2.App.trace_log.write($"phys cadence: {render_count} renders/s, {real_solve_count} solves/s, avg dt {probe_t / render_count * 1000f:0.0}ms");
                 render_count = 0;
-                solve_count = 0;
+                real_solve_count = 0;
                 probe_t = 0f;
             }
 
@@ -378,8 +347,11 @@ namespace UV2.Live
                     if (cs.skirt != null) cs.skirt.update();
                     continue;
                 }
-                cs.sim.begin(PHYSICS_STEP * steps);
-                cs.sim.update(physics_director.collisions_enabled, PHYSICS_STEP * steps);
+                // one discrete step per rendered frame (Q7); the step
+                // scale rides the frame's dt so force terms normalize
+                // against the render rate (the stepScale division).
+                cs.sim.begin(dt);
+                cs.sim.update(physics_director.collisions_enabled, dt);
                 cs.sim.end();
                 // the skirt knee-correction runs after the spring solve (the
                 // game's SkirtController pass rides LateUpdate too).

@@ -76,7 +76,7 @@ namespace UV2.Live
                 dynamic_ratio = 1f,
                 check_chara_collision = 1,
                 move_rate = 1f,
-                wind_rates = Vector4.one,
+                wind_rates = Vector4.zero,
                 limit_min = new Vector3(180f, 180f, 180f),
                 limit_max = new Vector3(180f, 180f, 180f),
             };

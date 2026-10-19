@@ -33,9 +33,6 @@ namespace UV2.Live
         const float GRAVITY_DIV = 10000f;
         // the constant scale arg InternalMono passes to UpdateForce
         const float FORCE_SCALE = 30f;
-        // the force pool: 1.5 in 60fps mode, doubled otherwise
-        const float POOL_60 = 1.5f;
-        const float POOL_OTHER = 3.0f;
         // non-60fps mode halves the diff (velocity) term
         const float DIFF_SCALE_NON_60 = 0.5f;
 
@@ -75,8 +72,15 @@ namespace UV2.Live
                     rs[i].parent_rot = rs[i - 1].final_rot;
                 }
 
+                // the game passes timescale = 1.0 in concerts (fork
+                // ground truth: raw rates, _timescale default 1, zero
+                // corrected to 1) and the live path steps once per rendered
+                // frame — no dt-normalization of rates. the stepScale
+                // division in UpdateForce divides by the same 1.0. motion
+                // therefore speeds with render fps, exactly as the game's
+                // per-frame discrete step does.
                 step(ref rs[i], stiffness_rate, drag_rate, gravity_rate, wind,
-                    wind_power, timescale, is_60fps, collision_switch, colliders,
+                    wind_power, 1f, is_60fps, collision_switch, colliders,
                     spring_rate, hip_rate, add_hip_rate);
             }
         }
@@ -97,10 +101,15 @@ namespace UV2.Live
             Quaternion base_rot = r.parent_rot * r.init_local;
             Vector3 aim = base_rot * r.bone_axis;
 
-            // velocity proxy + history shift; non-60fps mode halves it.
+            // velocity proxy + history shift. ABI byte = is30fps
+            // ([ctl+0x158]==1, sete at 0x7ff8e49662bf): when CLEAR (the
+            // 60fps solver) the drag-diff copy is HALVED (0x8d6c) and the
+            // verlet doubles its own copy back (0x8fb2) so the integrated
+            // velocity term is always 1x. keep both copies.
             Vector3 diff = r.prev_target - r.target_position;
-            if (!is_60fps) diff *= DIFF_SCALE_NON_60;
             r.prev_target = r.target_position;
+            Vector3 drag_diff = diff;
+            if (!is_60fps) drag_diff *= DIFF_SCALE_NON_60;
 
             // UpdateForce: rebuilt fresh every step, all terms carry the
             // serialized divisors and the constant scale of 30. gravity
@@ -111,7 +120,7 @@ namespace UV2.Live
             float stiff_f = stiffness_rate * spring_rate * r.stiffness / (STIFFNESS_DIV * FORCE_SCALE);
             Vector3 force = aim * stiff_f;
             float drag_f = drag_rate * spring_rate * r.drag / (DRAG_DIV * FORCE_SCALE);
-            force += diff * drag_f;
+            force += drag_diff * drag_f;
             force.y -= gravity_rate * spring_rate * r.gravity / (GRAVITY_DIV * FORCE_SCALE);
 
             // wind: per-bone slow/fast slot pairs lerped by the clamped
@@ -131,10 +140,28 @@ namespace UV2.Live
             force += r.connected_force / FORCE_SCALE;
             r.force = force;
 
-            // the verlet rebuild (timescale 1.0 in the game's live path)
-            float pool = is_60fps ? POOL_60 : POOL_OTHER;
+            // verlet rebuild, register-verified against the shipped binary
+            // (0x7ff8e49a8d5c-0x9060, fully pinned 2026-10-19). the ABI
+            // byte is calc60FPS ([ctl+0x158]==1 => true; the fork's
+            // is60FpsPhysics, default mode 1 => true in concerts):
+            //   calc60 TRUE (concert mode): force gain 1.5 (pool 0x5e34
+            //     @ 0x8fc3), drag-diff FULL, no verlet doubling.
+            //   calc60 FALSE: force gain 3.0 (pool 0x5d7c @ 0x8faa),
+            //     drag-diff halved (0x8d6c) but the verlet doubles its
+            //     diff copy back (0x8fb2-fbc) — net verlet diff 1x.
+            //   new = target - diff*ts + gain*force*ts  (both *ts; xmm5 =
+            //   the timescale stack arg at callee [rbp+0xa8], 1.0 live).
+            // the pre-2026-10-19 build already ran the calc60-true pair
+            // hard-coded — the register work CONFIRMS it. the fork's
+            // shipped ABI (Cyspring.cs UpdateSpring) pins the arg names:
+            // (timescale, calc60FPS, mainHipMoveRate, addHipMoveRate,
+            // springRate) land at callee [rbp+0xa8/0xb0/0xb8/0xc0/0xc8].
+            // (the doc's Q3 'DynamicRatio selects 3.0/0.9999' attribution
+            // is wrong; DynamicRatio's real effect is the init-local relax
+            // at the tail of the step.)
+            float force_gain = is_60fps ? 1.5f : 3.0f;
             Vector3 new_target = r.target_position - diff * timescale
-                + force * (pool * timescale);
+                + force * (force_gain * timescale);
 
             // hip-move damper: the frame's hip rate (add-spring chains take
             // the add rate) blends through the move-spring apply rate into
