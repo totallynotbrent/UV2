@@ -274,14 +274,12 @@ namespace UV2.Live
             foreach (var p in parts)
             {
                 if (p == null || p.chains.Count == 0) continue;
-                // the tail runs collision-free: its two keep-out spheres
-                // (authored at a full meter on the hip and 0.85 on the chest,
-                // both shoved forward of their bones) were built for the
-                // game's rig proportions and their down-back push rides our
-                // rig into the crotch corridor. with them the tail threads
-                // between the legs; without them it hangs clean off the
-                // animation. hair and body keep their collisions.
-                if (p.id == part.tail) collision_switch = false;
+                // every added collision is off: the authored keep-out
+                // geometry was tuned for the game's rig proportions and
+                // on ours it only injects bad pushes: the tail threaded
+                // between the legs, the hair lifted at the body spheres.
+                // chains run pure spring + wind + the animation anchor.
+                collision_switch = false;
                 float wind_power = wind_enabled && p.has_wind && wind != null ? Mathf.Clamp01(p.wind_power_rate) : 0f;
                 resolved.TryGetValue(p.id, out var part_colliders);
 
