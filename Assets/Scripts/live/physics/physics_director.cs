@@ -56,6 +56,19 @@ namespace UV2.Live
         int real_solve_count;
         float probe_t;
 
+        // 60hz step gate: the game's solver cadence is one verlet step per
+        // 60th of a second (its fps-mode field + every serialized rate
+        // assume it), so per-second spring displacement scales with solve
+        // count. at uncapped render rates that means N/60 times the
+        // game's motion and integrator-edge oscillation on stiff roots —
+        // the jitter seen on a 116fps machine. the gate lets at most one
+        // step per 1/60s of accumulated frame time: 120fps renders solve
+        // on alternate frames (60 solves/s), 45fps solves every frame
+        // (45 solves/s, same as a 45fps game). surplus time is discarded —
+        // no catch-up bursts; a real stall still reseeds via the 0.5s gap.
+        const float STEP_INTERVAL = 1f / 60f;
+        float step_bank;
+
         void Awake()
         {
             instance = this;
@@ -257,8 +270,21 @@ namespace UV2.Live
             if (!paused && dt > 0.5f && !springs_held)
                 schedule_stall_reseed();
 
-            bool step_frame = !paused;
-            if (step_frame) real_solve_count++;
+            // step gate: bank this frame's time, spend one interval at a
+            // time, and drop the rest. at 116fps this steps on ~every other
+            // frame; below 60fps every frame steps. paused frames bank
+            // nothing (the game holds the pose while its clock is zero).
+            if (!paused)
+            {
+                step_bank += dt;
+                if (step_bank > 0.25f) step_bank = STEP_INTERVAL;
+            }
+            bool step_frame = !paused && step_bank >= STEP_INTERVAL;
+            if (step_frame)
+            {
+                step_bank -= STEP_INTERVAL;
+                real_solve_count++;
+            }
             probe_t += dt;
             if (probe_t >= 1f)
             {

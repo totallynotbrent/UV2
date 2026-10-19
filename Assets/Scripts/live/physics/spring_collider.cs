@@ -13,8 +13,10 @@ namespace UV2.Live
     //           the sim reads the rider's transform.position directly.
     //   capsule: rider localPosition = offset; axis = (offset2 - offset)
     //           scaled by the rider's parent lossyScale.
-    //   radius: serialized _radius; capsules scale by the parent lossyScale.y
-    //           factor (the game's ScaleParams_Capsule form).
+    //   radius: the game's ScaleParams — effective = authored *
+    //           (lossyScaleY / BodyScale) for both shapes; BodyScale =
+    //           chara_height/160.7529, and the Position bone's localScale
+    //           equals it, so standard-height casts evaluate to raw.
     public struct spring_collider
     {
         public spring_collider_type type;
@@ -24,8 +26,6 @@ namespace UV2.Live
 
         // evaluates world-space placement from one collision row's rider
         // transform (the GameObject parented under the target bone).
-        // the scale algebra is the game's ScaleParams: effective values are
-        // the authored ones times (bone lossyScale / bodyScale).
         public static spring_collider from_rider(collision_param p)
         {
             var c = new spring_collider
@@ -37,27 +37,21 @@ namespace UV2.Live
             if (rider == null) return c;
 
             float body_scale = p.body_scale > 1e-5f ? p.body_scale : 1f;
+            float lossy_y = rider.lossyScale.y > 1e-6f ? rider.lossyScale.y : 1f;
+            float scale = lossy_y / body_scale;
             if (p.type == (int)spring_collider_type.capsule)
             {
                 Vector3 parent_scale = rider.parent != null
                     ? rider.parent.lossyScale
                     : Vector3.one;
-                Vector3 axis = Vector3.Scale(p.offset2 - p.offset, parent_scale) / body_scale;
                 c.position = rider.position;
-                c.position2 = rider.position + axis;
-                float cap_scale = parent_scale.y > 1e-6f ? parent_scale.y / 1.2f : 1f;
-                c.radius *= cap_scale;
+                c.position2 = rider.position + Vector3.Scale(p.offset2 - p.offset, parent_scale);
             }
             else
             {
                 c.position = rider.position;
-                // v1's ScaleParams(1.2): radius = default * (lossy / 1.2) —
-                // the collision-scale divisor, NOT bodyScale. the bodyScale
-                // divisor oversizes the tail spheres ~1.2x past the tail
-                // root and the constant radial push-out parks the tail up.
-                float sp_scale = rider.lossyScale.y > 1e-6f ? rider.lossyScale.y / 1.2f : 1f;
-                c.radius *= sp_scale;
             }
+            c.radius *= scale;
             return c;
         }
     }

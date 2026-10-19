@@ -135,23 +135,18 @@ namespace UV2.Live
                     if (target == null) continue;
                     var col_go = new GameObject(row.collision_name);
                     col_go.transform.SetParent(target, false);
-                    // the game's ScaleParams algebra (v1's vendored
-                    // ScaleParams_Sphere/Capsule): the sphere rider sits at
-                    // defaultOffset / bodyScale; the capsule rider keeps the
-                    // RAW defaultOffset (its axis and radius carry the
-                    // lossy/bodyScale factor at eval time instead).
-                    // v1's collision scale (LivePhysicsConfig SetScale 1.2):
-                    // ScaleParams(legacyScale=1.2) divides BOTH the sphere
-                    // rider's local offset and the collider radius by 1.2 —
-                    // the effective world values land at ~the raw dump numbers
-                    // while the unscaled algebra puts them 1.2x over. the
-                    // oversized hip sphere reaches past the tail root and its
-                    // radial push-out parks the tail up-back every step
-                    // (bench16: col off = tail falls to the gravity hang).
+                    // the game's ScaleParams rider seating: the sphere rider
+                    // sits at defaultOffset / BodyScale (its world center then
+                    // evaluates through the parent transform like Unity's
+                    // TransformPoint); the capsule rider keeps the RAW
+                    // defaultOffset — its axis carries the parent lossyScale
+                    // factor at eval time instead. BodyScale = the Position
+                    // bone's localScale (chara_height/160.7529), so a
+                    // standard-height cast lands the rider at the raw authored
+                    // offset and a tall/short one corrects proportionally.
                     float body_scale = position_body_scale(character);
-                    float collision_scale = 1.2f;
                     if (row.type == (int)spring_collider_type.sphere)
-                        col_go.transform.localPosition = row.offset / collision_scale;
+                        col_go.transform.localPosition = row.offset / body_scale;
                     else if (row.type == (int)spring_collider_type.capsule)
                         col_go.transform.localPosition = row.offset;
                     else
@@ -186,6 +181,8 @@ namespace UV2.Live
                         chain_index++;
                         continue;
                     }
+                    chain.body_scale = position_body_scale(character);
+                    chain.scale_collision_radii();
                     part.chains.Add(chain);
                     chain_index++;
                 }

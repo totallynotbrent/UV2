@@ -18,6 +18,7 @@ namespace UV2.Live
         public Transform root_transform;
         public spring_record[] records;
         public Transform[] bones;          // bones[i] drives records[i]
+        public float body_scale = 1f;      // Position-bone scale at bind (radius algebra)
         public int solve_count;            // TrueNativesCount: n or n-1 when the end bone is not simulated
         public float wind_phase_shift;     // (index / count) * pi/2 from the container order
 
@@ -103,6 +104,24 @@ namespace UV2.Live
                 p.apply(ref records[i]);
                 if (p.collision_names.Count > 0 && collision_names == null)
                     collision_names = p.collision_names;
+            }
+        }
+
+        // the game's bone radius algebra (ChangeValue): native
+        // CollisionRadius = serialized / BodyScale * boneLossyY — the
+        // Position bone's localScale equals BodyScale, so a standard-height
+        // cast evaluates to the raw value while a tall or short one scales
+        // proportionally. the loader owns body_scale, so this runs after
+        // bind, not inside it.
+        public void scale_collision_radii()
+        {
+            for (int i = 0; i < records.Length; i++)
+            {
+                float lossy_y = bones[i] != null && bones[i].lossyScale.y > 1e-6f
+                    ? bones[i].lossyScale.y
+                    : 1f;
+                records[i].collision_radius = records[i].collision_radius
+                    * lossy_y / body_scale;
             }
         }
 
