@@ -134,7 +134,10 @@ namespace UV2.UI
                 // command" (the window never sends one, but keep the guard).
                 if (cmd.speed != 0f) clock.set_timescale(cmd.speed);
                 physics_director.collisions_enabled = cmd.collisions == 1;
-                if (cmd.spring_rate > 0f && physics_director.instance != null)
+                // spring_rate 0 is a real value here: it means physics-off
+                // (forces zeroed, targets pinned to the rest line = pure
+                // animation). -1 = no command (the launcher never sends it).
+                if (cmd.spring_rate >= 0f && physics_director.instance != null)
                     foreach (var sim in physics_director.instance.all_sims())
                         physics_director.instance.set_spring_rate(sim, spring_sim.part.head, cmd.spring_rate);
                 if (cmd.camera_mode >= 0 && director != null)
@@ -179,7 +182,7 @@ namespace UV2.UI
             public int paused = -1;
             public float speed;
             public int collisions = -1;
-            public float spring_rate;
+            public float spring_rate = -1f;
             public int camera_mode = -1;
         }
 

@@ -186,10 +186,13 @@ namespace UV2.Live
             }
             // the rate track is per locator: the game applies the same key to
             // every spring part (head/body/tail, PARTS_NUM=3), so the tail and
-            // body chains get the rest-line pull too.
-            physics_director.instance.set_spring_rate(sim, spring_sim.part.head, cur.cy_spring_rate);
-            physics_director.instance.set_spring_rate(sim, spring_sim.part.body, cur.cy_spring_rate);
-            physics_director.instance.set_spring_rate(sim, spring_sim.part.tail, cur.cy_spring_rate);
+            // body chains get the rest-line pull too. an authored 0 in the
+            // worksheet schema means unset (default 1): a true off only ever
+            // comes from the control window, so coerce here.
+            float key_rate = cur.cy_spring_rate > 0f ? cur.cy_spring_rate : 1f;
+            physics_director.instance.set_spring_rate(sim, spring_sim.part.head, key_rate);
+            physics_director.instance.set_spring_rate(sim, spring_sim.part.body, key_rate);
+            physics_director.instance.set_spring_rate(sim, spring_sim.part.tail, key_rate);
         }
 
         // chara id per root, wired by stage_loader after the cast loads.

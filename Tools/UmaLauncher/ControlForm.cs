@@ -101,7 +101,11 @@ namespace UmaLauncher
             collisions.CheckedChanged += (s, e) => Send(collisions: collisions.Checked ? 1 : 0);
             spring.ValueChanged += (s, e) =>
             {
-                spring_label.Text = $"spring {spring.Value / 100f:0.00}";
+                // 0 = springs off (animation-only cloth); the player reads
+                // 0 as a real value, negatives as "no command".
+                spring_label.Text = spring.Value == 0
+                    ? "spring off"
+                    : $"spring {spring.Value / 100f:0.00}";
                 Send(spring_rate: spring.Value / 100f);
             };
             seek.MouseDown += (s, e) => dragging = true;
@@ -128,14 +132,14 @@ namespace UmaLauncher
         // seq carrying seek 12.4 after one scrub). the player treats a
         // negative seek as "no seek this block".
         void Send(float seek_val = float.NaN, int paused = -1, float speed = 0f,
-            int collisions = -1, float spring_rate = 0f, int camera_mode = -1)
+            int collisions = -1, float spring_rate = -1f, int camera_mode = -1)
         {
             seq++;
             if (float.IsNaN(seek_val)) seek_val = _no_seek;
             if (paused < 0) paused = _last_paused;
             if (speed == 0f) speed = _last_speed;
             if (collisions < 0) collisions = _last_collisions;
-            if (spring_rate <= 0f) spring_rate = _last_spring;
+            if (spring_rate < 0f) spring_rate = _last_spring;
             if (camera_mode < 0) camera_mode = _last_camera;
             _last_seek = seek_val; _last_paused = paused; _last_speed = speed;
             _last_collisions = collisions; _last_spring = spring_rate; _last_camera = camera_mode;

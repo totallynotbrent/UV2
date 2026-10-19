@@ -116,6 +116,10 @@ namespace UV2.Live
 
             // wind: per-bone slow/fast slot pairs lerped by the clamped
             // power; the vertical pair drives y, the horizontal pair x/z.
+            // wind does NOT ride the group rate: the shipped solver scales
+            // the accumulated force by the rate FIRST, then adds wind
+            // unscaled (Force = Scale(Force, forceScale); Force += Wind
+            // — UpdateForce step 8). scaling wind here would diverge.
             float wp = Mathf.Clamp01(wind_power);
             float v_rate = Mathf.Lerp(r.wind_rates.x, r.wind_rates.y, wp);
             float h_rate = Mathf.Lerp(r.wind_rates.z, r.wind_rates.w, wp);

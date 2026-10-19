@@ -51,10 +51,18 @@ namespace UV2.Live
         // fixed 60hz physics stepping: the solver's constants are authored
         // for exactly 60 steps per second (the game's own scheduling at
         // fps mode 1). rendering may run faster or stall; the accumulator
-        // steps the sim on a 1/60s grid, capped at 2 catch-up steps per
-        // frame so a stall never produces giant solve steps.
+        // steps the sim on a 1/60s grid.
+        // catch-up: the sim MUST hit 60 steps/s wall time even when the
+        // render loop is slow — the headless bench crawls at 4-7 renders/s
+        // and the old 2-step cap starved the solver to 12-14 steps/s there,
+        // so every bench verdict was measured on springs running at quarter
+        // rate (softer, calmer, hiding exactly the whipsaw the user sees at
+        // full rate on his machine). the backlog is now drained up to 2x
+        // realtime (120 steps) per frame; anything beyond that is a real
+        // stall (minimize, debugger) and discards — the stall-gap reseed
+        // handles the spring state instead.
         const float PHYSICS_STEP = 1f / 60f;
-        const int MAX_STEPS_PER_FRAME = 2;
+        const int MAX_STEPS_PER_FRAME = 120;
         // amortized warm-up: burst steps run per frame while a warm is in
         // flight. 4 steps/frame = a 60-step burst over ~15 frames, each
         // paying ~4 solves instead of one frame paying 60 (~180ms).
@@ -187,6 +195,28 @@ namespace UV2.Live
                 trace_log.write($"seek reset: {n} sims reset + suppressed + warm-up");
         }
 
+        // a frame gap beyond the catch-up drain window (alt-tab, load hitch,
+        // debugger pause) is a pose discontinuity just like a teleport: the
+        // animation advanced whole seconds while no steps ran. re-seed every
+        // live sim to the current pose so the springs re-capture instead of
+        // whipping from the stale verlet — the game's ResetNativeCloth answer,
+        // reused. the amortized warm staggers the cost across frames.
+        void schedule_stall_reseed()
+        {
+            int n = 0;
+            foreach (var cs in sims)
+            {
+                if (cs?.sim == null) continue;
+                cs.sim.reset_to_pose();
+                cs.sim.arm_suppression();
+                cs.warm_scheduled = true;
+                if (cs.warm_time <= 0f) cs.warm_time = 1f;
+                n++;
+            }
+            if (n > 0)
+                trace_log.write($"stall reseed: {n} sims reset + suppressed + warm-up");
+        }
+
         // runtime collision kill switch (the control panel's toggle).
         public static bool collisions_enabled = true;
 
@@ -195,13 +225,17 @@ namespace UV2.Live
         {
             // the game's rate table is per root group (hair/tail/body) but the
             // formation key carries one scalar: every group's forces scale by
-            // it. rate 0 = unset = keep 1.
-            if (sim == null) return;
-            float r = rate <= 0f ? 1f : rate;
+            // it. rate 0 = springs off (the control window's slider at its
+            // minimum): the scaled force terms (stiffness/drag/gravity, plus
+            // the hip blend pinned to the rest line) all go quiet, so the
+            // chains ride the animation — wind-only songs still flap in the
+            // wind, matching the shipped solver (which scales the force then
+            // adds wind unscaled). negative = unset = keep the current rate.
+            if (sim == null || rate < 0f) return;
             foreach (var p in sim.parts)
-                if (p != null) p.spring_rate = r;
+                if (p != null) p.spring_rate = rate;
             // also pre-seed parts that bind later.
-            pending_rate = r;
+            pending_rate = rate;
         }
 
         // last formation-key rate; parts created after the key still need it.
@@ -241,10 +275,16 @@ namespace UV2.Live
                     step_acc -= PHYSICS_STEP;
                     steps++;
                 }
-                // a stall longer than the cap discards the backlog instead
-                // of bursting giant solves; the next frame resumes in phase.
+                // a stall longer than the 2x-realtime drain window discards
+                // the backlog and the stall-gap reseed re-seats the springs:
+                // the pose advanced underneath them while no steps ran, and
+                // stepping from the stale verlet would whip the chains.
                 if (step_acc > MAX_STEPS_PER_FRAME * PHYSICS_STEP)
+                {
                     step_acc = 0f;
+                    if (!paused && !springs_held)
+                        schedule_stall_reseed();
+                }
                 step_frame = steps > 0;
             }
 
