@@ -16,6 +16,12 @@ namespace UV2.Live
     // csv's override columns.
     public class vocal_mixer : MonoBehaviour
     {
+        // the single voices gate: the control window's toggle mutes every
+        // stem and the facial director consults the same flag so the mouth
+        // closes with the voices.
+        public static bool voices_enabled = true;
+        public static vocal_mixer instance { get; private set; }
+
         private class stem
         {
             public AudioSource[] sources;  // one per take, all rolling in sync
@@ -473,7 +479,7 @@ namespace UV2.Live
                 // starts at full volume at the flag) and only releases with
                 // a ramp, so an entry's first word is never faded in.
                 float vol_rate = target > s.volume ? attack_rate : fade_rate;
-                s.volume = Mathf.MoveTowards(s.volume, target * last_volume, vol_rate * Time.deltaTime);
+                s.volume = Mathf.MoveTowards(s.volume, target * eff_volume, vol_rate * Time.deltaTime);
                 if (s.wave_target != s.wave && s.wave >= 0)
                     trace_log.write($"vocals: take switch g{s.group} {s.wave} -> {s.wave_target} at t={t:0.0}s");
                 s.wave = s.wave_target;
@@ -581,5 +587,9 @@ namespace UV2.Live
         {
             last_volume = Mathf.Clamp01(v);
         }
+
+        // the voices gate: 0 gain the moment it flips (no ramp), and the
+        // facial director reads the same flag to close the mouths.
+        private float eff_volume => voices_enabled ? last_volume : 0f;
     }
 }

@@ -773,11 +773,12 @@ namespace UV2.Live
                     {
                         chara_springs[chara_id] = sim;
                         chara_springs_roots[instance] = chara_id;
-                        // the skirt knee-correction pass rides the same sim.
-                        physics_director.instance.attach_skirt(chara_id, body_folder,
-                            cloth_idx, instance, load_asset_object);
                     }
-                    else trace_log.write($"physics: chara {chara_id} no containers bound");
+                    // the skirt knee-correction pass rides the v1 bridge
+                    // (attach_character returns null there by design, so the
+                    // skirt binds unconditionally).
+                    physics_director.instance.attach_skirt(chara_id, body_folder,
+                        cloth_idx, instance, load_asset_object);
                 }
             }
         }
@@ -858,11 +859,12 @@ namespace UV2.Live
                     {
                         chara_springs[chara_id] = sim;
                         chara_springs_roots[instance.transform] = chara_id;
-                        // the skirt knee-correction pass rides the same sim.
-                        physics_director.instance.attach_skirt(chara_id, body_folder,
-                            cloth_idx, instance.transform, load_asset_object);
                     }
-                    else trace_log.write($"physics: chara {chara_id} no containers bound");
+                    // the skirt knee-correction pass rides the v1 bridge
+                    // (attach_character returns null there by design, so the
+                    // skirt binds unconditionally).
+                    physics_director.instance.attach_skirt(chara_id, body_folder,
+                        cloth_idx, instance.transform, load_asset_object);
                 }
             }
             return instance.transform;

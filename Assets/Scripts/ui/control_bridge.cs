@@ -22,6 +22,9 @@ namespace UV2.UI
         string last_status;
         float next_poll;
         long last_seq = -1;
+        int fps_frames;
+        float fps_value;
+        float fps_next_second;
 
         // the camera mode the bridge last applied; the launcher echoes it in
         // status.json so its radios stay in sync.
@@ -133,13 +136,14 @@ namespace UV2.UI
                 // negatives are reverse playback: only a true zero is "no
                 // command" (the window never sends one, but keep the guard).
                 if (cmd.speed != 0f) clock.set_timescale(cmd.speed);
-                physics_director.collisions_enabled = cmd.collisions == 1;
-                // spring_rate 0 is a real value here: it means physics-off
-                // (forces zeroed, targets pinned to the rest line = pure
-                // animation). -1 = no command (the launcher never sends it).
-                if (cmd.spring_rate >= 0f && physics_director.instance != null)
-                    foreach (var sim in physics_director.instance.all_sims())
-                        physics_director.instance.set_spring_rate(sim, spring_sim.part.head, cmd.spring_rate);
+                // the retired physics controls: collisions and spring_rate
+                // are accepted for launcher compatibility but no longer
+                // drive anything (the v1 physics stack owns its tuning).
+                if (cmd.voices >= 0 && vocal_mixer.voices_enabled != (cmd.voices == 1))
+                {
+                    vocal_mixer.voices_enabled = cmd.voices == 1;
+                    trace_log.write($"control bridge: voices {(vocal_mixer.voices_enabled ? "on" : "off (mouth closed)")}");
+                }
                 if (cmd.camera_mode >= 0 && director != null)
                 {
                     director.mode = (camera_mode)cmd.camera_mode;
@@ -156,6 +160,14 @@ namespace UV2.UI
         {
             try
             {
+                // fps: a one-second moving average over rendered frames.
+                fps_frames++;
+                if (Time.unscaledTime >= fps_next_second)
+                {
+                    fps_value = fps_frames / Mathf.Max(0.05f, Time.unscaledTime - fps_next_second + 1f);
+                    fps_frames = 0;
+                    fps_next_second = Time.unscaledTime + 1f;
+                }
                 var s = new control_status
                 {
                     time = clock.time,
@@ -165,6 +177,8 @@ namespace UV2.UI
                     camera_mode = director != null ? (int)director.mode : cam_mode_applied,
                     loading = load_progress.current,
                     opened = loader.opened ? 1 : 0,
+                    voices = vocal_mixer.voices_enabled ? 1 : 0,
+                    fps = fps_value,
                 };
                 string json = JsonUtility.ToJson(s);
                 if (json == last_status) return;
@@ -184,6 +198,7 @@ namespace UV2.UI
             public int collisions = -1;
             public float spring_rate = -1f;
             public int camera_mode = -1;
+            public int voices = -1;
         }
 
         [System.Serializable]
@@ -195,6 +210,8 @@ namespace UV2.UI
             public int camera_mode;
             public string loading;
             public int opened;
+            public int voices = 1;
+            public float fps;
         }
     }
 }

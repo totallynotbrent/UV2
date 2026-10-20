@@ -221,8 +221,15 @@ namespace UV2.Live
                     // an active lip key for this slot replaces the mouth-key mix.
                     bool lip_locked = mouth_lock(tracks, t);
                     bool lip_active = !lip_locked && lip_active_for(st, t, i);
-                    if (!lip_active) update_mouth(st, tracks, t, i, weights);
-                    if (lip_active) update_lips(st, t, i, weights);
+                    // voices off: no mouth writers run and the mouth morphs
+                    // reset to rest, so the face goes closed-mouth while the
+                    // eyes/eyebrows/ears keep animating.
+                    if (vocal_mixer.voices_enabled)
+                    {
+                        if (!lip_active) update_mouth(st, tracks, t, i, weights);
+                        if (lip_active) update_lips(st, t, i, weights);
+                    }
+                    else close_mouth(st);
                     update_eyes(st, tracks, t, weights);
                     update_eyebrows(st, tracks, t, weights);
                     update_ears(st, tracks, t, weights);
@@ -301,6 +308,29 @@ namespace UV2.Live
                 st.memo_mouth_id = cur.facial_id;
                 st.memo_mouth_w = ratio;
                 st.memo_mouth_mix = mix;
+            }
+        }
+
+        // voices off: reset every mouth-category transform to its rest pose
+        // so the mouth visibly closes instead of freezing mid-shape.
+        private static void close_mouth(slot_state st)
+        {
+            foreach (var entry in st.face_target._mouthTarget)
+            {
+                if (entry == null) continue;
+                foreach (var group in entry._faceGroupInfo)
+                {
+                    if (group == null) continue;
+                    foreach (var trs in group._trsArray)
+                    {
+                        if (string.IsNullOrEmpty(trs._path)) continue;
+                        if (!st.path_map.TryGetValue(trs._path, out var t) || t == null) continue;
+                        if (!st.rest_pos.TryGetValue(t, out var rp)) continue;
+                        t.localPosition = rp;
+                        t.localScale = st.rest_scale[t];
+                        t.localRotation = from_maya_euler(st.rest_rot[t]);
+                    }
+                }
             }
         }
 

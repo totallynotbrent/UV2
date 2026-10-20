@@ -23,9 +23,8 @@ namespace UmaLauncher
         // player clamps the same range on its side).
         private readonly NumericUpDown speed = new() { DecimalPlaces = 2, Increment = 0.01m, Minimum = -3m, Maximum = 3m, Value = 1.00m, Width = 76 };
         private readonly ComboBox camera = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
-        private readonly CheckBox collisions = new() { Text = "collisions", AutoSize = true, Checked = true };
-        private readonly TrackBar spring = new() { Minimum = 0, Maximum = 200, Value = 100, TickFrequency = 50, Width = 180 };
-        private readonly Label spring_label = new() { Text = "spring 1.00", AutoSize = true };
+        private readonly CheckBox voices = new() { Text = "voices", AutoSize = true, Checked = true };
+        private readonly Label fps_label = new() { Text = "", AutoSize = true, ForeColor = Color.DimGray };
         private readonly Label loading_label = new() { AutoSize = true, ForeColor = Color.DimGray };
 
         private long seq;
@@ -72,16 +71,11 @@ namespace UmaLauncher
             right.Controls.Add(speed);
             root.Controls.Add(right, 1, 1);
 
-            // row 2: camera combo, collisions checkbox, spring slider.
-            // the bottom row carries five controls; a non-wrapping flow
-            // at 560px pushed the spring slider's label off the edge —
-            // the loading label shares the row now that the window is
-            // wider and the row carries an explicit 35% band.
+            // row 2: camera combo, voices checkbox, fps, loading state.
             FlowLayoutPanel bottom = new() { Dock = DockStyle.Fill, WrapContents = false };
             bottom.Controls.Add(camera);
-            bottom.Controls.Add(collisions);
-            bottom.Controls.Add(spring);
-            bottom.Controls.Add(spring_label);
+            bottom.Controls.Add(voices);
+            bottom.Controls.Add(fps_label);
             bottom.Controls.Add(loading_label);
             root.Controls.Add(bottom, 0, 2);
             root.SetColumnSpan(bottom, 2);
@@ -98,16 +92,7 @@ namespace UmaLauncher
                 last_camera_pick = DateTime.UtcNow;
                 Send(camera_mode: camera.SelectedIndex);
             };
-            collisions.CheckedChanged += (s, e) => Send(collisions: collisions.Checked ? 1 : 0);
-            spring.ValueChanged += (s, e) =>
-            {
-                // 0 = springs off (animation-only cloth); the player reads
-                // 0 as a real value, negatives as "no command".
-                spring_label.Text = spring.Value == 0
-                    ? "spring off"
-                    : $"spring {spring.Value / 100f:0.00}";
-                Send(spring_rate: spring.Value / 100f);
-            };
+            voices.CheckedChanged += on_voices_changed;
             seek.MouseDown += (s, e) => dragging = true;
             seek.MouseUp += (s, e) => { dragging = false; Send(seek_val: status_length > 0 ? status_length * seek.Value / 1000f : -1f); };
 
@@ -132,23 +117,21 @@ namespace UmaLauncher
         // seq carrying seek 12.4 after one scrub). the player treats a
         // negative seek as "no seek this block".
         void Send(float seek_val = float.NaN, int paused = -1, float speed = 0f,
-            int collisions = -1, float spring_rate = -1f, int camera_mode = -1)
+            int voices = -1, int camera_mode = -1)
         {
             seq++;
             if (float.IsNaN(seek_val)) seek_val = _no_seek;
             if (paused < 0) paused = _last_paused;
             if (speed == 0f) speed = _last_speed;
-            if (collisions < 0) collisions = _last_collisions;
-            if (spring_rate < 0f) spring_rate = _last_spring;
+            if (voices < 0) voices = _last_voices;
             if (camera_mode < 0) camera_mode = _last_camera;
             _last_seek = seek_val; _last_paused = paused; _last_speed = speed;
-            _last_collisions = collisions; _last_spring = spring_rate; _last_camera = camera_mode;
+            _last_voices = voices; _last_camera = camera_mode;
             string json = "{\"seq\": " + seq +
                 ", \"seek\": " + (seek_val < 0f ? "-1" : seek_val.ToString("0.###")) +
                 ", \"paused\": " + paused +
                 ", \"speed\": " + speed.ToString("0.###") +
-                ", \"collisions\": " + collisions +
-                ", \"spring_rate\": " + spring_rate.ToString("0.###") +
+                ", \"voices\": " + voices +
                 ", \"camera_mode\": " + camera_mode + "}";
             try { File.WriteAllText(Path.Combine(dir, "control.json"), json); } catch { }
         }
@@ -157,8 +140,7 @@ namespace UmaLauncher
         float _last_seek = -1f;
         int _last_paused;
         float _last_speed = 1f;
-        int _last_collisions = 1;
-        float _last_spring = 1f;
+        int _last_voices = 1;
         int _last_camera;
 
         // user-owned camera selection: the poll used to snap the combo from
@@ -213,6 +195,23 @@ namespace UmaLauncher
                 time_label.Text = $"{Fmt(status_time)} / {Fmt(status_length)}" +
                     (status_paused == 1 ? "  (paused)" : "");
                 if (status_paused == 1) pause.Text = "resume"; else pause.Text = "pause";
+                if (root.TryGetProperty("fps", out var fpsEl))
+                {
+                    float fps = fpsEl.GetSingle();
+                    if (fps > 0f) fps_label.Text = $"{fps:0} fps";
+                }
+                if (root.TryGetProperty("voices", out var voicesEl))
+                {
+                    int v = voicesEl.GetInt32();
+                    if (v >= 0 && voices.Checked != (v == 1))
+                    {
+                        // the player echoed a voices change (not user-initiated
+                        // here); sync the checkbox without re-sending.
+                        voices.CheckedChanged -= on_voices_changed;
+                        voices.Checked = v == 1;
+                        voices.CheckedChanged += on_voices_changed;
+                    }
+                }
                 // follow the player's camera mode only outside the grace
                 // window after a user pick; the player applies the pick and
                 // echoes it back, and from then the echo is in sync.
@@ -225,6 +224,8 @@ namespace UmaLauncher
             }
             catch { }
         }
+
+        void on_voices_changed(object? s, EventArgs e) => Send(voices: voices.Checked ? 1 : 0);
 
         static string Fmt(float t)
         {
