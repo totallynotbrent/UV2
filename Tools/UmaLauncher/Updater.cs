@@ -98,6 +98,47 @@ namespace UmaLauncher
             }
         }
 
+        // files the app/launcher write at runtime; the prune pass never
+        // touches them (everything else in the folder belongs to the
+        // shipped build and may be deleted when it disappears from the
+        // zip, so renamed or removed files stop accumulating forever).
+        private static readonly HashSet<string> UserFiles =
+        [
+            "Config.json", "selection.json", "control.json", "status.json",
+            "apply_update.cmd", "UmaLauncher.exe.new",
+        ];
+
+        // deletes every file under appDir that the update zip did not
+        // ship, except the user-written set and the backup folder. the
+        // old extract-over update left stale files behind forever
+        // (renamed assemblies, removed plugins), which is why parts of
+        // the app stayed on old versions after an "update".
+        private static void PruneStaleFiles(string appDir, ZipArchive archive)
+        {
+            var shipped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (ZipArchiveEntry entry in archive.Entries)
+                if (!entry.FullName.EndsWith('/'))
+                    shipped.Add(entry.FullName.Replace('/', Path.DirectorySeparatorChar));
+
+            string backupDir = Path.Combine(appDir, "backup");
+            foreach (string file in Directory.EnumerateFiles(appDir, "*", SearchOption.AllDirectories))
+            {
+                string rel = Path.GetRelativePath(appDir, file);
+                if (rel.StartsWith("backup", StringComparison.OrdinalIgnoreCase)) continue;
+                if (rel.Equals("UmaLauncher.exe", StringComparison.OrdinalIgnoreCase)) continue; // the swap script owns it
+                if (UserFiles.Contains(rel)) continue;
+                if (shipped.Contains(rel)) continue;
+                try { File.Delete(file); } catch { }
+            }
+            // drop now-empty directories the zip no longer ships.
+            foreach (string dir in Directory.EnumerateDirectories(appDir, "*", SearchOption.AllDirectories)
+                                    .OrderByDescending(d => d.Length))
+            {
+                if (dir.StartsWith(backupDir, StringComparison.OrdinalIgnoreCase)) continue;
+                try { if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir); } catch { }
+            }
+        }
+
         // re-extracts entries that were locked while the old process was still
         // alive; runs before the form opens so the app boots fully updated.
         // the update flow now kills player + attach windows before extract,
@@ -123,6 +164,7 @@ namespace UmaLauncher
                     Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                     entry.ExtractToFile(target, true);
                 }
+                try { PruneStaleFiles(appDir, archive); } catch { }
                 File.Delete(pendingPath);
                 File.Delete(zipPath);
             }
@@ -192,6 +234,11 @@ namespace UmaLauncher
                     pending.Add(entry.FullName);
                 }
             }
+
+            // the zip is the full truth about what the app should be:
+            // anything it no longer ships gets removed so a renamed or
+            // deleted file can never survive an update.
+            try { PruneStaleFiles(appDir, archive); } catch { }
 
             if (pending.Count > 0)
             {
