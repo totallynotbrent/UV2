@@ -105,7 +105,7 @@ namespace UmaLauncher
         private static readonly HashSet<string> UserFiles =
         [
             "Config.json", "selection.json", "control.json", "status.json",
-            "apply_update.cmd", "UmaLauncher.exe.new",
+            "apply_update.cmd",
         ];
 
         // deletes every file under appDir that the update zip did not
@@ -204,8 +204,16 @@ namespace UmaLauncher
                 File.Copy(exePath, Path.Combine(backupDir, "UmaLauncher.exe.bak"), true);
 
             List<string> pending = [];
-            string ownExeNew = Path.Combine(appDir, "UmaLauncher.exe.new");
-            try { File.Delete(ownExeNew); } catch { }
+            // the launcher's own payload is locked by this running process:
+            // the exe is the image we execute from, and the dll is mapped the
+            // moment Main starts — Main lives inside it. an extract-over can
+            // never succeed for either, and the boot-time pending pass cannot
+            // rescue the dll either (it also runs inside Main). every
+            // launcher file lands in a stage dir and the restart script
+            // moves them into place after this process dies.
+            string stageDir = Path.Combine(backupDir, "stage");
+            Directory.CreateDirectory(stageDir);
+            try { foreach (string f in Directory.GetFiles(stageDir)) File.Delete(f); } catch { }
             using ZipArchive archive = ZipFile.OpenRead(zipPath);
             foreach (ZipArchiveEntry entry in archive.Entries)
             {
@@ -216,13 +224,12 @@ namespace UmaLauncher
                     continue;
                 }
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                if (Path.GetFileName(entry.FullName) == "UmaLauncher.exe")
+                string file = Path.GetFileName(entry.FullName);
+                bool launcher_payload = string.IsNullOrEmpty(Path.GetDirectoryName(entry.FullName)) &&
+                                       file.StartsWith("UmaLauncher.", StringComparison.OrdinalIgnoreCase);
+                if (launcher_payload)
                 {
-                    // our own image is locked by this very process; extract
-                    // beside it and let the restart script swap it in after
-                    // we exit (the old self-replace via ApplyPending could
-                    // never work — it re-extracted while the exe ran).
-                    entry.ExtractToFile(ownExeNew, true);
+                    entry.ExtractToFile(Path.Combine(stageDir, file), true);
                     continue;
                 }
                 try
@@ -246,25 +253,38 @@ namespace UmaLauncher
                 File.Copy(zipPath, Path.Combine(backupDir, "pending.zip"), true);
             }
 
-            // swap our own exe and relaunch: the script waits for this
-            // process to die, moves the new image over the old name, and
-            // starts it. falls back to starting the old exe if the move
-            // fails so the user is never left with a dead launcher.
-            if (!string.IsNullOrEmpty(exePath) && File.Exists(ownExeNew))
+            // swap the launcher payload and relaunch: the script waits for
+            // this process to die, moves every staged file over its target
+            // (locks release the moment the process exits; a short retry
+            // loop rides out an antivirus scan holding a file), starts the
+            // launcher, and deletes itself. falls back to starting the old
+            // exe when nothing staged so the user is never left stranded.
+            if (!string.IsNullOrEmpty(exePath) && Directory.Exists(stageDir) && Directory.GetFiles(stageDir).Length > 0)
             {
                 string script =
                     "@echo off\r\n" +
                     ":wait\r\n" +
-                    "tasklist /fi \"PID eq " + self + "\" | find \"" + self + "\" >nul\r\n" +
+                    "tasklist /fi \"PID eq " + self + "\" 2>nul | find \"" + self + "\" >nul\r\n" +
                     "if not errorlevel 1 ( timeout /t 1 /nobreak >nul & goto wait )\r\n" +
-                    "move /y \"UmaLauncher.exe.new\" \"UmaLauncher.exe\" >nul\r\n" +
-                    "start \"\" \"" + exePath + "\"\r\n";
+                    "set movedok=1\r\n" +
+                    ":move\r\n" +
+                    "for %%F in (\"" + stageDir + "\\*\") do (\r\n" +
+                    "  move /y \"%%~fF\" \"" + appDir + "\\%%~nxF\" >nul 2>nul || set movedok=0\r\n" +
+                    ")\r\n" +
+                    "if \"%movedok%\"==\"1\" goto done\r\n" +
+                    "set /a tries=tries+1\r\n" +
+                    "if %tries% geq 30 goto done\r\n" +
+                    "timeout /t 1 /nobreak >nul\r\n" +
+                    "goto move\r\n" +
+                    ":done\r\n" +
+                    "start \"\" \"" + exePath + "\"\r\n" +
+                    "del /q \"%~f0\" >nul 2>nul\r\n";
                 string scriptPath = Path.Combine(appDir, "apply_update.cmd");
                 File.WriteAllText(scriptPath, script);
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "cmd.exe",
-                    Arguments = "/c apply_update.cmd",
+                    Arguments = "/c \"" + scriptPath + "\"",
                     WorkingDirectory = appDir,
                     UseShellExecute = false,
                     CreateNoWindow = true,
