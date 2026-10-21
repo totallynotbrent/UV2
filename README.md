@@ -81,6 +81,16 @@ flowchart LR
 Unity 2022.3.62f2, IL2CPP, Windows x64. CI builds the exe on every push to
 `experimental` and on version tags.
 
+## Special thanks
+
+- [vgmstream](https://github.com/vgmstream/vgmstream) - the hca decoder in
+  `Assets/Scripts/audio/third_party/ClHcaSharp` is a port of its
+  `src/coding/hca_decoder.c`, which is how the songs and vocals play
+- [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) - the il2cpp
+  metadata dumps that made the runtime format work possible
+- [AssetRipper](https://github.com/AssetRipper/AssetRipper) - bundle and
+  asset inspection while figuring out the stage and character formats
+
 ## License
 
 MIT, see LICENSE. This repository contains no game data; the viewer reads
