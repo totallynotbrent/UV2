@@ -49,7 +49,11 @@ Shader "live/uv2_dof"
                 // minus the authored focal meters, signed so only the
                 // beyond-focus side blurs (unorm saturates the near side).
                 float eye_m = LinearEyeDepth(rawZ);
-                float coc = (eye_m - _DofFocalMeters.x) * _MainTex_TexelSize.y * 8.0 * _DofFocusParams.y;
+                // the game's coc tail (§79 BlurBlt, register-proven): coc scale =
+                // (spread / aspect) * 1/512 per meter of defocus. the old *8
+                // texel guess was 6.75x too hot and dissolved the frame.
+                // the publisher folds the scale into _DofFocusParams.y.
+                float coc = (eye_m - _DofFocalMeters.x) * _DofFocusParams.y;
                 // CalculateMaxCoc's resolution cap: coc = min(coc, (coc/50*4+6)/height).
                 coc = min(coc, (coc / 50.0 * 4.0 + 6.0) * _MainTex_TexelSize.y);
                 scene.a = saturate(coc);
@@ -168,7 +172,9 @@ Shader "live/uv2_dof"
 
             sampler2D _MainTex;
             sampler2D _DofBlurred;
+            sampler2D _DofBloomTex;
             float4 _DofCurveParams;
+            float _DofBloomFused;
 
             struct v2f
             {
@@ -188,8 +194,28 @@ Shader "live/uv2_dof"
             {
                 float4 scene = tex2D(_MainTex, i.uv);
                 float4 blurred = tex2D(_DofBlurred, i.uv);
-                float f = saturate(blurred.a * _DofCurveParams.z);
-                return float4(lerp(scene.rgb, blurred.rgb, f), scene.a);
+                // the decoded rich composite (DOFBLOOMAPPLYBG @7094):
+                // r2.x = cocTap*cocBase gates BOTH the color lerp and
+                // the alpha lerp. the old *farBlend gate came from
+                // commit 6111a62 'churn' with no decode citation, and
+                // the trace's far~0.02 made the lerp a near no-op.
+                float k = saturate(blurred.a * scene.a);
+                float coc_lerped = lerp(scene.a, blurred.a, k);
+                float4 d = float4(lerp(scene.rgb, blurred.rgb, k), coc_lerped);
+                // the fused dof-bloom composite (DOFBLOOMAPPLYBG @7094,
+                // uv2_postdofbloom_fused_composite_decoded.md): the game
+                // lerps base->tap with cocTap*cocBase, then adds the
+                // bloom weighted by the lerped coc — defocused pixels
+                // take the glow, in-focus pixels stay clean. the
+                // filmPower and screen levers bind zero at runtime, so
+                // the effective shape is out = D + bloom*coc.
+                if (_DofBloomFused > 0.5)
+                {
+                    float4 bloom = tex2D(_DofBloomTex, i.uv);
+                    float coc = d.a;
+                    d.rgb += bloom.rgb * coc;
+                }
+                return d;
             }
             ENDCG
         }

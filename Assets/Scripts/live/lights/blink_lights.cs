@@ -152,7 +152,7 @@ namespace UV2.Live
         }
 
         // blink root names start with pfb_env_live and contain blinklight or blinkbeamlight.
-        private static bool is_blink_root_name(string name) =>
+        public static bool is_blink_root_name(string name) =>
             name.StartsWith("pfb_env_live") &&
             (name.Contains("blinklight") || name.Contains("blinkbeamlight"));
 
@@ -167,6 +167,7 @@ namespace UV2.Live
         public static void clear_film_coupling() => film_coupling.Clear();
 
         private static readonly List<string> _census_reported = new();
+        private static readonly Dictionary<string, int> _last_traced_key = new();
 
         // samples every container's key track and publishes per-slot color*power.
         public static void update(float time_sec, List<blink_track_container> blink_tracks)
@@ -177,12 +178,16 @@ namespace UV2.Live
             {
                 if (!containers.TryGetValue(track.name, out var c) || c == null) continue;
 
-                // find the current key: the last key whose frame <= now.
-                var cur = track.current_key(time_sec);
+                // find the current key: the last key whose frame <= now,
+                // blended toward the next when the game interpolates.
+                var cur = track.current_key_blended(time_sec);
                 if (cur == null) continue;
 
-                // key-relative clock, like the game's progressTime.
-                float local = Mathf.Max(0f, time_sec - cur.time);
+                // key-relative clock, like the game's progressTime. the
+                // anchor stays the unblended key's start; the blend shapes
+                // the values, not the clock.
+                var cur_anchor = track.current_key(time_sec);
+                float local = Mathf.Max(0f, time_sec - cur_anchor.time);
                 int slot_count = track.slot_count;
                 if (slot_count <= 0) continue;
 
@@ -219,6 +224,14 @@ namespace UV2.Live
                     {
                         _census_reported.Add(track.name);
                         trace_log.write($"blink slots: '{track.name}' {c.slot_renderers.Count} slot groups, {slot_count} worksheet slots, key at f{cur.frame}");
+                    }
+                    // trace key changes (family + applied color/power) so a
+                    // cue that fails to show has a paper trail.
+                    if (!_last_traced_key.TryGetValue(track.name, out var last_k) || last_k != cur.frame)
+                    {
+                        _last_traced_key[track.name] = cur.frame;
+                        var ct = sample_slot(track, cur, local, 0, slot_count);
+                        trace_log.write($"blink key: '{track.name}' f{cur.frame} slot0 p{ct.Item1:0.00} rgb({ct.Item2.r:0.00},{ct.Item2.g:0.00},{ct.Item2.b:0.00})");
                     }
                     continue;
                 }
@@ -260,11 +273,11 @@ namespace UV2.Live
                         wait = r * interval;
                         break;
                     }
-                case 2: // ascend: slot i waits i*waitTime
-                    wait = slot * cur.wait_time;
+                case 2: // ascend: container i waits i*intervalTime (0x7ff8e4d7e344)
+                    wait = slot * interval;
                     break;
-                case 3: // descend: slot i waits (n-1-i)*waitTime
-                    wait = (slot_count - slot - 1) * cur.wait_time;
+                case 3: // descend: container i waits (n-1-i)*intervalTime
+                    wait = (slot_count - slot - 1) * interval;
                     break;
             }
 
@@ -464,6 +477,96 @@ namespace UV2.Live
                 else break;
             return cur;
         }
+
+        // the index of the current key (for the next-key lookup).
+        public int current_key_index(float time_sec)
+        {
+            if (keys == null || keys.Count == 0) return -1;
+            float frame = time_sec * 60f;
+            int i = 0;
+            for (int j = 0; j < keys.Count; j++)
+                if (keys[j].frame <= frame) i = j;
+                else break;
+            return i;
+        }
+
+        // the game blends EVERY numeric + color field from the current
+        // key toward the next by the interpolation factor (the blink
+        // consumer 0x7ff8e4dc3527-396a: powerMin/powerMax/loopCount/
+        // waitTime/turnOn/turnOff/keepTime/intervalTime and the color
+        // arrays all lerp by CalculateInterpolationValue; the power
+        // array lerps elementwise). discrete fields (pattern, colorType,
+        // blend mode) come from the current key raw. with no blend the
+        // returned key equals the current key.
+        public blink_key current_key_blended(float time_sec)
+        {
+            blink_key cur = current_key(time_sec);
+            if (cur == null) return null;
+            int i = current_key_index(time_sec);
+            var next = (i >= 0 && i + 1 < keys.Count) ? keys[i + 1] : null;
+            if (next == null || next.interpolate_type == 0) return cur;
+            float span = next.time - cur.time;
+            float raw = span <= 0f ? 0f : Mathf.Clamp01((time_sec - cur.time) / span);
+            float k;
+            switch (next.interpolate_type)
+            {
+                case 1: k = raw; break;
+                case 2: k = key_eval.evaluate_curve(next.curve, raw); break;
+                case 3: k = Mathf.Clamp01(live_easing.evaluate(next.easing_type,
+                            Mathf.Max(0f, time_sec - cur.time), 0f, 1f,
+                            Mathf.Max(0.0001f, span))); break;
+                default: return cur;
+            }
+            var b = new blink_key
+            {
+                frame = cur.frame,
+                attribute = cur.attribute,
+                interpolate_type = cur.interpolate_type,
+                key_index = cur.key_index,
+                pattern = cur.pattern,
+                color_type = cur.color_type,
+                light_blend_mode = cur.light_blend_mode,
+                loop_count = Mathf.RoundToInt(Mathf.Lerp(cur.loop_count, next.loop_count, k)),
+                is_reverse_hue = cur.is_reverse_hue,
+            };
+            b.power_array = lerp_array(cur.power_array, next.power_array, k, 1f);
+            b.color0_array = lerp_colors(cur.color0_array, next.color0_array, k);
+            b.color1_array = lerp_colors(cur.color1_array, next.color1_array, k);
+            b.power_min = Mathf.Lerp(cur.power_min, next.power_min, k);
+            b.power_max = Mathf.Lerp(cur.power_max, next.power_max, k);
+            b.wait_time = Mathf.Lerp(cur.wait_time, next.wait_time, k);
+            b.turn_on_time = Mathf.Lerp(cur.turn_on_time, next.turn_on_time, k);
+            b.turn_off_time = Mathf.Lerp(cur.turn_off_time, next.turn_off_time, k);
+            b.keep_time = Mathf.Lerp(cur.keep_time, next.keep_time, k);
+            b.interval_time = Mathf.Lerp(cur.interval_time, next.interval_time, k);
+            return b;
+        }
+
+        private static List<float> lerp_array(List<float> a, List<float> b, float k, float def)
+        {
+            int n = Mathf.Max(a?.Count ?? 0, b?.Count ?? 0);
+            var out_l = new List<float>(n);
+            for (int i = 0; i < n; i++)
+            {
+                float av = a != null && i < a.Count ? a[i] : def;
+                float bv = b != null && i < b.Count ? b[i] : def;
+                out_l.Add(Mathf.Lerp(av, bv, k));
+            }
+            return out_l;
+        }
+
+        private static List<Color> lerp_colors(List<Color> a, List<Color> b, float k)
+        {
+            int n = Mathf.Max(a?.Count ?? 0, b?.Count ?? 0);
+            var out_l = new List<Color>(n);
+            for (int i = 0; i < n; i++)
+            {
+                Color ac = a != null && i < a.Count ? a[i] : Color.black;
+                Color bc = b != null && i < b.Count ? b[i] : Color.black;
+                out_l.Add(Color.Lerp(ac, bc, k));
+            }
+            return out_l;
+        }
     }
 
     // one blink key: the per-slot power/color arrays + the envelope timing,
@@ -474,6 +577,8 @@ namespace UV2.Live
         public int frame;
         public int attribute;
         public int interpolate_type;
+        public int easing_type;
+        public List<curve_key> curve = new();
         public List<float> power_array = new();
         public List<Color> color0_array = new();
         public List<Color> color1_array = new();

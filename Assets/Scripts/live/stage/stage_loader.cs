@@ -26,6 +26,12 @@ namespace UV2.Live
         // runs the timeline on real time even when audio binds.
         public static bool force_free_clock;
         private live_worksheet ws;
+
+        // the worksheet's volumeLight tracks for the shafts walker
+        // (the volume SunShafts entry drives the radial pass).
+        private static stage_loader _instance;
+        public static List<UV2.Live.volume_track_container> volume_tracks_view
+            => _instance != null ? _instance.ws?.volume_tracks : null;
         private timeline_clock clock;
         private readonly List<Transform> chara_roots = new();
         // per-chara face morph databases loaded from the head bundles.
@@ -84,6 +90,12 @@ namespace UV2.Live
             // instantiates the laser and spotlight fixtures for the stage.
             yield return instantiate_laser_fixtures();
             yield return instantiate_spotlight_fixtures();
+            // blink fixtures the stage hierarchy lacks load as standalone
+            // prefabs: the worksheet names the family (e.g. wash_ground),
+            // but a stage id in the name may not match the loaded stage —
+            // 1004's worksheet asks for 10112_blinklight_wash_ground while
+            // the only such fixture in the game ships under live10101.
+            yield return instantiate_blink_fixtures(sel);
 
             blink_lights.bind(ws?.blink_tracks, null);
             spot_lights.bind(ws?.spot_tracks);
@@ -155,6 +167,7 @@ namespace UV2.Live
             try
             {
                 ws = worksheet_reader.load(sel.music_id);
+                _instance = this;
                 if (ws == null) { last_error = $"no worksheet in the cutt bundles for song {sel.music_id}"; return false; }
                 clock = new timeline_clock();
                 if (sel.stage_id <= 0)
@@ -310,6 +323,71 @@ namespace UV2.Live
                     blink_lights.record_stage_child(child.name, child.gameObject);
             }
             trace_log.write($"laser fixtures instantiated: {placed}");
+        }
+
+        // instantiates missing blink fixtures: worksheet tracks whose root
+        // name is absent from the stage hierarchy resolve through the meta
+        // store (sourceresources fixture prefabs), stage id flexible.
+        private System.Collections.IEnumerator instantiate_blink_fixtures(selection_state sel)
+        {
+            if (ws?.blink_tracks == null) yield break;
+            var geo = GameObject.Find("stage_geometry");
+            var parent = geo != null ? geo.transform : null;
+            int placed = 0;
+            foreach (var t in ws.blink_tracks)
+            {
+                if (string.IsNullOrEmpty(t.name)) continue;
+                if (!blink_lights.is_blink_root_name(t.name)) continue;
+                if (blink_lights.find_stage_object(t.name) != null) continue;
+                // the family suffix drops the stage id: pfb_env_live<NNNNN>_
+                // blinklight_<family>. try the named id first, then the
+                // 10101 standalone (the only stages that ship standalone
+                // blink fixtures).
+                string family = t.name.Substring(t.name.IndexOf("blinklight_", StringComparison.Ordinal));
+                string[] candidates =
+                {
+                    $"sourceresources/3d/env/live/live{sel.stage_id}/prefabs/{t.name}",
+                    $"sourceresources/3d/env/live/live10101/prefabs/pfb_env_live10101_{family}",
+                };
+                GameObject piece = null;
+                foreach (var path in candidates)
+                {
+                    var row = meta_row(path);
+                    if (row == null) continue;
+                    if (!string.IsNullOrEmpty(row.prereq))
+                        foreach (var pre in row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            var pre_row = meta_row(pre.Trim());
+                            if (pre_row != null) game_assets.open(pre_row, config.data_root);
+                        }
+                    var bundle = game_assets.open(row, config.data_root);
+                    if (bundle == null) continue;
+                    foreach (var asset_name in bundle.GetAllAssetNames())
+                        if (asset_name.EndsWith(".prefab"))
+                        {
+                            piece = bundle.LoadAsset<GameObject>(asset_name);
+                            break;
+                        }
+                    if (piece != null) break;
+                }
+                if (piece == null)
+                {
+                    trace_log.write($"blink fixture: no prefab for missing '{t.name}'");
+                    continue;
+                }
+                var inst = Instantiate(piece, parent);
+                inst.name = t.name;
+                placed++;
+                foreach (var child in inst.GetComponentsInChildren<Transform>(true))
+                    blink_lights.record_stage_child(child.name, child.gameObject);
+                blink_lights.record_stage_child(t.name, inst);
+            }
+            if (placed > 0)
+            {
+                trace_log.write($"blink fixtures instantiated from prefabs: {placed}");
+                blink_lights.bind(ws.blink_tracks, null);
+            }
+            yield return null;
         }
 
         // instantiates the spotlight fixtures from the common spotlight3d bundle.

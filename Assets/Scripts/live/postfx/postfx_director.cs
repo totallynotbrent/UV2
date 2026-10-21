@@ -92,6 +92,10 @@ namespace UV2.Live
             public bool inverse;
             public bool valid;
 
+            // the key's raw attribute word (0x100000 isUseTexMask,
+            // 0x200000 isEnableDepth per the film bodies decode).
+            public int attribute_bits;
+
             // blink-container coupling authored on the current key.
             public string blink_light_name = "";
             public float blink_light_brightness_power;
@@ -199,7 +203,13 @@ namespace UV2.Live
                 string b = ws.postfx.bloom.Count == 0 ? "none"
                     : (bloom_state_valid ? "on" : "off");
                 string f = fog_enabled && fog_state != null ? $"on mode {fog_state.fog_mode}" : "off";
-                string fl = film1_state != null && film1_state.valid ? $"film m{film1_state.mode} p{film1_state.power:0.00}" : "film none";
+                // all three layers in the trace: the f1-only line hid
+                // film2/film3 painting (the f3300 audit chased a phantom
+                // because film1's power read 0 while film3 painted).
+                string fl = "film";
+                foreach (var fs in new[] { film1_state, film2_state, film3_state })
+                    fl += fs != null && fs.valid
+                        ? $" m{fs.mode}p{fs.power:0.00}" : " -";
                 string d = dof_enabled ? $"dof {dof_focal_m:0.0}m f{dof_focal01:0.00} far{dof_far_blend:0.00}" : "dof off";
                 string ts = tilt_enabled ? $"tilt m{tilt_mode} a{tilt_blur_area:0.0} blur{tilt_max_blur:0.0} roll{tilt_roll:0.0}" : "tilt off";
                 string gr = cc != null && cc.valid ? $"grade sat{cc.saturation:0.00}" : "grade off";
@@ -232,7 +242,9 @@ namespace UV2.Live
             // the capture set: the three originals plus the dark cutaway
             // stretch (~f2400-3300), a mid-song bright, and the orange-hue
             // window the user flagged near f5700.
-            int[] snap_frames = { 1780, 2400, 2840, 3300, 3580, 5700, 5960 };
+            // 5960 sits one frame before the finale light cue (all blink
+            // families key golden at 5959); 6000/6260 catch the state after.
+            int[] snap_frames = { 1780, 2400, 2840, 3300, 3580, 5700, 5960, 6000, 6260 };
             bool hit = false;
             for (int i = 0; i < snap_frames.Length; i++)
                 if (song_frame == snap_frames[i]) { hit = true; break; }
@@ -342,6 +354,8 @@ namespace UV2.Live
         // chromatic aberration state (the fork: clamp01(power*0.05)).
         [HideInInspector] public bool chromatic_enabled;
         [HideInInspector] public float chromatic_amount;
+        // the key's effectType selects the blit's material pass (0=standard).
+        [HideInInspector] public int chromatic_pass;
         // the current chromatic key's channel offsets + clip, for the blit.
         public (Vector2 red, Vector2 green, Vector2 blue, float clip) chromatic_key_offsets
             = (Vector2.zero, Vector2.zero, Vector2.zero, 1f);
@@ -502,6 +516,7 @@ namespace UV2.Live
                 // it into the layer param and the draw helper publishes it as
                 // _PostFilmIsInverseVignette - the shader inverts the mask.
                 inverse = (cur.attribute & 0x100000) != 0,
+                attribute_bits = cur.attribute,
                 blink_light_name = cur.blink_light_name,
                 blink_light_brightness_power = cur.blink_light_brightness_power,
             };
@@ -533,6 +548,15 @@ namespace UV2.Live
             return s;
         }
 
+        // the camera director's look-at target (the dof type-0 focal).
+        private camera_director _cam_director;
+        private camera_director cam_director_ref()
+        {
+            if (_cam_director == null)
+                _cam_director = FindFirstObjectByType<camera_director>();
+            return _cam_director;
+        }
+
         // dof: the game's PrepareDofParam math — focal01 from the camera's
         // focal transform (type 0, what live uses) normalized by far clip,
         // the curve left linear, far blend = focalSize/farClip*0.5 + focal01.
@@ -560,12 +584,29 @@ namespace UV2.Live
             }
 
             // the authored dofFocalPoint resolves to focal01 via
-            // WorldToViewportPoint (uv2_dof_focal_path_decoded.md).
+            // WorldToViewportPoint (uv2_dof_focal_path_decoded.md). live's
+            // focal type is 0 = Transform: the game resolves the focal on
+            // the camera's look-at target (dof_pipeline notes: "type 0 is
+            // what live uses"), so an authored focal_point of 1.0 is a
+            // fallback distance, not the focus distance. use the camera
+            // director's look target when one drove the framing this frame;
+            // fall back to the authored distance otherwise.
             float near = cam.nearClipPlane;
             float far = cam.farClipPlane;
             float far_near = Mathf.Max(1e-4f, far - near);
-            Vector3 world_pos = cam.transform.position + (fp - near) * cam.transform.forward;
-            float focal01 = Mathf.Max(0f, cam.WorldToViewportPoint(world_pos).z / far_near);
+            Vector3 cam_pos = cam.transform.position;
+            var cam_dir = cam_director_ref();
+            float focal01;
+            if (cam_dir != null)
+            {
+                Vector3 to_look = cam_dir.current_look_point - cam_pos;
+                focal01 = Mathf.Max(0f, Vector3.Dot(to_look, cam.transform.forward) / far_near);
+            }
+            else
+            {
+                Vector3 world_pos = cam_pos + (fp - near) * cam.transform.forward;
+                focal01 = Mathf.Max(0f, cam.WorldToViewportPoint(world_pos).z / far_near);
+            }
             // the chain selector (uv2_postfx_chain_divergence_audit §2.2):
             // dofBlurType is the game's Execute dispatch, per key. 0 = None,
             // 3 = Bloom (pyramid only, no DOF blur), 1/2/4 fused composites,
@@ -746,8 +787,15 @@ namespace UV2.Live
                 power = key_eval.lerp_f(cur.power, next.power, key_eval.interp(cur, next, t));
             chromatic_enabled = cur.is_enable != 0;
             chromatic_amount = Mathf.Clamp01(power * 0.05f);
-            chromatic_key_offsets = (cur.red_offset, cur.green_offset, cur.blue_offset,
+            // worksheet offsets are PERCENT units — the game's packing fn
+            // multiplies by 0.01 before publishing the global vectors
+            // (uv2_six_postfx_families_decoded.md §3, K=0.01 PROVEN). raw
+            // offsets here would smear channels across 40% of the screen.
+            const float chroma_percent = 0.01f;
+            chromatic_key_offsets = (cur.red_offset * chroma_percent,
+                cur.green_offset * chroma_percent, cur.blue_offset * chroma_percent,
                 cur.clip != 0f ? cur.clip : 1f);
+            chromatic_pass = cur.effect_type;
         }
 
         // lens distortion: enabled when |intensity| > 0.001 (the fork's gate).

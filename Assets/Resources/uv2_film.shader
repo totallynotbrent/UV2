@@ -34,6 +34,9 @@ Shader "live/uv2_film"
             float4 _PostFilmColor3;
             float4 _PostFilmRollParameter;
             float _PostFilmIsInverseVignette;
+            float _PostFilmIsWithoutDepth;
+            float _DepthClipGate;
+            float _DepthClipZone;
             float4 _PostFilmScaleParameter;
 
             struct v2f
@@ -76,44 +79,78 @@ Shader "live/uv2_film"
                 r += _PostFilmOffsetParam.xy;
                 float2 d = (r - float2(0.5, 0.5)) * 2.0;
                 float d2 = dot(d, d) * _PostFilmOptionParam.x;
-                float b = _PostFilmOptionParam.y;
-                float num = b > 0.0 ? d2 : 1e-4;
-                float m = num / (num + b * (1.0 - num));
-                return _PostFilmIsInverseVignette > 0.5 ? -m : m;
+                float soft = _PostFilmOptionParam.y;
+                // the exact decoded rational (@76838 preamble):
+                // (soft>0 ? (0.0001 - d2) : d2) / (d2 + soft - soft*d2).
+                float num = soft > 0.0 ? (0.0001 - d2) : d2;
+                float den = d2 + soft - soft * d2;
+                float m = den != 0.0 ? num / den : 0.5;
+                return m;
             }
 
             fixed4 frag(v2f i) : SV_Target
             {
                 fixed4 scene = tex2D(_MainTex, i.uv);
                 float v = mask(i.uv);
+                // the decoded preamble (@76838): depthTerm from the scrolled
+                // source tap gated by _DepthClip (152.y, remap clip>1 -> 0),
+                // the 152.z gate, then the IsWithoutDepth kill (164.x), then
+                // the inverse lerp: mask = lerp(v*dt, (1-dt)*dt - v*dt,
+                // IsInverseVignette). with the game's DepthClip=2 the tap
+                // term is inert and depthTerm = 1 - IsWithoutDepth.
+                float dt = 1.0 - v * _DepthClipGate;
+                dt = ((1.0 - dt >= _DepthClipZone) ? (1.0 - dt) : 0.0) + dt;
+                dt *= (1.0 - _PostFilmIsWithoutDepth);
+                float mask_full = lerp(v * dt, (1.0 - dt) * dt - v * dt,
+                                       _PostFilmIsInverseVignette);
                 // the ps scales every mode's layer color by cb0[152].x =
                 // _DepthPower = key.depthPower (uv2_film_mode_bodies_decoded.md
                 // §5) - a valid layer with depthPower==0 paints exactly zero.
                 // _PostFilmPower (key.filmPower) is the validity term.
                 float p = _DepthPower;
-                fixed4 c0 = _PostFilmColor0;
+                // the layer gradient: bilinear ramp of c0..c3 over the
+                // warp coords (mx, my), the game's G. the flat-c0 port
+                // darkened whole regions where the game ramps to white.
+                float2 gw = i.uv - 0.5;
+                float mx = saturate(gw.x + 0.5), my = saturate(gw.y + 0.5);
+                fixed4 g0 = lerp(_PostFilmColor0, _PostFilmColor1, mx);
+                fixed4 g1 = lerp(_PostFilmColor2, _PostFilmColor3, mx);
+                fixed4 c0 = lerp(g0, g1, my);
 
             #ifdef MODE_NONE
                 return scene;
             #elif MODE_LERP
-                return lerp(scene, c0, saturate(p));
+                // o = lerp(C, L, a) with L = G scaled by the power row.
+                return lerp(scene, c0 * saturate(p), saturate(p));
             #elif MODE_ADD
-                return scene + c0 * p;
+                // L = G*dt*152.x*G.a; o = C + L.
+                return scene + c0 * (p * dt) * c0.a;
             #elif MODE_MUL
-                return scene * lerp(float4(1,1,1,1), c0, saturate(p));
+                // o = C + 152.x*(C*L - C) = C*(1 + p*(G-1)) with dt folded.
+                return scene + p * dt * (scene * c0 - scene);
             #elif MODE_VIGNETTE_LERP
-                return lerp(scene, c0, saturate(p * v));
+                // o = C + (mask*152.x)*(G - C).
+                return scene + (mask_full * p) * (c0 - scene);
             #elif MODE_VIGNETTE_ADD
-                return scene + c0 * (p * v);
+                // L = (mask*152.x)*G; o = C + L.
+                return scene + (mask_full * p) * c0;
             #elif MODE_VIGNETTE_MUL
-                return scene * lerp(float4(1,1,1,1), c0, saturate(p * v));
+                // o = C + 152.x*mask*(C*G - C) (@104130).
+                return scene + p * mask_full * (scene * c0 - scene);
             #elif MODE_MONOCHROME
-                float g = dot(scene.rgb, float3(0.299, 0.587, 0.114));
-                return lerp(scene, c0 * fixed4(g, g, g, 1), saturate(p));
+                // o = lerp(C, lerp(C, lum*G.rgb, G.a), c0.a) with the lum
+                // third-average scaled by 152.x (no vignette preamble).
+                float g = dot(scene.rgb, float3(0.3333, 0.3333, 0.3333)) * p;
+                fixed4 mg = fixed4(lerp(scene.rgb, g.xxx * c0.rgb, c0.a), 1);
+                return lerp(scene, mg, c0.a);
             #elif MODE_SCREENBLEND
-                return 1 - (1 - scene) * (1 - c0 * p);
+                // o = screen(C, G*mask-ish) *152.x fold: the decoded shape
+                // scales the blend result by 152.x then adds the base.
+                fixed4 sb = 1 - (1 - scene) * (1 - saturate(c0 * p));
+                return lerp(scene, sb, p);
             #elif MODE_VIGNETT_SCREENBLEND
-                return 1 - (1 - scene) * (1 - c0 * (p * v));
+                fixed4 sb = 1 - (1 - scene) * (1 - saturate(c0 * (mask_full * p)));
+                return lerp(scene, sb, mask_full * p);
             #else
                 return scene;
             #endif

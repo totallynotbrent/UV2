@@ -47,10 +47,16 @@ namespace UV2.Live
         {
             if (stage_root == null) return 0;
             int spawned = 0;
+            bool diag_done = false;
             foreach (var ctrl in stage_root.GetComponentsInChildren<Transform>(true))
             {
                 if (!ctrl.name.Contains("cyalume_controller")) continue;
                 var holder = ctrl.GetComponent<Gallop.AssetHolder>();
+                if (!diag_done)
+                {
+                    diag_done = true;
+                    trace_log.write($"cyalume spawn diag: controller '{ctrl.name}' holder={(holder != null)} table={(holder?._assetTable != null)} list={(holder?._assetTable?.list?.Count ?? -1)}");
+                }
                 if (holder?._assetTable?.list == null) continue;
                 foreach (var entry in holder._assetTable.list)
                 {

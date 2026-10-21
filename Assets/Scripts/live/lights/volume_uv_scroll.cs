@@ -13,6 +13,10 @@ namespace UV2.Live
         private static int _volume_enabled;
         private static float last_probe_t = -10f;
 
+        // the last lift the volume walker published (the bloom feature
+        // folds it together with the shafts walker's).
+        public static float last_lift;
+
         // every stage material by asset name, for the uv scroll entries.
         private static readonly Dictionary<string, List<Material>> stage_materials = new();
         private static readonly Dictionary<string, uv_target> uv_targets = new();
@@ -99,6 +103,9 @@ namespace UV2.Live
         // publishes the first enabled entry's lerped power/color as shader-global bloom lift + tint.
         public static void update_volume(float time_sec, List<volume_track_container> tracks)
         {
+            // the walker owns the lift whenever volume tracks exist; clear
+            // it each pass so stale lifts never bleed into later frames.
+            last_lift = 0f;
             if (tracks == null || tracks.Count == 0) return;
             float frame = time_sec * 60f;
 
@@ -112,7 +119,8 @@ namespace UV2.Live
                 color *= t.brightness_power;
 
                 // lift = min(power * 0.02, 1.2); tint = color.
-                Shader.SetGlobalFloat(id_volume_lift, Mathf.Min(power * 0.02f, 1.2f));
+                last_lift = Mathf.Min(power * 0.02f, 1.2f);
+                Shader.SetGlobalFloat(id_volume_lift, last_lift);
                 Shader.SetGlobalColor(id_volume_tint, color);
                 return;
             }
@@ -185,6 +193,17 @@ namespace UV2.Live
         public string name;
         public List<volume_key> keys = new();
         public float brightness_power = 1f;
+
+        // the current key at a frame: the last key whose frame <= now.
+        public volume_key current_key(float frame)
+        {
+            if (keys == null || keys.Count == 0) return null;
+            volume_key cur = keys[0];
+            foreach (var k in keys)
+                if (k.frame <= frame) cur = k;
+                else break;
+            return cur;
+        }
 
         // the lerped sun-shaft state; ok=false when the current key is off.
         public (float, Color, bool) sample(float frame)

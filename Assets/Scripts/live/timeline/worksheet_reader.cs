@@ -225,6 +225,8 @@ namespace UV2.Live
                         frame = k.frame,
                         attribute = k.attribute,
                         interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        curve = read_curve(k.curve),
                         power_array = (k.powerArray ?? new()).ToList(),
                         color0_array = (k.color0Array ?? new()).ToList(),
                         color1_array = (k.color1Array ?? new()).ToList(),

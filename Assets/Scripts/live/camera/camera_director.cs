@@ -19,6 +19,9 @@ namespace UV2.Live
 
         private Camera cam;
         private Vector3? trace_prev_pos;
+        // the live look-at target this frame (the game's dof focal type-0
+        // transform target; read by the postfx chain's dof eval).
+        public Vector3 current_look_point;
         // the clock frame of the previous update, for the camera-delay window.
         private float prev_frame;
 

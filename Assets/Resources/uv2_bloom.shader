@@ -41,6 +41,7 @@ Shader "live/uv2_bloom"
             float _BloomIsScreenBlend;  // id 225: 0 for the Add family
             float4 _DiffusionParams;  // (lift, -, -, fp)
             float4 _DiffusionScreen;  // (-, -, -, lever: add vs screen)
+            float4 _DiffusionCurve;   // (bright, saturation, contrast, threshold)
             float _DiffusionBlur;
             float _BloomShaping;   // the composite's shaping constant row
 
@@ -62,15 +63,15 @@ Shader "live/uv2_bloom"
             {
                 float4 src = tex2D(_MainTex, i.uv);
                 float4 bloom = tex2D(_BloomTex, i.uv);
-                // the game's film-variant composite (postbloom_composite_
-                // pass0_math.md §4 @51362 + audience doc Q3): C = t2(rgb
-                // source) * cb0[139].y (filmPower) + bloom - ADDITIVE, not
-                // screen. the screen form lifts every midtone; the additive
-                // form is why the official concert's stage falls to near
-                // black in cutaways (filmPower 0) and stays dim through mid
-                // scenes. the fork ran the real game shader with
-                // OutputDimmer 1 and its look matched.
-                float4 col = saturate(src) * _BloomShaping + bloom;
+                // the game's film-variant combine @51362 with the runtime
+                // unbound constants (cb0[139] = cb0[163] = 0, verified in
+                // postbloom_composite_pass0_math.md): r0 = warped_src -
+                // bloom, then out = r0*r0 + bloom, all * _DimmerColor.
+                // the (src-bloom)^2 fold COMPRESSES the highlight: a hot
+                // source over hot bloom lands at (0.6)^2+0.3 = 0.66, never
+                // clipping, where a plain additive saturates to a white
+                // wash. that fold is the game's overexposure guard.
+                float4 col = (saturate(src) - bloom) * (saturate(src) - bloom) + bloom;
 
 #ifdef DIFFUSION_ON
                 // the game's diffusion composite (PostDiffusionBloom_Rich
@@ -98,8 +99,29 @@ Shader "live/uv2_bloom"
                 // the non-diffusion postbloom composite (@51362).
                 float4 diff = tex2D(_DiffusionTex, i.uv);
                 float3 B = src.rgb + diff.rgb * _DiffusionParams.w * (1.0 - _DiffusionScreen.w * src.rgb);
-                float3 C = B * B * (2.0 - bloom.rgb) + bloom.rgb + _DiffusionParams.x;
-                col.rgb = max(B, max(C, 0.0));
+                // the decoded tail @54922: C = B^2*(2-bloom) + bloom - 151.w,
+                // max(C,0), max(B,C), then the 151.xyz luma S-curve
+                // (saturation x, chroma gain y, contrast z, pivot 0.5).
+                // the decoded tail @54922 ops 22-25: r3 = B^2 + bloom,
+                // r1 = -bloom*B^2 + r3 = B^2*(1-bloom) + bloom — a screen
+                // blend of B^2 with bloom, NOT (2-bloom); the (2-bloom)
+                // reading over-lifted highlights into clip. the +cb0[151].x
+                // (_ColorPower.x) row is not among the diffusion chain's
+                // published ids (179/185/183/172/225/204/182) so it binds
+                // zero at runtime, same doctrine as the fp/lift/lever rows.
+                float3 C = B * B * (1.0 - bloom.rgb) + bloom.rgb;
+                float3 m = max(B, max(C, 0.0));
+                // the 151 row in worksheet field order: x bright (pre-scale),
+                // y saturation (chroma gain), z contrast (pivot-0.5 S), w
+                // diffusion threshold (the C subtract). 1004 authors
+                // (1.0, 0.9, 1.1, 0.1) — mild desat, slight contrast, small
+                // highlight soften.
+                float3 sm = m * _DiffusionCurve.x;
+                float lum = dot(sm, float3(0.2125, 0.7154, 0.0721));
+                float3 ch = sm - lum;
+                ch = _DiffusionCurve.y * ch + lum;
+                ch = (ch - 0.5) * _DiffusionCurve.z + 0.5;
+                col.rgb = ch;
 #endif
                 return col;
             }
