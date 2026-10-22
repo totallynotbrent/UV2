@@ -39,6 +39,9 @@ namespace UV2.Live
         private camera_director director;
         private formation_driver formation;
         private bg_color1_director bg_color1;
+        // parked at stage instantiation; the bg_color1 director binds it
+        // in wire_drivers (the stage phase runs before the director exists).
+        private Transform _stage_instance_root;
         private motion_player motion;
         private vocal_mixer vocals;
 
@@ -479,6 +482,9 @@ namespace UV2.Live
                             var ctrl = stage.GetComponent<Gallop.Live.StageController>();
                             _stage_controller = ctrl;
                             var geo_root = new GameObject("stage_geometry");
+                            // the stage phase runs before wire_drivers creates the
+                            // bg_color1 director, so park the roots and bind later.
+                            _stage_instance_root = stage.transform;
                             crowd_rig.record_stage_audience_table(ctrl);
                             mob_control.record_rig(stage.transform);
                             cyalume.record_pen_meshes(stage.transform);
@@ -1517,6 +1523,10 @@ namespace UV2.Live
             var bgc_go = new GameObject("bg_color1_director");
             bg_color1 = bgc_go.AddComponent<bg_color1_director>();
             bg_color1.open(ws, clock, chara_roots);
+            // BgBL's ambient sweep runs over the controller instance +
+            // stage_geometry (the game's ShaderParamObject hierarchy).
+            var geo = GameObject.Find("stage_geometry");
+            bg_color1.bind_stage(_stage_instance_root, geo != null ? geo.transform : null);
             var spring_sims = new Dictionary<int, spring_sim>(chara_springs);
             formation.open(ws, clock, chara_roots, spring_sims);
             foreach (var kv in chara_springs_roots) formation.root_chara[kv.Key] = kv.Value;
