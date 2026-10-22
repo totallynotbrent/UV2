@@ -11,7 +11,7 @@ the game ships with the exe.
 ## Requirements
 
 - Windows x64
-- Umamusume: Pretty Derby installed (a full, updated install)
+- Umamusume: Pretty Derby installed (DMM or Steam, a full, updated install)
 - UmaLauncher runs from the same folder as UV2.exe
 
 ## How it works
@@ -46,7 +46,7 @@ Assets/
       formation/    formation placement driver
       lights/       blink, spot, laser, wash, foot, volume, shafts, projection
       motion/       dance clip playback
-      postfx/       post processing chain (retired, ships disabled)
+      postfx/       post processing chain (dof-bloom fusion, film, fog, blur)
       props/        stage props and mic rigs
       stage/        stage assembly, shaders, vocal mixer, mirror reflection
       timeline/     worksheet reader, key types, clock, easing
@@ -61,20 +61,68 @@ ProjectSettings/     unity 2022.3.62, IL2CPP standalone
 
 ## Architecture
 
+Boot chain, from picking a song to the stage being live:
+
 ```mermaid
-flowchart LR
-    launcher[UmaLauncher<br/>song + cast selection]
-    json[selection.json]
-    master[master.mdb<br/>song and character tables]
+flowchart TB
+    game[game install<br/>DMM or Steam]
+    master[master.mdb<br/>song, character, outfit tables]
     meta[meta db<br/>bundle name, file hash, key]
     dat[dat/xx/hash<br/>encrypted asset bundles]
-    concert[Concert window]
+    launcher[UmaLauncher<br/>song picker + cast picker]
+    json[selection.json<br/>song id, cast, outfits]
+    boot[scene boot<br/>config + selection read]
+    resolve[song settings resolve<br/>stage id, worksheet id]
+    stage[stage assembly<br/>geometry, props, crowd, lights]
+    concert[concert window]
 
-    launcher --> json --> concert
-    master --> concert
-    meta --> concert
-    dat --> concert
+    game --> master
+    game --> meta
+    meta --> dat
+    launcher --> json --> boot --> resolve --> stage --> concert
+    master --> launcher
+    master --> resolve
+    dat --> stage
 ```
+
+Inside the player, a single clock drives everything. The worksheet is the
+game's own timeline format, one big schedule of typed tracks, and each
+system below reads only its tracks and applies its keys at the song time
+the clock hands it:
+
+```mermaid
+flowchart TB
+    clock[song clock]
+    ws[worksheet reader<br/>typed key tracks]
+    cam[timeline camera driver<br/>shot cuts, anchor math]
+    form[formation driver<br/>who stands where]
+    motion[dance motion<br/>per-character clips]
+    face[facial morphs<br/>lip sync against the vocal tracks]
+    lights[stage lights<br/>blink, spot, laser, wash, foot,<br/>volume, shafts, projection]
+    springs[spring physics<br/>hair, skirts, tails]
+    post[postfx chain<br/>dof-bloom fusion, film, fog, blur]
+    crowd[audience<br/>cyalume, mob rig]
+    audio[awb/hca player<br/>music + per-character vocals]
+
+    clock --> ws
+    ws --> cam
+    ws --> form
+    ws --> motion
+    ws --> face
+    ws --> lights
+    ws --> springs
+    ws --> post
+    ws --> crowd
+    clock --> audio
+    motion --> springs
+    lights --> post
+    springs --> post
+    crowd --> post
+```
+
+Audio is its own path: the awb containers are read directly, hca decoded,
+music and per-character vocal stems mixed against the formation. Nothing
+prerendered, nothing baked.
 
 ## Building
 
@@ -83,6 +131,11 @@ on demand from the `experimental` branch.
 
 ## Special thanks
 
+- [UmamusumeExplorer](https://github.com/MarshmallowAndroid/UmamusumeExplorer) -
+  the UmaLauncher UI skeleton
+- [UmaViewer](https://github.com/katboi01/UmaViewer) - the original idea
+- [UmaViewer (katboi fork)](https://github.com/zuoy865-stack/UmaViewer) -
+  newer updates to katboi's viewer
 - [vgmstream](https://github.com/vgmstream/vgmstream) - the hca decoder in
   `Assets/Scripts/audio/third_party/ClHcaSharp` is a port of its
   `src/coding/hca_decoder.c`, which is how the songs and vocals play
