@@ -336,6 +336,14 @@ namespace UV2.Live
             private static readonly int tmp_b_id = Shader.PropertyToID("_uv2_postfx_tmp_b");
 
             private Material dof_mat;
+            private int coc_pass = 0;
+            private int blurh_pass = 1;
+            private int blurv_pass = 2;
+            private int comp_pass = 3;
+            private int bloom_down_pass = 1;
+            private int bloom_blurh_pass = 2;
+            private int bloom_blurv_pass = 3;
+            private int bloom_comp_pass = 0;
             private Material chroma_mat;
             private Material ballblur_mat;
             private RenderTexture dof_rt_a;
@@ -371,6 +379,14 @@ namespace UV2.Live
                     var sh = Shader.Find("live/uv2_bloom");
                     if (sh == null) return;
                     bloom_mat = CoreUtils.CreateEngineMaterial(sh);
+                    // name-resolved passes: the same wrong-pass scramble the
+                    // dof chain hit (index blits resolving off-target on the
+                    // built player). the pyramid's threshold folds silently
+                    // no-op'd, leaving the whole scene in the C-fold's bloom.
+                    bloom_down_pass = bloom_mat.FindPass("BLOOMDOWN");
+                    bloom_blurh_pass = bloom_mat.FindPass("BLOOMBLURH");
+                    bloom_blurv_pass = bloom_mat.FindPass("BLOOMBLURV");
+                    bloom_comp_pass = bloom_mat.FindPass("BLOOMCOMPOSITE");
                 }
                 var desc = renderingData.cameraData.cameraTargetDescriptor;
                 desc.depthBufferBits = 0;
@@ -427,11 +443,14 @@ namespace UV2.Live
                 bloom_mat.SetVector("_Parameter", new Vector4(
                     1f / desc.width, 1f / desc.height, b.threshold,
                     b.intensity + shaft_lift));
-                cmd.Blit(cur, bloom_rt_a, bloom_mat, 1);
-                // neutral second halving: 1/2 -> 1/4, threshold 0, intensity 1.
+                cmd.Blit(cur, bloom_rt_a, bloom_mat, bloom_down_pass);
+                // the second halving folds too: CreateBloomTexture's 4x
+                // Blit pyramid applies the pass-1 threshold+intensity fold
+                // at every level, which is what keeps the composite's bloom
+                // texture near-zero except the hottest lights.
                 bloom_mat.SetVector("_Parameter", new Vector4(
-                    1f / hw, 1f / hh, 0f, 1f));
-                cmd.Blit(bloom_rt_a, bloom_rt_b, bloom_mat, 1);
+                    1f / hw, 1f / hh, b.threshold, b.intensity));
+                cmd.Blit(bloom_rt_a, bloom_rt_b, bloom_mat, bloom_down_pass);
                 bloom_mat.SetVector("_Parameter", new Vector4(
                     b.blur_size * Mathf.Pow(2f, -9f) / aspect,
                     b.blur_size * Mathf.Pow(2f, -9f),
@@ -439,8 +458,8 @@ namespace UV2.Live
                 // H then V inside the 1/4-res pair; the composite binds the
                 // pass-3 output (bloom_rt_c) like the game binds its returned
                 // pyramid handle.
-                cmd.Blit(bloom_rt_b, bloom_rt_c, bloom_mat, 2);
-                cmd.Blit(bloom_rt_c, bloom_rt_b, bloom_mat, 3);
+                cmd.Blit(bloom_rt_b, bloom_rt_c, bloom_mat, bloom_blurh_pass);
+                cmd.Blit(bloom_rt_c, bloom_rt_b, bloom_mat, bloom_blurv_pass);
                 // composite (pass 0 Bloom): additive for authored mode 1, the
                 // screen-blend family otherwise; never an intensity scale.
                 // the game publishes _bloomDofWeight (id 179) and
@@ -460,6 +479,20 @@ namespace UV2.Live
                 bool film_shapes_src = director.film1_state != null && director.film1_state.valid;
                 float shaping = film_shapes_src ? director.film1_state.power : 1f;
                 bloom_mat.SetFloat("_BloomShaping", shaping);
+                // debug: UV2_BLOOMTEX_DEBUG emits the pyramid the C-fold
+                // consumes (BLOOM_DEBUG multi_compile variant).
+                {
+                    // debug ladder: any non-empty value enables the
+                    // composite's BLOOM_DEBUG emit; "1" = level-1 fold
+                    // output, "2" = level-2, "0" = the real _BloomTex.
+                    var dbg = System.Environment.GetEnvironmentVariable("UV2_BLOOMTEX_DEBUG");
+                    if (!string.IsNullOrEmpty(dbg))
+                    {
+                        bloom_mat.EnableKeyword("BLOOM_DEBUG");
+                        if (dbg == "1") bloom_mat.SetTexture("_BloomTex", bloom_rt_d);
+                        if (dbg == "2") bloom_mat.SetTexture("_BloomTex", bloom_rt_e);
+                    }
+                }
 
                 // diffusion sub-chain (attribute bit 0x20000): the game's
                 // OnRenderImageDiffusionFastBloom (fastbloom_disasm.json,
@@ -479,7 +512,14 @@ namespace UV2.Live
                 // pyramid anyway (structural fidelity), and fall back to
                 // the base bloom texture when the key's size rounds to zero.
                 bool diffusion_on = director.bloom_diffusion_enabled && b.diffusion_blur_size > 0f;
-                last_bloom_pyramid = diffusion_on ? bloom_rt_diffusion : bloom_rt_b;
+                // the fused dof-bloom composite folds the pyramid as
+                // bloom*coc; feeding it the wide 0.1-threshold diffusion
+                // pyramid lifts the whole frame by its mean (~0.21 linear)
+                // wherever the coc is nonzero — the measured bd-dof delta
+                // of +0.36. the game's runtime-zero rows make the diffusion
+                // texture drop out (p2b2), so the fused term carries the
+                // tight base pyramid only.
+                last_bloom_pyramid = bloom_rt_b;
                 if (diffusion_on)
                 {
                     // the game builds the diffusion pyramid FROM THE SOURCE
@@ -491,16 +531,23 @@ namespace UV2.Live
                     bloom_mat.SetVector("_Parameter", new Vector4(
                         1f / desc.width, 1f / desc.height,
                         b.diffusion_threshold, 1f));
-                    cmd.Blit(cur, bloom_rt_d, bloom_mat, 1);
+                    cmd.Blit(cur, bloom_rt_d, bloom_mat, bloom_down_pass);
+                    // the game's CreateBloomTexture folds threshold and
+                    // intensity at EVERY pyramid level (4x Blit, each with
+                    // the pass-1 fold): two levels of (x-0.15)*0.7 turn the
+                    // 0.31-mean scene's pyramid to ~0.01 except the hottest
+                    // lights — the tight star-sparkle the C-fold needs to
+                    // stay neutral on the mids. folding once left the pyramid
+                    // at ~0.11 and the wide blur smeared it to ~0.4+.
                     bloom_mat.SetVector("_Parameter", new Vector4(
-                        1f / hw, 1f / hh, 0f, 1f));
-                    cmd.Blit(bloom_rt_d, bloom_rt_e, bloom_mat, 1);
+                        1f / hw, 1f / hh, b.threshold, b.intensity));
+                    cmd.Blit(bloom_rt_d, bloom_rt_e, bloom_mat, bloom_down_pass);
                     bloom_mat.SetVector("_Parameter", new Vector4(
                         b.diffusion_blur_size * Mathf.Pow(2f, -9f) / aspect,
                         b.diffusion_blur_size * Mathf.Pow(2f, -9f),
                         0f, 1f));
-                    cmd.Blit(bloom_rt_e, bloom_rt_c, bloom_mat, 2);
-                    cmd.Blit(bloom_rt_c, bloom_rt_diffusion, bloom_mat, 3);
+                    cmd.Blit(bloom_rt_e, bloom_rt_c, bloom_mat, bloom_blurh_pass);
+                    cmd.Blit(bloom_rt_c, bloom_rt_diffusion, bloom_mat, bloom_blurv_pass);
                     bloom_mat.SetTexture("_DiffusionTex", bloom_rt_diffusion);
                     // the composite's fp/lift/lever rows (139.y/151.x/163.w)
                     // are never published by the diffusion C# (its ids are
@@ -529,7 +576,14 @@ namespace UV2.Live
                     // -> GetPropertyId 0xb7 publish at both sites). binding the
                     // hot 0.75-threshold bloom pyramid instead explodes C =
                     // B^2*(2-bloom) + bloom into clipped highlights.
-                    bloom_mat.SetTexture("_BloomTex", bloom_rt_diffusion);
+                    // _BloomTex keeps the TIGHT base pyramid: the p2b2
+                    // luma-identity measurement says the diffusion texture
+                    // drops out of the game's composite (its only lanes are
+                    // the fp/lift/lever rows that bind zero), so folding the
+                    // wide diffusion blur into the C-term's bloom lifts the
+                    // whole frame to the blur's mean (+0.2 at f3300) — the
+                    // washout. the diffusion chain's contribution here is
+                    // the 151 S-curve row only.
                     bloom_mat.EnableKeyword("DIFFUSION_ON");
                 }
                 else
@@ -543,7 +597,7 @@ namespace UV2.Live
                     // last_bloom_pyramid and folds the add in itself.
                     return;
                 }
-                cmd.Blit(cur, nxt, bloom_mat, 0);
+                cmd.Blit(cur, nxt, bloom_mat, bloom_comp_pass);
                 cur = nxt; cur_is_color = false;
                 nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
             }
@@ -565,17 +619,35 @@ namespace UV2.Live
                     var sh = Shader.Find("live/uv2_dof");
                     if (sh == null) return;
                     dof_mat = CoreUtils.CreateEngineMaterial(sh);
+                    // the game finds passes by name (dof_pipeline_decoded:
+                    // PASS_POSTDOFBLOOM_APPLYBG etc); index blits on this
+                    // material resolved to the wrong pass on the rig (the
+                    // H blur read camera-target alpha ~1.0, not the
+                    // prefilter's coc), so resolve by name like the game.
+                    coc_pass = dof_mat.FindPass("COCPREFILTER");
+                    blurh_pass = dof_mat.FindPass("BLURH");
+                    blurv_pass = dof_mat.FindPass("BLURV");
+                    comp_pass = dof_mat.FindPass("COMPOSITE");
                 }
                 var cam = renderingData.cameraData.camera;
                 var desc = renderingData.cameraData.cameraTargetDescriptor;
                 desc.depthBufferBits = 0;
+                UnityEngine.Debug.Log($"[dof] passes coc={coc_pass} blurh={blurh_pass} blurv={blurv_pass} comp={comp_pass} fmt={desc.colorFormat}");
+                if (System.Environment.GetEnvironmentVariable("UV2_DOFCOC_DEBUG") == "1")
+                    dof_mat.EnableKeyword("COC_DEBUG");
                 if (dof_rt_a == null || dof_rt_a.width != desc.width || dof_rt_a.height != desc.height)
                 {
                     if (dof_rt_a != null) dof_rt_a.Release();
                     if (dof_rt_b != null) dof_rt_b.Release();
-                    dof_rt_a = new RenderTexture(desc.width / 2, desc.height / 2, 0, desc.colorFormat)
+                    // the coc rides ALPHA through this chain, but the
+                    // camera target on this rig is RGB111110Float — no
+                    // alpha bits, every coc write is a no-op and the blur
+                    // rides alpha 1.0 (the full-frame smear at f3300).
+                    // the coc carriers need a real alpha channel.
+                    var coc_fmt = RenderTextureFormat.ARGBHalf;
+                    dof_rt_a = new RenderTexture(desc.width / 2, desc.height / 2, 0, coc_fmt)
                         { filterMode = FilterMode.Bilinear };
-                    dof_rt_b = new RenderTexture(desc.width / 2, desc.height / 2, 0, desc.colorFormat)
+                    dof_rt_b = new RenderTexture(desc.width / 2, desc.height / 2, 0, coc_fmt)
                         { filterMode = FilterMode.Bilinear };
                 }
 
@@ -596,13 +668,13 @@ namespace UV2.Live
                     director.dof_foreground_size, director.dof_smoothness));
                 dof_mat.SetFloat("_DofBlurSpread", director.dof_blur_spread);
                 dof_mat.SetVector("_DofFocalMeters", new Vector4(
-                    director.dof_focal_m, cam.farClipPlane, 0f, 0f));
+                    director.dof_focal_m, cam.farClipPlane, desc.height, 0f));
 
                 // the chain runs on its own half-res pair; the composite writes
                 // back into the chain's current target.
-                cmd.Blit(cur, dof_rt_a, dof_mat, 0);   // coc prefilter
-                cmd.Blit(dof_rt_a, dof_rt_b, dof_mat, 1); // horizontal
-                cmd.Blit(dof_rt_b, dof_rt_a, dof_mat, 2); // vertical
+                cmd.Blit(cur, dof_rt_a, dof_mat, coc_pass);   // coc prefilter
+                cmd.Blit(dof_rt_a, dof_rt_b, dof_mat, blurh_pass); // horizontal
+                cmd.Blit(dof_rt_b, dof_rt_a, dof_mat, blurv_pass); // vertical
                 dof_mat.SetTexture("_DofBlurred", dof_rt_a);
                 // the fused dof-bloom composite (DOFBLOOMAPPLYBG @7094,
                 // uv2_postdofbloom_fused_composite_decoded.md): when the
@@ -616,7 +688,7 @@ namespace UV2.Live
                 bool fused_bloom = last_bloom_pyramid != null;
                 dof_mat.SetTexture("_DofBloomTex", fused_bloom ? last_bloom_pyramid : dof_rt_a);
                 dof_mat.SetFloat("_DofBloomFused", fused_bloom ? 1f : 0f);
-                cmd.Blit(cur, nxt, dof_mat, 3);        // composite
+                cmd.Blit(cur, nxt, dof_mat, comp_pass);        // composite
                 cur = nxt; cur_is_color = false;
                 nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
             }

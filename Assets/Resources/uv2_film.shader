@@ -8,6 +8,20 @@ Shader "live/uv2_film"
     Properties
     {
         _MainTex ("Base", 2D) = "" {}
+        _PostFilmColor0 ("Color0", Color) = (0,0,0,0)
+        _PostFilmColor1 ("Color1", Color) = (0,0,0,0)
+        _PostFilmColor2 ("Color2", Color) = (0,0,0,0)
+        _PostFilmColor3 ("Color3", Color) = (0,0,0,0)
+        _DepthClip ("DepthClip", Float) = 0
+        _DepthClipZone ("DepthClipZone", Float) = 0
+        _DepthPower ("DepthPower", Float) = 0
+        _PostFilmIsInverseVignette ("IsInverseVignette", Float) = 0
+        _PostFilmIsWithoutDepth ("IsWithoutDepth", Float) = 0
+        _PostFilmPower ("Power", Float) = 1
+        _PostFilmOffsetParam ("OffsetParam", Vector) = (0,0,0,0)
+        _PostFilmOptionParam ("OptionParam", Vector) = (0,0,0,0)
+        _PostFilmRollParameter ("RollParameter", Vector) = (0,0,0,0)
+        _PostFilmScaleParameter ("ScaleParameter", Vector) = (1,1,1,1)
     }
     SubShader
     {

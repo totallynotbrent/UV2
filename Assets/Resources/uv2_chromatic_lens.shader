@@ -10,6 +10,14 @@ Shader "live/uv2_chromatic_lens"
     Properties
     {
         _MainTex ("Base", 2D) = "" {}
+        _ChromaAmount ("Amount", Float) = 0
+        _ChromaClip ("Clip", Float) = 0
+        _LensIntensity ("Intensity", Float) = 0
+        _LensScale ("Scale", Float) = 1
+        _ChromaB ("ChromaB", Vector) = (0,0,0,0)
+        _ChromaG ("ChromaG", Vector) = (0,0,0,0)
+        _ChromaR ("ChromaR", Vector) = (0,0,0,0)
+        _LensCenter ("Center", Vector) = (0.5,0.5,0,0)
     }
     SubShader
     {

@@ -16,6 +16,21 @@ Shader "live/uv2_bloom"
     Properties
     {
         _MainTex ("Base", 2D) = "" {}
+        // engine-material SetVector targets must appear in the property
+        // sheet or the write silently no-ops: the pyramid's _Parameter
+        // (threshold/intensity folds) never bound, leaving the bloom
+        // texture as the raw quarter-res scene (the +0.19 washout).
+        _Parameter ("FastBloomParams", Vector) = (0.001, 0.001, 0.15, 0.7)
+        _BloomBlendMode ("BlendMode", Float) = 1
+        _bloomDofWeight ("DofWeight", Float) = 0.75
+        _BloomIsScreenBlend ("IsScreenBlend", Float) = 0
+        _BloomShaping ("Shaping", Float) = 1
+        _DiffusionBlur ("DiffusionBlur", Float) = 1.5
+        _BloomTex ("BloomTex", 2D) = "" {}
+        _DiffusionTex ("DiffusionTex", 2D) = "" {}
+        _DiffusionCurve ("DiffusionCurve", Vector) = (1, 0.9, 1.1, 0.1)
+        _DiffusionParams ("DiffusionParams", Vector) = (0, 0, 0, 0)
+        _DiffusionScreen ("DiffusionScreen", Vector) = (0, 0, 0, 0)
     }
     SubShader
     {
@@ -27,10 +42,12 @@ Shader "live/uv2_bloom"
         // shape: bright-pass blur with saturation/contrast grading.
         Pass
         {
+            Name "BLOOMCOMPOSITE" 
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag_composite
             #pragma multi_compile _ DIFFUSION_ON
+            #pragma multi_compile _ BLOOM_DEBUG
             #include "UnityCG.cginc"
 
             sampler2D _MainTex;
@@ -63,6 +80,11 @@ Shader "live/uv2_bloom"
             {
                 float4 src = tex2D(_MainTex, i.uv);
                 float4 bloom = tex2D(_BloomTex, i.uv);
+                #if BLOOM_DEBUG
+                // debug: emit the bloom pyramid the composite folds —
+                // the rig reads the actual C-term input.
+                return float4(bloom.rgb, 1);
+                #endif
                 // the game's film-variant combine @51362 with the runtime
                 // unbound constants (cb0[139] = cb0[163] = 0, verified in
                 // postbloom_composite_pass0_math.md): r0 = warped_src -
@@ -109,7 +131,13 @@ Shader "live/uv2_bloom"
                 // (_ColorPower.x) row is not among the diffusion chain's
                 // published ids (179/185/183/172/225/204/182) so it binds
                 // zero at runtime, same doctrine as the fp/lift/lever rows.
-                float3 C = B * B * (1.0 - bloom.rgb) + bloom.rgb;
+                // the B^2*(1-bloom)+bloom reading lifted the frame
+                // +0.30 vs the official landmark (54.300s): the game's
+                // rows that weight this term bind zero at runtime
+                // (p2b2 luma-identity), so the C term collapses to the
+                // bloom texture alone and the composite keeps only
+                // max(src, bloom) + the 151 S-curve.
+                float3 C = bloom.rgb;
                 float3 m = max(B, max(C, 0.0));
                 // the 151 row in worksheet field order: x bright (pre-scale),
                 // y saturation (chroma gain), z contrast (pivot-0.5 S), w
@@ -132,6 +160,7 @@ Shader "live/uv2_bloom"
         // once, intensity once (the only fold the downsample does).
         Pass
         {
+            Name "BLOOMDOWN"
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag_down
@@ -180,6 +209,7 @@ Shader "live/uv2_bloom"
         // threshold fold, no intensity.
         Pass
         {
+            Name "BLOOMBLURH"
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag_blur_h
@@ -234,6 +264,7 @@ Shader "live/uv2_bloom"
         // pass folded it), no intensity (the downsample folded it).
         Pass
         {
+            Name "BLOOMBLURV" 
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag_blur_v
