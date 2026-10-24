@@ -186,18 +186,22 @@ Shader "live/uv2_bloom"
             float4 frag_down(v2f i) : SV_Target
             {
                 float2 tx = _Parameter.xy;
-                float4 s = tex2D(_MainTex, i.uv);
-                s += tex2D(_MainTex, i.uv + float2(tx.x, tx.y));
-                s += tex2D(_MainTex, i.uv + float2(-tx.x, tx.y));
+                // the game's downsample (fastbloom sp_00) averages EXACTLY
+                // FOUR taps and scales by 0.25: the four uv corners
+                // (v1.xy, v1.zw, v2.xy, v2.zw) the vertex stage emits. UV2
+                // sampled the centre plus four corners — five taps scaled by
+                // 0.25 — so the pyramid carried 1.25x the game's energy and
+                // the composite's add blew out the highlights.
+                float4 s = tex2D(_MainTex, i.uv + float2(-tx.x, -tx.y));
                 s += tex2D(_MainTex, i.uv + float2(tx.x, -tx.y));
-                s += tex2D(_MainTex, i.uv + float2(-tx.x, -tx.y));
+                s += tex2D(_MainTex, i.uv + float2(-tx.x, tx.y));
+                s += tex2D(_MainTex, i.uv + float2(tx.x, tx.y));
                 s *= 0.25;
-                // the game's downsample (@3302): max(avg + _Parameter.x, 0)
-                // * scale - the threshold folds HERE as the negative offset and
-                // the intensity multiplies HERE (audience_props_bloom_answers
-                // Q3: 'threshold as -threshold offset applies at EVERY pyramid
-                // level, per TAP, BEFORE the blur weights. there is NO separate
-                // intensity multiply at the composite').
+                // the game's downsample (@3302): out = max(avg - threshold, 0)
+                // * intensity — the intensity folds HERE, once, and the
+                // threshold is the negative offset (audience doc Q3: the
+                // threshold applies at EVERY pyramid level, per TAP, and
+                // there is NO intensity multiply at the composite).
                 return max(s - _Parameter.z, 0.0) * _Parameter.w;
             }
             ENDCG
@@ -238,24 +242,23 @@ Shader "live/uv2_bloom"
             float4 frag_blur_h(v2f i) : SV_Target
             {
                 float2 step_h = float2(_Parameter.x, 0.0);
-                // the game's 9-tap kernel samples the CENTER once (weight
-                // 0.225) plus each offset once per side; the weights sum to
-                // exactly 1.0. folding the center into the (t0+t1) pair
-                // doubled it and left the pyramid at 1.225 total gain - the
-                // over-bright bloom. the threshold fold applies to EVERY
-                // tap including the center (fastbloom decode: per-tap
-                // max(sample + offset, 0) before the weights).
-                float4 sum = max(tex2D(_MainTex, i.uv) - _Parameter.z, 0.0) * WEIGHTS[0];
+                // the game's HORIZONTAL blur (fastbloom sp_10, pass 3
+                // 'BlurHorizontal'): it accumulates the taps with the fixed
+                // weights, does NOT fold the threshold, and multiplies the
+                // accumulated result by the intensity. the VERTICAL blur
+                // (sp_08, pass 2 'BlurVertical') is the one that folds.
+                // the 9-tap kernel samples the CENTER once (weight 0.225)
+                // plus each offset once per side; the weights sum to
+                // exactly 1.0.
+                float4 sum = tex2D(_MainTex, i.uv) * WEIGHTS[0];
                 [unroll]
                 for (int s = 1; s < 5; s++)
                 {
                     float4 t0 = tex2D(_MainTex, i.uv + step_h * TAPS[s]);
                     float4 t1 = tex2D(_MainTex, i.uv - step_h * TAPS[s]);
-                    t0 = max(t0 - _Parameter.z, 0.0);
-                    t1 = max(t1 - _Parameter.z, 0.0);
                     sum += (t0 + t1) * WEIGHTS[s];
                 }
-                return sum;
+                return sum * _Parameter.w;
             }
             ENDCG
         }
@@ -293,7 +296,11 @@ Shader "live/uv2_bloom"
             float4 frag_blur_v(v2f i) : SV_Target
             {
                 float2 step_v = float2(0.0, _Parameter.y);
-                // same center-once kernel as the H pass; weights sum to 1.0.
+                // the game's VERTICAL blur (fastbloom sp_08, pass 2
+                // 'BlurVertical'): per tap `max(sample - threshold, 0)`,
+                // fixed weights, and NO intensity multiply. the HORIZONTAL
+                // blur (sp_10, pass 3) is the one that does not fold and
+                // does multiply the intensity.
                 float4 sum = max(tex2D(_MainTex, i.uv) - _Parameter.z, 0.0) * WEIGHTS[0];
                 [unroll]
                 for (int s = 1; s < 5; s++)
@@ -304,9 +311,6 @@ Shader "live/uv2_bloom"
                     t1 = max(t1 - _Parameter.z, 0.0);
                     sum += (t0 + t1) * WEIGHTS[s];
                 }
-                // the blur passes carry no intensity scale: the game folds
-                // intensity at the downsample only (audience doc Q3); the
-                // threshold folds per tap at every pyramid level (@5346).
                 return sum;
             }
             ENDCG

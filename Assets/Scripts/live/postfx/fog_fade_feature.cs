@@ -353,7 +353,24 @@ namespace UV2.Live
             // resolution with the threshold folded per level and intensity
             // entering exactly once at the downsample, then a soft-add
             // composite back onto the chain (no composite-time scale).
+            //
+            // each pyramid stage needs its OWN material: the command buffer
+            // resolves a material's properties when the blit EXECUTES, not
+            // when it is recorded, so one shared material means the LAST
+            // _Parameter write wins for every blit in the chain. the
+            // diffusion chain's last write is (blur, blur, 0, 1) — threshold
+            // zero, intensity one — so the whole pyramid ran unthresholded
+            // and the composite folded the entire scene instead of the
+            // hottest highlights (the +57 mean-luminance washout).
             private Material bloom_mat;
+            private Material bloom_down_mat;
+            private Material bloom_down2_mat;
+            private Material bloom_blurh_mat;
+            private Material bloom_blurv_mat;
+            private Material bloom_diff_down_mat;
+            private Material bloom_diff_down2_mat;
+            private Material bloom_diff_blurh_mat;
+            private Material bloom_diff_blurv_mat;
             private RenderTexture bloom_rt_a;
             private RenderTexture bloom_rt_b;
 
@@ -387,6 +404,21 @@ namespace UV2.Live
                     bloom_blurh_pass = bloom_mat.FindPass("BLOOMBLURH");
                     bloom_blurv_pass = bloom_mat.FindPass("BLOOMBLURV");
                     bloom_comp_pass = bloom_mat.FindPass("BLOOMCOMPOSITE");
+                }
+                // one material per pyramid stage, so each keeps its own
+                // _Parameter: the command buffer reads material properties
+                // when the blit executes, and a shared material gives every
+                // stage the last value written.
+                if (bloom_down_mat == null)
+                {
+                    bloom_down_mat = CoreUtils.CreateEngineMaterial(bloom_mat.shader);
+                    bloom_down2_mat = CoreUtils.CreateEngineMaterial(bloom_mat.shader);
+                    bloom_blurh_mat = CoreUtils.CreateEngineMaterial(bloom_mat.shader);
+                    bloom_blurv_mat = CoreUtils.CreateEngineMaterial(bloom_mat.shader);
+                    bloom_diff_down_mat = CoreUtils.CreateEngineMaterial(bloom_mat.shader);
+                    bloom_diff_down2_mat = CoreUtils.CreateEngineMaterial(bloom_mat.shader);
+                    bloom_diff_blurh_mat = CoreUtils.CreateEngineMaterial(bloom_mat.shader);
+                    bloom_diff_blurv_mat = CoreUtils.CreateEngineMaterial(bloom_mat.shader);
                 }
                 var desc = renderingData.cameraData.cameraTargetDescriptor;
                 desc.depthBufferBits = 0;
@@ -440,26 +472,39 @@ namespace UV2.Live
                 // volume); the effective lift is whichever last published.
                 float shaft_lift = volume_uv_scroll.last_lift > 0f
                     ? volume_uv_scroll.last_lift : shafts_lights.last_lift;
-                bloom_mat.SetVector("_Parameter", new Vector4(
+                bloom_down_mat.SetVector("_Parameter", new Vector4(
                     1f / desc.width, 1f / desc.height, b.threshold,
                     b.intensity + shaft_lift));
-                cmd.Blit(cur, bloom_rt_a, bloom_mat, bloom_down_pass);
-                // the second halving folds too: CreateBloomTexture's 4x
-                // Blit pyramid applies the pass-1 threshold+intensity fold
-                // at every level, which is what keeps the composite's bloom
-                // texture near-zero except the hottest lights.
-                bloom_mat.SetVector("_Parameter", new Vector4(
-                    1f / hw, 1f / hh, b.threshold, b.intensity));
-                cmd.Blit(bloom_rt_a, bloom_rt_b, bloom_mat, bloom_down_pass);
-                bloom_mat.SetVector("_Parameter", new Vector4(
+                cmd.Blit(cur, bloom_rt_a, bloom_down_mat, bloom_down_pass);
+                // the game's level 1 is a NEUTRAL halving: CreateBloomTexture
+                // publishes _Parameter = (uv.x, uv.y, 0, 1.0) for the second
+                // downsample (fastbloom disasm @232-233: the threshold slot
+                // is zeroed and the intensity slot is 1.0). folding the
+                // threshold and intensity again compounded them - the
+                // threshold was subtracted twice and the intensity applied
+                // twice - which is what crushed the pyramid's mids.
+                bloom_down2_mat.SetVector("_Parameter", new Vector4(
+                    1f / hw, 1f / hh, 0f, 1f));
+                cmd.Blit(bloom_rt_a, bloom_rt_b, bloom_down2_mat, bloom_down_pass);
+                // the game's blur order is VERTICAL then HORIZONTAL: the
+                // shader file names pass 2 'BlurVertical' and pass 3
+                // 'BlurHorizontal' (Gallop_ImageEffects_FastBloom.shader.txt)
+                // and CreateBloomTexture blits pass 2 then pass 3.
+                // the VERTICAL blur (sp_08) folds the threshold per tap and
+                // carries no intensity; the HORIZONTAL blur (sp_10) does not
+                // fold and multiplies the accumulated result by the
+                // intensity. UV2 had the fold on the horizontal and no final
+                // intensity, which left the pyramid too wide and too hot.
+                bloom_blurv_mat.SetVector("_Parameter", new Vector4(
                     b.blur_size * Mathf.Pow(2f, -9f) / aspect,
                     b.blur_size * Mathf.Pow(2f, -9f),
                     b.threshold, b.intensity));
-                // H then V inside the 1/4-res pair; the composite binds the
-                // pass-3 output (bloom_rt_c) like the game binds its returned
-                // pyramid handle.
-                cmd.Blit(bloom_rt_b, bloom_rt_c, bloom_mat, bloom_blurh_pass);
-                cmd.Blit(bloom_rt_c, bloom_rt_b, bloom_mat, bloom_blurv_pass);
+                bloom_blurh_mat.SetVector("_Parameter", new Vector4(
+                    b.blur_size * Mathf.Pow(2f, -9f) / aspect,
+                    b.blur_size * Mathf.Pow(2f, -9f),
+                    0f, b.intensity));
+                cmd.Blit(bloom_rt_b, bloom_rt_c, bloom_blurv_mat, bloom_blurv_pass);
+                cmd.Blit(bloom_rt_c, bloom_rt_b, bloom_blurh_mat, bloom_blurh_pass);
                 // composite (pass 0 Bloom): additive for authored mode 1, the
                 // screen-blend family otherwise; never an intensity scale.
                 // the game publishes _bloomDofWeight (id 179) and
@@ -491,6 +536,7 @@ namespace UV2.Live
                         bloom_mat.EnableKeyword("BLOOM_DEBUG");
                         if (dbg == "1") bloom_mat.SetTexture("_BloomTex", bloom_rt_d);
                         if (dbg == "2") bloom_mat.SetTexture("_BloomTex", bloom_rt_e);
+                        if (dbg == "3") bloom_mat.SetTexture("_BloomTex", bloom_rt_diffusion);
                     }
                 }
 
@@ -528,26 +574,29 @@ namespace UV2.Live
                     // diffusion size), not from the bloom texture. the fp
                     // row binds zero at runtime so the texture drops out of
                     // the composite math; the build is structural fidelity.
-                    bloom_mat.SetVector("_Parameter", new Vector4(
+                    bloom_diff_down_mat.SetVector("_Parameter", new Vector4(
                         1f / desc.width, 1f / desc.height,
                         b.diffusion_threshold, 1f));
-                    cmd.Blit(cur, bloom_rt_d, bloom_mat, bloom_down_pass);
-                    // the game's CreateBloomTexture folds threshold and
-                    // intensity at EVERY pyramid level (4x Blit, each with
-                    // the pass-1 fold): two levels of (x-0.15)*0.7 turn the
-                    // 0.31-mean scene's pyramid to ~0.01 except the hottest
-                    // lights — the tight star-sparkle the C-fold needs to
-                    // stay neutral on the mids. folding once left the pyramid
-                    // at ~0.11 and the wide blur smeared it to ~0.4+.
-                    bloom_mat.SetVector("_Parameter", new Vector4(
-                        1f / hw, 1f / hh, b.threshold, b.intensity));
-                    cmd.Blit(bloom_rt_d, bloom_rt_e, bloom_mat, bloom_down_pass);
-                    bloom_mat.SetVector("_Parameter", new Vector4(
+                    cmd.Blit(cur, bloom_rt_d, bloom_diff_down_mat, bloom_down_pass);
+                    // the game's level 1 is a NEUTRAL halving: the threshold
+                    // slot is zeroed and the intensity slot is 1.0
+                    // (fastbloom disasm @232-233).
+                    bloom_diff_down2_mat.SetVector("_Parameter", new Vector4(
+                        1f / hw, 1f / hh, 0f, 1f));
+                    cmd.Blit(bloom_rt_d, bloom_rt_e, bloom_diff_down2_mat, bloom_down_pass);
+                    // VERTICAL first (folds the threshold per tap, no
+                    // intensity), then HORIZONTAL (no fold, multiplies the
+                    // intensity) - the game's pass order.
+                    bloom_diff_blurv_mat.SetVector("_Parameter", new Vector4(
+                        b.diffusion_blur_size * Mathf.Pow(2f, -9f) / aspect,
+                        b.diffusion_blur_size * Mathf.Pow(2f, -9f),
+                        b.threshold, 1f));
+                    bloom_diff_blurh_mat.SetVector("_Parameter", new Vector4(
                         b.diffusion_blur_size * Mathf.Pow(2f, -9f) / aspect,
                         b.diffusion_blur_size * Mathf.Pow(2f, -9f),
                         0f, 1f));
-                    cmd.Blit(bloom_rt_e, bloom_rt_c, bloom_mat, bloom_blurh_pass);
-                    cmd.Blit(bloom_rt_c, bloom_rt_diffusion, bloom_mat, bloom_blurv_pass);
+                    cmd.Blit(bloom_rt_e, bloom_rt_c, bloom_diff_blurv_mat, bloom_blurv_pass);
+                    cmd.Blit(bloom_rt_c, bloom_rt_diffusion, bloom_diff_blurh_mat, bloom_blurh_pass);
                     bloom_mat.SetTexture("_DiffusionTex", bloom_rt_diffusion);
                     // the composite's fp/lift/lever rows (139.y/151.x/163.w)
                     // are never published by the diffusion C# (its ids are
