@@ -100,8 +100,12 @@ namespace UV2.Live
                     tr.localPosition = pos;
                     tr.localRotation = Quaternion.Euler(0f, rot_y, 0f);
 
+                    // the game reads the CURRENT key's visible flag alone:
+                    // SetActive(curKey.visible) with no lookahead. or-ing the
+                    // next key in keeps a character on stage until the next
+                    // key lands, so the cast count runs high (f5692: the game
+                    // shows 7, the or-version shows all 18).
                     bool visible = cur.visible != 0;
-                    if (next != null) visible = next.visible != 0 || visible;
                     tr.gameObject.SetActive(visible);
                     apply_spring_keys(skv.Key, cur, i);
                 }

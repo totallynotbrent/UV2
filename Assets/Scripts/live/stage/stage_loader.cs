@@ -1851,6 +1851,37 @@ namespace UV2.Live
                             mic_info = $" | chara {chara_roots[slot - 1].position}";
                         trace_log.write($"props bench: {s.name} at {s.position} (parent {s.parent?.name}, active {s.gameObject.activeSelf}){mic_info}");
                     }
+
+                    // the cast's stage positions and visibility in one line:
+                    // the formation driver writes localPosition, so a root at
+                    // the origin means its group never reached it, and an
+                    // inactive root means the visible key hid the chara.
+                    int cast_active = 0;
+                    string cast_state = "";
+                    for (int i = 0; i < chara_roots.Count; i++)
+                    {
+                        var root = chara_roots[i];
+                        if (root == null) continue;
+                        bool on = root.gameObject.activeSelf;
+                        if (on) cast_active++;
+                        cast_state += $" {i + 1}:{(on ? "+" : "-")}{root.localPosition}";
+                    }
+                    trace_log.write($"cast bench: active {cast_active}/{chara_roots.Count} |{cast_state}");
+
+                    // what the formation driver thinks each group's key says.
+                    if (ws != null && ws.formation != null)
+                    {
+                        float ft = clock?.time ?? 0f;
+                        foreach (var gkv in ws.formation)
+                        {
+                            var gkeys = gkv.Value;
+                            if (gkeys == null || gkeys.Count == 0) continue;
+                            int gi = UV2.Live.key_eval.bracket(gkeys, ft);
+                            if (gi < 0) continue;
+                            var gk = gkeys[gi];
+                            trace_log.write($"formation group {gkv.Key}: key f{gk.frame} pos {gk.position} visible {gk.visible}");
+                        }
+                    }
                 }
 
                 trace_log.write($"beat t={clock?.time ?? 0f:0.0}s cam_pos {cam.transform.position} fwd {cam.transform.forward} fov {cam.fieldOfView:0.0} renderers {visible}/{total} visible animations_playing {playing}{pose}");
