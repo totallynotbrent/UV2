@@ -125,10 +125,19 @@ namespace UV2.App
                         yield return null;
                     if (loader != null && loader.song_clock != null)
                     {
-                        loader.song_clock.pause();
-                        loader.song_clock.seek(seek_s);
+                        // seek_and_apply drives the camera, the formation and
+                        // the pose at the seeked time in one deterministic step.
+                        // the old pause+seek+wait-3-frames path let the capture
+                        // fire before the camera had ever been positioned at
+                        // that frame, so the shot came out at the load-time
+                        // default camera with the cast still at the origin.
+                        loader.seek_and_apply(seek_s);
                         trace_log.write($"frame mode: seeked clock to {seek_s:0.00}s");
                         for (int f = 0; f < 3; f++) yield return null;
+                        // re-apply after the settle: the drivers' own
+                        // LateUpdate may have overwritten the pose with a
+                        // frame that is not the seeked one.
+                        loader.apply_at(seek_s);
                     }
                 }
 

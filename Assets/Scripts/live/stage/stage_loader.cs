@@ -699,6 +699,27 @@ namespace UV2.Live
         // the song clock, exposed for the -uv2frame seek mode in scene_boot.
         public timeline_clock song_clock { get { return clock; } }
 
+        // seeks the song clock and drives every driver at the seeked time.
+        // the drivers also run on their own LateUpdate, but that order is
+        // undefined: a capture fired from another component's LateUpdate can
+        // land before the camera and the pose were ever applied at the
+        // scrubbed frame. calling apply_at here makes the frame deterministic.
+        public void seek_and_apply(float seconds)
+        {
+            if (clock == null) return;
+            clock.pause();
+            clock.seek(seconds);
+            apply_at(seconds);
+        }
+
+        // drives the camera, the formation and the pose at one song time.
+        public void apply_at(float t)
+        {
+            motion?.apply_at(t);
+            formation?.apply_at(t);
+            director?.apply_at(t);
+        }
+
         // the music source, exposed for the control panel's seek bridge.
         public AudioSource music_source { get { return _music_source; } }
         private AudioSource _music_source;

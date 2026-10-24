@@ -34,7 +34,16 @@ namespace UV2.Live
         private void LateUpdate()
         {
             if (ws == null || clock == null) return;
-            float t = clock.time;
+            apply_at(clock.time);
+        }
+
+        // drives the formation for one specific song time.
+        // the seek path calls this directly so a capture at a scrubbed frame
+        // shows the cast where the timeline puts it, not where the last
+        // LateUpdate left it.
+        public void apply_at(float t)
+        {
+            if (ws == null) return;
 
             // no formation groups at all, or the driver carries no spring sims
             // (nothing can fire the start-pose cut): release the pre-cut hold

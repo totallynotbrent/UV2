@@ -197,7 +197,31 @@ namespace UV2.Live
                 return;
             }
 
-            float t = clock.time;
+            apply_at(clock.time);
+        }
+
+        // the song time the camera was last driven for.
+        private float last_applied_time = -1f;
+        private float last_applied_frame = -1f;
+
+        // true when the camera has been driven for this song frame.
+        // the capture path asks this before grabbing the framebuffer.
+        public bool applied_at(float t)
+        {
+            if (ws == null || cam == null) return false;
+            if (last_applied_frame < 0f) return false;
+            return Mathf.Abs(last_applied_frame - t * 60f) <= 1.5f;
+        }
+
+        // drives the camera for one specific song time.
+        // the seek path calls this directly so a capture at a scrubbed frame
+        // never races the LateUpdate order: without it the camera can still
+        // sit at the load-time default when the framebuffer is grabbed.
+        public void apply_at(float t)
+        {
+            if (ws == null || cam == null) return;
+            last_applied_time = t;
+            last_applied_frame = t * 60f;
 
             // the delay window compares the clock frame before this update.
             float clock_frame = t * 60f;

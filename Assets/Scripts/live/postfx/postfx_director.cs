@@ -91,9 +91,14 @@ namespace UV2.Live
             public int layer_mode;
             public bool inverse;
             public bool valid;
+            // the key's colorType: 0 ColorAll, 1 Color2TopBottom,
+            // 2 Color2LeftRight, 3 Color4. the game picks the layer color
+            // from the matching color pair, so a ColorAll key must use
+            // color0 alone.
+            public int color_type;
 
-            // the key's raw attribute word (0x100000 isUseTexMask,
-            // 0x200000 isEnableDepth per the film bodies decode).
+            // the key's raw attribute word (0x40000 isReverseUVMovie,
+            // 0x80000 isInverseVignette, 0x100000 isUseTexMask).
             public int attribute_bits;
 
             // blink-container coupling authored on the current key.
@@ -244,12 +249,32 @@ namespace UV2.Live
             // window the user flagged near f5700.
             // 5960 sits one frame before the finale light cue (all blink
             // families key golden at 5959); 6000/6260 catch the state after.
+            // UV2_SNAP_FRAMES overrides the list with a comma-separated set
+            // of song frames, so a bench run can capture any frame without
+            // editing the source (the frame-exact seek lands on exactly one
+            // of them, and the rest of the list never matches).
             int[] snap_frames = { 1780, 2400, 2840, 3300, 3580, 5700, 5960, 6000, 6260 };
+            string snap_list = System.Environment.GetEnvironmentVariable("UV2_SNAP_FRAMES");
+            if (!string.IsNullOrEmpty(snap_list))
+            {
+                var parsed = new System.Collections.Generic.List<int>();
+                foreach (var part in snap_list.Split(','))
+                {
+                    if (int.TryParse(part.Trim(), out int f)) parsed.Add(f);
+                }
+                if (parsed.Count > 0) snap_frames = parsed.ToArray();
+            }
             bool hit = false;
             for (int i = 0; i < snap_frames.Length; i++)
                 if (song_frame == snap_frames[i]) { hit = true; break; }
             if (hit && song_frame != snap_pumped)
             {
+                // the camera has to have been driven at this song time before
+                // the framebuffer is grabbed. the camera director runs on its
+                // own LateUpdate, and that order against this one is
+                // undefined, so without this gate a capture can land while
+                // the camera still sits at the load-time default.
+                if (!camera_settled(t)) return;
                 snap_pumped = song_frame;
                 var file = System.IO.Path.Combine(snap_dir, $"snap_f{song_frame}_t{t:0.0}.png");
                 ScreenCapture.CaptureScreenshot(file);
@@ -511,12 +536,24 @@ namespace UV2.Live
                 roll_angle = cur.roll_angle,
                 scale = cur.scale,
                 layer_mode = cur.layer_mode,
-                // key attribute bit 0x100000 = isUseTexMask (uv2_timeline_
-                // attribute_gate_decoded.md): the game's UpdatePostFilm copies
-                // it into the layer param and the draw helper publishes it as
-                // _PostFilmIsInverseVignette - the shader inverts the mask.
+                // the game's key attribute bit for the inverse vignette.
+                // the fork's live consumer (Live/Director.cs OnUpdatePostFilm,
+                // publishing into GallopGameBloomPass.FilmLayers) maps the
+                // film key's attribute word as:
+                //   0x40000 = isAlphaMasking
+                //   0x80000 = isUVMovieNoScale
+                //   0x100000 = inverseVignette
+                // the draw helper publishes that inverse flag as
+                // _PostFilmIsInverseVignette and the game then blits the
+                // pass+1 INVERSE_VIGNETTE program. every 1004 film2 key
+                // carries 0x100000, so the game runs the centre-fill body
+                // for all of them. an earlier port tested 0x80000 (the
+                // isUVMovieNoScale bit), which flipped every layer to the
+                // edge-only branch - the measured result was an edge haze
+                // instead of the centre flood.
                 inverse = (cur.attribute & 0x100000) != 0,
                 attribute_bits = cur.attribute,
+                color_type = cur.color_type,
                 blink_light_name = cur.blink_light_name,
                 blink_light_brightness_power = cur.blink_light_brightness_power,
             };
@@ -539,8 +576,9 @@ namespace UV2.Live
             // color0.a > 0. AND the ps scales every layer by _DepthPower =
             // key.depthPower, so a valid layer with depthPower==0 paints
             // exactly zero (uv2_film_mode_bodies_decoded.md §6): 1004's
-            // film1 never paints at open (first painting key f2190), 1009's
-            // film2 never paints at all (0/381 keys carry depthPower>0).
+            // film1 never paints at open (first painting key f2190), and
+            // 82/163 of 1004's film2 keys carry depthPower>0 (the reader
+            // parses depthPower correctly).
             if (s.mode == 0) s.valid = false;
             else if (s.mode == 3 || s.mode == 4 || s.mode == 6) s.valid = true;
             else if (s.mode == 7) s.valid = s.color0.a > 0f;
@@ -555,6 +593,17 @@ namespace UV2.Live
             if (_cam_director == null)
                 _cam_director = FindFirstObjectByType<camera_director>();
             return _cam_director;
+        }
+
+        // true once the camera director has positioned the camera for this
+        // song time. the camera starts at the scene default (origin, 60
+        // degrees), so a capture taken before the director runs shows a shot
+        // the game never authored.
+        private bool camera_settled(float t)
+        {
+            var cam_dir = cam_director_ref();
+            if (cam_dir == null) return true;
+            return cam_dir.applied_at(t);
         }
 
         // dof: the game's PrepareDofParam math — focal01 from the camera's
