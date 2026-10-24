@@ -791,17 +791,31 @@ namespace UV2.Live
                 // layers the game renders depthless.
                 film_mat.SetFloat("_DepthClip", s.depth_clip > 1f ? 0f : 1f - s.depth_clip);
                 // the 152.z zone gate and the IsWithoutDepth kill switch
-                // (164.x): IsEnableDepth is the key's 0x200000 attribute;
-                // without it the preamble zeroes the whole depthTerm chain.
+                // (164.x): the game publishes IsWithoutDepth = IsEnableDepth ?
+                // 0 : 1, and IsEnableDepth is a plain bool on the overlay
+                // whose only assignment is the constructor default TRUE
+                // (the game's own overlay class sets it and never clears
+                // it). the game's key data declares no depth-enable field,
+                // so the depth term never dies for a film layer. the old
+                // gate read an invented 0x200000 attribute bit and killed
+                // every film layer on every song, so every vignette-mode
+                // layer painted exactly zero. a layer with depthPower 0
+                // still paints zero because the layer term is
+                // mask * _DepthPower * G.
                 film_mat.SetFloat("_DepthClipZone", s.depth_clip > 1f ? 0f : 1f - s.depth_clip);
-                film_mat.SetFloat("_PostFilmIsWithoutDepth",
-                    (s.attribute_bits & 0x200000) != 0 ? 0f : 1f);
+                film_mat.SetFloat("_PostFilmIsWithoutDepth", 0f);
                 film_mat.SetVector("_PostFilmOffsetParam", new Vector4(s.offset_param.x, s.offset_param.y, 0, 0));
                 film_mat.SetVector("_PostFilmOptionParam", new Vector4(s.option_param.x, s.option_param.y, 0, 0));
                 film_mat.SetColor("_PostFilmColor0", s.color0);
                 film_mat.SetColor("_PostFilmColor1", s.color1);
                 film_mat.SetColor("_PostFilmColor2", s.color2);
                 film_mat.SetColor("_PostFilmColor3", s.color3);
+                // the key's colorType selects which authored colors the layer
+                // uses: 0 ColorAll (color0 alone), 1 Color2TopBottom,
+                // 2 Color2LeftRight, 3 Color4 (the four-corner ramp). the
+                // songs author color1..3 as black on colorType-0 keys, so
+                // ramping to them faded the layer to black.
+                film_mat.SetFloat("_PostFilmColorType", s.color_type);
                 // the game's packing (ScreenOverlayRender Render.Blit):
                 // roll = (sin, cos, width/height aspect, 1) and scale =
                 // (1/scale.x, 1/scale.y, 0, 0) reciprocals - the audit's
@@ -1045,7 +1059,13 @@ namespace UV2.Live
             // radial approximation smears the whole frame (the game's real
             // shafts composite 4 beam-geometry RTs, not a scene blur). the
             // pass stays behind UV2_POSTFX_MASK=s for the geometry route.
-            System.Environment.GetEnvironmentVariable("UV2_POSTFX_MASK") ?? "bdfltgcor";
+            // the whole chain is off by default (10-24): the official-video
+            // frame comparison needs the raw render, because the post chain
+            // changes the exposure and the bloom far more than it changes
+            // the content, and a brightness delta against the official frame
+            // says nothing about the pose or the camera. the chain comes
+            // back one letter at a time behind UV2_POSTFX_MASK.
+            System.Environment.GetEnvironmentVariable("UV2_POSTFX_MASK") ?? "";
 
         // ab-test switch for the snapshot pairs: the director's snap hook
         // raises this for one frame so the same song point renders raw
