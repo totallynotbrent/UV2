@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - "v*"
-    branches:
-      - "experimental"
   workflow_dispatch:
     inputs:
       release_tag:
