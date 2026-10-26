@@ -37,6 +37,9 @@ namespace UV2.App
                 RenderSettings.ambientIntensity = 0f;
                 RenderSettings.ambientLight = Color.black;
                 var cam_go = new GameObject("main_camera", typeof(Camera));
+                // the tag makes Camera.main resolve to the concert camera;
+                // the stage subsystems (mirror, lights) look it up that way.
+                cam_go.tag = "MainCamera";
                 var cam = cam_go.GetComponent<Camera>();
                 cam.depthTextureMode = UnityEngine.DepthTextureMode.Depth;
                 // urp skips the whole post chain unless the camera opts in.

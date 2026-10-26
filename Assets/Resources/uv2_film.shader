@@ -139,14 +139,17 @@ Shader "live/uv2_film"
                 fixed4 scene = tex2D(_MainTex, i.uv);
                 float m = mask(i.uv);
                 float dt = depth_term();
-                // the mask: the ps computes pre = dt * m, then
-                //   r0.y = (1 - m) * dt - pre
-                //   mask = inv * r0.y + pre
+                // the mask: the ps computes pre = dt * m (op 48), then
+                //   r0.y = (1 - m) * dt - pre     (op 49)
+                //   mask = inv * r0.y + pre       (op 50)
                 // so the normal variant paints dt*m (edges) and the
-                // inverse variant paints dt*(1-m) (centre).
+                // inverse variant paints dt*(1-m) (centre). the combine is
+                // a mad, not a lerp: lerp(pre, y, inv) drops the +pre term
+                // and yields dt*(1-2m) for the inverse variant, which goes
+                // negative past mid-radius and kills the centre fill.
                 float pre = dt * m;
-                float v = lerp(pre, dt * (1.0 - m) - pre,
-                               _PostFilmIsInverseVignette);
+                float y = dt * (1.0 - m) - pre;
+                float v = _PostFilmIsInverseVignette * y + pre;
                 // the layer scale: the ps multiplies the layer color by
                 // cb0[152].x = _DepthPower = key.depthPower, so a layer
                 // with depthPower 0 paints exactly zero.

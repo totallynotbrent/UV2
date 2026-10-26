@@ -124,7 +124,11 @@ namespace UV2.Live
                 if (chara_group_names.Contains(track.name))
                 {
                     cur_chara_color = c;
-                    cur_light_probe = c;
+                    // the game's chara ambient is the key colour times the
+                    // key's colourPower, multiplied across all four channels
+                    // before SetLightProbeColor. the chara shader multiplies
+                    // the whole final colour by it.
+                    cur_light_probe = new Color(c.r * power, c.g * power, c.b * power, c.a * power);
                     cur_toon_dark = lerp_color(cur.toon_dark_color, next?.toon_dark_color, blend);
                     cur_toon_bright = lerp_color(cur.toon_bright_color, next?.toon_bright_color, blend);
                     cur_outline_color = lerp_color(cur.outline_color, next?.outline_color, blend);

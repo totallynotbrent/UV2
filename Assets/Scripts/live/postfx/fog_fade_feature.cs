@@ -2,6 +2,7 @@ using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
+using UV2.App;
 
 namespace UV2.Live
 {
@@ -73,7 +74,7 @@ namespace UV2.Live
                 bool clarity_on = director.ball_blur_enabled && m.Contains("c");
 
                 if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on && !tilt_on && !grade_on
-                    && !radial_on && !lens_on && !clarity_on) return;
+                    && !radial_on && !lens_on && !clarity_on && !tonemap_on) return;
 
                 // blitting a target onto itself is undefined in urp: d3d unbinds
                 // the srv when the texture becomes the render target, so the
@@ -212,6 +213,12 @@ namespace UV2.Live
                 // step never runs the layers behind the mask's back (the
                 // grade-only step rendered byte-identical to the film-only
                 // step because these call sites tested film_valid directly).
+                // the layers run in the game's order (overlay 1, then 2 and
+                // 3); the worksheet decides which are valid, and at f2400
+                // that is film2 and film3 - film1's key reads power 0 there.
+                // every layer adds its authored colour weighted by the
+                // key's depthPower, so the sum belongs in an hdr buffer:
+                // the chain ends in the tone map below.
                 if (film_on && film_valid(director.film1_state))
                     apply_film(cmd, renderingData, director.film1_state, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
                 if (film_on && film_valid(director.film2_state))
@@ -286,6 +293,36 @@ namespace UV2.Live
                     }
                 }
 
+                // the chain ends in the tone map: the game renders the
+                // concert into an hdr buffer and compresses it once, so the
+                // additive film layers and the bloom keep their gradients
+                // instead of clipping to white.
+                if (tonemap_on)
+                {
+                    if (tonemap_mat == null)
+                    {
+                        var sh = Shader.Find("live/uv2_tonemap");
+                        if (sh != null) tonemap_mat = CoreUtils.CreateEngineMaterial(sh);
+                    }
+                    if (tonemap_mat != null && tonemap_mat.shader != null && tonemap_mat.shader.isSupported)
+                    {
+                        tonemap_mat.SetFloat("_Exposure", tonemap_exposure);
+                        if (tonemap_neutral) tonemap_mat.EnableKeyword("TONEMAP_NEUTRAL");
+                        else tonemap_mat.DisableKeyword("TONEMAP_NEUTRAL");
+                        cmd.Blit(cur, nxt, tonemap_mat, 0);
+                        cur = nxt; cur_is_color = false;
+                        nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
+                    }
+                    else if (tonemap_unsupported_logged != true)
+                    {
+                        // a shader the driver cannot compile draws unity's
+                        // magenta error quad, so the pass is skipped instead
+                        // of wiping the frame.
+                        tonemap_unsupported_logged = true;
+                        trace_log.write($"postfx: tone map skipped, shader unsupported (found={Shader.Find("live/uv2_tonemap") != null})");
+                    }
+                }
+
                 if (!cur_is_color)
                     cmd.Blit(cur, color);
 
@@ -345,6 +382,8 @@ namespace UV2.Live
             private int bloom_blurv_pass = 3;
             private int bloom_comp_pass = 0;
             private Material chroma_mat;
+            private Material tonemap_mat;
+            private bool tonemap_unsupported_logged;
             private Material ballblur_mat;
             private RenderTexture dof_rt_a;
             private RenderTexture dof_rt_b;
@@ -1115,6 +1154,34 @@ namespace UV2.Live
             // says nothing about the pose or the camera. the chain comes
             // back one letter at a time behind UV2_POSTFX_MASK.
             System.Environment.GetEnvironmentVariable("UV2_POSTFX_MASK") ?? "";
+
+        // the tone map closes the chain for every frame: the game renders
+        // the concert into an hdr buffer and compresses it once at the end
+        // of its post chain, so the additive film layers and the bloom keep
+        // their gradients instead of clipping to white. UV2_TONEMAP=0 turns
+        // it off for the raw-render benches.
+        public static bool tonemap_on =
+            (System.Environment.GetEnvironmentVariable("UV2_TONEMAP") ?? "1") != "0";
+
+        // the exposure in front of the tone map; UV2_EXPOSURE calibrates it
+        // against the official frames. 0.6 puts the floor band and the
+        // overall mean on the official's numbers at song 1004 f2400
+        // (floor 0.21/0.31/0.48 against the official's 0.17/0.34/0.49).
+        public static float tonemap_exposure = read_float("UV2_EXPOSURE", 0.6f);
+
+        // the tone curve: unity's neutral fit by default, the aces fit when
+        // UV2_TONEMAP_CURVE=aces. the official keeps its blacks black and
+        // its hues intact; the aces fit lifts and desaturates the shadows.
+        public static bool tonemap_neutral =
+            (System.Environment.GetEnvironmentVariable("UV2_TONEMAP_CURVE") ?? "neutral") != "aces";
+
+        private static float read_float(string name, float fallback)
+        {
+            var raw = System.Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrEmpty(raw)) return fallback;
+            return float.TryParse(raw, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float v) && v > 0f ? v : fallback;
+        }
 
         // ab-test switch for the snapshot pairs: the director's snap hook
         // raises this for one frame so the same song point renders raw

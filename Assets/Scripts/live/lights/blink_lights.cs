@@ -31,6 +31,7 @@ namespace UV2.Live
             public List<Renderer> renderers = new();
             public List<Light> lights = new();
             public MaterialPropertyBlock mpb;
+            public List<Material> materials = new();
 
             // per-slot renderers/lights resolved from light<N>_ child names.
             public Dictionary<int, slot_group> slot_renderers = new();
@@ -177,6 +178,7 @@ namespace UV2.Live
             foreach (var track in blink_tracks)
             {
                 if (!containers.TryGetValue(track.name, out var c) || c == null) continue;
+                apply_render_queues(c);
 
                 // find the current key: the last key whose frame <= now,
                 // blended toward the next when the game interpolates.
@@ -190,6 +192,12 @@ namespace UV2.Live
                 float local = Mathf.Max(0f, time_sec - cur_anchor.time);
                 int slot_count = track.slot_count;
                 if (slot_count <= 0) continue;
+                // the game's container count is the FIXTURE count (the
+                // highest resolvable light<N>_ index plus one), not the
+                // authored array length: the worksheets ship ten array
+                // slots per key while a rig has three fixtures, and the
+                // chase envelopes step over the fixtures that exist.
+                if (c.slot_renderers.Count > 0) slot_count = c.slot_renderers.Count;
 
                 float power_scale = 1f;
                 if (film_coupling.TryGetValue(track.name, out var film_power) && film_power > 0f)
@@ -206,11 +214,7 @@ namespace UV2.Live
                         var (power, color) = sample_slot(track, cur, local, slot, slot_count);
                         float p = Mathf.Max(0f, power) * power_scale;
                         var g = kv.Value;
-                        g.mpb.SetColor(id_mul_color0, color);
-                        g.mpb.SetColor(id_mul_color1, color);
-                        g.mpb.SetFloat(id_color_power, p);
-                        g.mpb.SetColor(id_emission_color, color);
-                        g.mpb.SetFloat(id_emission_power, p);
+                        publish_slot_color(g.mpb, color, p);
                         foreach (var r in g.renderers) r.SetPropertyBlock(g.mpb);
                         foreach (var l in g.lights)
                         {
@@ -230,8 +234,34 @@ namespace UV2.Live
                     if (!_last_traced_key.TryGetValue(track.name, out var last_k) || last_k != cur.frame)
                     {
                         _last_traced_key[track.name] = cur.frame;
-                        var ct = sample_slot(track, cur, local, 0, slot_count);
-                        trace_log.write($"blink key: '{track.name}' f{cur.frame} slot0 p{ct.Item1:0.00} rgb({ct.Item2.r:0.00},{ct.Item2.g:0.00},{ct.Item2.b:0.00})");
+                        // every slot, with its published state and how many
+                        // renderers carry it: a rig that publishes but never
+                        // shows up is distinguishable from one that never
+                        // publishes.
+                        var parts = new System.Text.StringBuilder();
+                        var cam = Camera.main;
+                        for (int s = 0; s < slot_count; s++)
+                        {
+                            var st = sample_slot(track, cur, local, s, slot_count);
+                            c.slot_renderers.TryGetValue(s, out var sg);
+                            int rc = sg != null ? sg.renderers.Count : 0;
+                            int lc = sg != null ? sg.lights.Count : 0;
+                            string view = "";
+                            if (sg != null && sg.renderers.Count > 0)
+                            {
+                                var r0 = sg.renderers[0];
+                                if (r0 != null)
+                                {
+                                    bool in_view = false;
+                                    if (cam != null)
+                                        in_view = GeometryUtility.TestPlanesAABB(
+                                            GeometryUtility.CalculateFrustumPlanes(cam), r0.bounds);
+                                    view = $"[{r0.gameObject.name} en{(r0.enabled ? 1 : 0)} ac{(r0.gameObject.activeInHierarchy ? 1 : 0)} fw{(in_view ? 1 : 0)}]";
+                                }
+                            }
+                            parts.Append($" [{s}]p{st.Item1:0.00}r{st.Item2.r:0.00}g{st.Item2.g:0.00}b{st.Item2.b:0.00}m{rc}l{lc}{view}");
+                        }
+                        trace_log.write($"blink key: '{track.name}' f{cur.frame}{parts}");
                     }
                     continue;
                 }
@@ -241,11 +271,7 @@ namespace UV2.Live
                 var (cpower, ccolor) = sample_slot(track, cur, local, 0, slot_count);
                 float cp = Mathf.Max(0f, cpower) * power_scale;
                 if (c.mpb == null) c.mpb = new MaterialPropertyBlock();
-                c.mpb.SetColor(id_mul_color0, ccolor);
-                c.mpb.SetColor(id_mul_color1, ccolor);
-                c.mpb.SetFloat(id_color_power, cp);
-                c.mpb.SetColor(id_emission_color, ccolor);
-                c.mpb.SetFloat(id_emission_power, cp);
+                publish_slot_color(c.mpb, ccolor, cp);
                 foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
                 foreach (var l in c.lights)
                 {
@@ -449,11 +475,68 @@ namespace UV2.Live
             return i < arr.Count ? arr[i] : arr[arr.Count - 1];
         }
 
-        private static readonly int id_emission_power = Shader.PropertyToID("_EmissionPower");
-        private static readonly int id_emission_color = Shader.PropertyToID("_EmissionColor");
+        private static readonly int id_blink_light_color = Shader.PropertyToID("_BlinkLightColor");
         private static readonly int id_mul_color0 = Shader.PropertyToID("_MulColor0");
-        private static readonly int id_mul_color1 = Shader.PropertyToID("_MulColor1");
-        private static readonly int id_color_power = Shader.PropertyToID("_ColorPower");
+
+        // the game's BlinkLightController sets each fixture material's render
+        // queue from the shader's last path segment: base 3100 plus the table
+        // value (decode: uv2_live10112_blink_rig_decoded.md B.6).
+        private static readonly Dictionary<string, int> render_queue_table = new()
+        {
+            { "LightBlend", 0 },
+            { "LightBlink", 10 },
+            { "LightBlinkSimple", 11 },
+            { "LightBlinkBlend", 12 },
+            { "StageLightBlinkCutoff", 13 },
+            { "StageLightBlinkFadeout", 14 },
+            { "StageBeamLight", 20 },
+            { "StageBeamLightCutoff", 21 },
+            { "StageBeamLightFadeout", 22 },
+        };
+
+        private static void apply_render_queues(blink_container c)
+        {
+            if (c == null) return;
+            if (c.materials.Count == 0)
+            {
+                foreach (var r in c.renderers)
+                {
+                    if (r == null) continue;
+                    var mats = r.sharedMaterials;
+                    for (int i = 0; i < mats.Length; i++)
+                    {
+                        var m = mats[i];
+                        if (m != null && !c.materials.Contains(m)) c.materials.Add(m);
+                    }
+                }
+            }
+
+            foreach (var m in c.materials)
+            {
+                if (m == null) continue;
+                var sh = m.shader;
+                if (sh == null) continue;
+                string full = sh.name;
+                if (string.IsNullOrEmpty(full)) continue;
+                int slash = full.LastIndexOf('/');
+                string tail = slash >= 0 ? full.Substring(slash + 1) : full;
+                if (!render_queue_table.TryGetValue(tail, out int add)) continue;
+                int queue = 3100 + add;
+                if (m.renderQueue != queue) m.renderQueue = queue;
+            }
+        }
+
+        // the game's BlinkLightController publishes the authored colour times
+        // the slot's power as one full RGBA into _BlinkLightColor, alpha
+        // included, and never writes _ColorPower - the material keeps its
+        // serialized 1.0. _MulColor0 carries the same value on the game's
+        // flag path and is inert on the blink shader.
+        private static void publish_slot_color(MaterialPropertyBlock mpb, Color color, float power)
+        {
+            var rgba = new Color(color.r * power, color.g * power, color.b * power, color.a * power);
+            mpb.SetColor(id_blink_light_color, rgba);
+            mpb.SetColor(id_mul_color0, rgba);
+        }
     }
     // one worksheet blink container: name + the per-key model.
     [Serializable]

@@ -19,11 +19,13 @@ namespace UV2.Live
 
         // every stage material by asset name, for the uv scroll entries.
         private static readonly Dictionary<string, List<Material>> stage_materials = new();
+        private static readonly Dictionary<string, List<Renderer>> stage_renderers = new();
         private static readonly Dictionary<string, uv_target> uv_targets = new();
 
         private class uv_target
         {
             public List<Material> materials = new();
+            public List<Renderer> renderers = new();
         }
 
         // records one loaded stage hierarchy's materials, safe to call repeatedly.
@@ -41,6 +43,9 @@ namespace UV2.Live
                     if (!stage_materials.TryGetValue(clean, out var list))
                         stage_materials[clean] = list = new List<Material>();
                     if (!list.Contains(m)) list.Add(m);
+                    if (!stage_renderers.TryGetValue(clean, out var rl))
+                        stage_renderers[clean] = rl = new List<Renderer>();
+                    if (!rl.Contains(r)) rl.Add(r);
                 }
             }
         }
@@ -49,6 +54,7 @@ namespace UV2.Live
         public static void reset()
         {
             stage_materials.Clear();
+            stage_renderers.Clear();
             uv_targets.Clear();
             _volume_entries = 0;
             _volume_enabled = 0;
@@ -91,6 +97,8 @@ namespace UV2.Live
                     continue;
                 }
                 uv_targets[t.name] = new uv_target { materials = mats };
+                if (stage_renderers.TryGetValue(t.name, out var rends))
+                    uv_targets[t.name].renderers.AddRange(rends);
                 resolved++;
                 string shader_name = mats.Count > 0 && mats[0] != null ? mats[0].shader.name : "?";
                 bool has_mul0 = mats.Count > 0 && mats[0] != null && mats[0].HasProperty(id_mul_color0);
@@ -173,6 +181,27 @@ namespace UV2.Live
                         last_probe_t = time_sec;
                         var readback = m.GetColor(id_mul_color0);
                         trace_log.write($"uvscroll probe '{t.name}' mulColor0=({readback.r:0.00},{readback.g:0.00},{readback.b:0.00}) power={m.GetFloat(id_color_power):0.00} off={scrolled.x:0.00}");
+                        // where the beam quads actually are: a beam that is
+                        // off-frame or degenerate cannot show up in the frame
+                        // no matter what the colours say.
+                        if (target.renderers.Count > 0)
+                        {
+                            var rr = target.renderers[0];
+                            if (rr != null)
+                            {
+                                var cam = Camera.main;
+                                bool in_view = false;
+                                if (cam != null)
+                                    in_view = GeometryUtility.TestPlanesAABB(
+                                        GeometryUtility.CalculateFrustumPlanes(cam), rr.bounds);
+                                var bc = rr.bounds.center;
+                                var bs = rr.bounds.size;
+                                int verts = 0;
+                                var mf = rr.GetComponent<MeshFilter>();
+                                if (mf != null && mf.sharedMesh != null) verts = mf.sharedMesh.vertexCount;
+                                trace_log.write($"uvscroll geo '{t.name}' '{rr.gameObject.name}' en={rr.enabled} act={rr.gameObject.activeInHierarchy} view={in_view} c=({bc.x:0.0},{bc.y:0.0},{bc.z:0.0}) s=({bs.x:0.0},{bs.y:0.0},{bs.z:0.0}) verts={verts}");
+                            }
+                        }
                     }
                 }
             }

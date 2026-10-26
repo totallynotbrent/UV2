@@ -137,6 +137,52 @@ namespace UV2.Live
                     blink_light_name = k.BlinkLightName,
                 }).ToList();
 
+            // environment: the concert's mirror block, one group per name.
+            ws.environments = (sheet.environmentDataLists ?? new())
+                .Select(g => new environment_track
+                {
+                    name = g.name,
+                    keys = (g.keys?.thisList ?? new()).Select(k => new environment_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        is_valid_mirror = k.isValidMirror,
+                        is_mirror = k.isMirror,
+                        is_bg_mirror = k.isBgMirror,
+                        character_mirror = k.characterMirror,
+                        mirror_reflection_rate = k.mirrorReflectionRate,
+                        is_toon_mirror = k.IsToonMirror,
+                    }).ToList(),
+                })
+                .Where(t => t.keys.Count > 0)
+                .ToList();
+
+            // objectList: the named stage props the song moves and shows.
+            ws.stage_objects = (sheet.objectList ?? new())
+                .Select(o => new object_track
+                {
+                    name = o.name,
+                    enable_position = o.enablePosition,
+                    enable_rotate = o.enableRotate,
+                    enable_scale = o.enableScale,
+                    keys = (o.keys?.thisList ?? new()).Select(k => new object_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        position = k.position,
+                        rotate = k.rotate,
+                        scale = k.scale,
+                        render_enable = k.renderEnable,
+                        attach_target = k.AttachTarget,
+                        character_position = k.CharacterPosition,
+                        offset_value_type = k.OffsetValueType,
+                    }).ToList(),
+                })
+                .Where(t => t.keys.Count > 0)
+                .ToList();
+
             // bgColor1: the ambient + chara tint track, one entry per named group.
             ws.bg_color1 = (sheet.bgColor1List ?? new())
                 .Select(g => new bg_color1_track

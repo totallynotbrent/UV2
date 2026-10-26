@@ -158,6 +158,19 @@ namespace UV2.Live
             return false;
         }
 
+        // the mirror is only usable once it has its reflection camera and
+        // texture; the stage can be assembled before the concert camera
+        // exists, so callers retry the configuration until it sticks.
+        public bool is_configured => _is_initialized;
+
+        public bool ensure_configured(Camera base_camera)
+        {
+            if (_is_initialized) return true;
+            if (base_camera == null) return false;
+            ConfigureFor(base_camera);
+            return _is_initialized;
+        }
+
         // configures the mirror once both a base camera and a renderer exist.
         public void ConfigureFor(Camera base_camera)
         {
@@ -176,7 +189,9 @@ namespace UV2.Live
             UpdateRenderTexture();
             UpdateMirrorTexture();
             UpdateMirrorParams();
-            SetReflectionRate(1f);
+            // the environment track publishes the authored mirror state; the
+            // floor starts dark until the song enables the mirror.
+            SetReflectionRate(0f);
             _is_initialized = true;
             Debug.Log($"uv2 mirror '{name}' initialized");
         }
@@ -316,6 +331,16 @@ namespace UV2.Live
         {
             _mirror_reflection_rate = rate;
             ApplyMaterialParams();
+        }
+
+        // the authored mirror state from the environment track: the mirror
+        // renders only while the song enables it and blends at the authored
+        // rate (0.27 to 0.51 across 1004). the fork published a hardcoded
+        // 1.0, which drove the floor's reflection to full white.
+        public void set_authored_mirror(bool enabled, float rate)
+        {
+            _is_enabled = enabled;
+            SetReflectionRate(enabled ? Mathf.Clamp01(rate) : 0f);
         }
 
         private void ApplyMaterialParams()

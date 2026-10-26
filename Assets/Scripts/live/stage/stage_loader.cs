@@ -39,6 +39,8 @@ namespace UV2.Live
         private camera_director director;
         private formation_driver formation;
         private bg_color1_director bg_color1;
+        private environment_director environment;
+        private object_director stage_objects;
         // parked at stage instantiation; the bg_color1 director binds it
         // in wire_drivers (the stage phase runs before the director exists).
         private Transform _stage_instance_root;
@@ -240,6 +242,31 @@ namespace UV2.Live
                 {
                     if (m == null) { mats.Append(" null"); continue; }
                     mats.Append(" ").Append(m.name).Append("[").Append(m.shader != null ? m.shader.name : "NULLSHADER").Append("]");
+                    // the base texture tells bound-but-white apart from
+                    // missing: a shader with no _MainTex assigned draws its
+                    // white default over the whole surface.
+                    if (m.HasProperty("_MainTex"))
+                    {
+                        var tex = m.GetTexture("_MainTex");
+                        mats.Append("{main=").Append(tex != null ? tex.name : "NONE").Append("}");
+                    }
+                    if (m.HasProperty("_Color"))
+                    {
+                        var col = m.GetColor("_Color");
+                        mats.Append("{col=").Append(col.r.ToString("0.00")).Append(",").Append(col.g.ToString("0.00")).Append(",").Append(col.b.ToString("0.00")).Append("}");
+                    }
+                    // the mirror floor shades from its distortion map and
+                    // mask, not from a base texture, so their presence is
+                    // logged too: a floor without them draws as flat white.
+                    foreach (var tex_prop in new[] { "_DistMap", "_MaskTex", "_ReflectionTex" })
+                    {
+                        if (!m.HasProperty(tex_prop)) continue;
+                        var tex = m.GetTexture(tex_prop);
+                        mats.Append('{').Append(tex_prop.Substring(1)).Append('=')
+                            .Append(tex != null ? tex.name : "NONE").Append('}');
+                    }
+                    if (m.HasProperty("_ReflectionRate"))
+                        mats.Append("{rate=").Append(m.GetFloat("_ReflectionRate").ToString("0.000")).Append('}');
                 }
                 trace_log.write($"render probe '{r.gameObject.name}' layer={r.gameObject.layer} enabled={r.enabled} active={r.gameObject.activeInHierarchy} frustum={in_frustum} mats={mats.ToString().Trim()}");
             }
@@ -1548,6 +1575,19 @@ namespace UV2.Live
             // stage_geometry (the game's ShaderParamObject hierarchy).
             var geo = GameObject.Find("stage_geometry");
             bg_color1.bind_stage(_stage_instance_root, geo != null ? geo.transform : null);
+
+            // the environment track publishes the authored mirror state, and
+            // the object list moves and shows the named stage props.
+            var env_go = new GameObject("environment_director");
+            environment = env_go.AddComponent<environment_director>();
+            environment.open(ws);
+            var obj_go = new GameObject("object_director");
+            stage_objects = obj_go.AddComponent<object_director>();
+            stage_objects.open(ws, new List<Transform>
+            {
+                _stage_instance_root,
+                geo != null ? geo.transform : null,
+            });
             var spring_sims = new Dictionary<int, spring_sim>(chara_springs);
             formation.open(ws, clock, chara_roots, spring_sims);
             foreach (var kv in chara_springs_roots) formation.root_chara[kv.Key] = kv.Value;
@@ -1784,6 +1824,11 @@ namespace UV2.Live
 
             // foot lights run after the pose so they track the characters exactly.
             diag_pass("foot", () => foot_light.update(clock?.time ?? 0f, ws?.foot_light, chara_roots));
+
+            // the environment track drives the floor mirror and the object
+            // list drives the named stage props; both read the song clock.
+            diag_pass("environment", () => environment?.update(clock?.time ?? 0f));
+            diag_pass("objects", () => stage_objects?.update(clock?.time ?? 0f));
 
             // the props pass runs after the pose so the hand ik lands correctly.
             diag_pass("props", () =>

@@ -292,6 +292,54 @@ namespace UV2.Live
         public List<audience_key> keys = new();
     }
 
+    // one environment key: the concert's mirror state for the frame.
+    // son1004_full_data.json, environmentDataLists["Environment"]:
+    // isValidMirror gates the block, isMirror turns the floor mirror on,
+    // mirrorReflectionRate is the authored blend rate and characterMirror
+    // is the per-slot bitmask of mirrored characters.
+    [Serializable]
+    public class environment_key : live_key
+    {
+        public byte is_valid_mirror;
+        public byte is_mirror;
+        public byte is_bg_mirror;
+        public int character_mirror;
+        public float mirror_reflection_rate;
+        public byte is_toon_mirror;
+    }
+
+    // one environment group: the game ships a single "Environment" group.
+    [Serializable]
+    public class environment_track
+    {
+        public string name = "";
+        public List<environment_key> keys = new();
+    }
+
+    // one stage-object key: a named prop's transform and render state.
+    [Serializable]
+    public class object_key : live_key
+    {
+        public Vector3 position;
+        public Vector3 rotate;
+        public Vector3 scale = Vector3.one;
+        public byte render_enable;
+        public int attach_target;
+        public int character_position;
+        public int offset_value_type;
+    }
+
+    // one stage-object track: the prop name plus the per-axis enable flags.
+    [Serializable]
+    public class object_track
+    {
+        public string name = "";
+        public byte enable_position;
+        public byte enable_rotate;
+        public byte enable_scale;
+        public List<object_key> keys = new();
+    }
+
     public class live_worksheet
     {
         public List<blink_track_container> blink_tracks = new();
@@ -307,6 +355,8 @@ namespace UV2.Live
         public List<additional_track_container> additional_tracks = new();
         public string song_id;
         public List<global_light_key> global_light = new();
+        public List<environment_track> environments = new();
+        public List<object_track> stage_objects = new();
         public List<bg_color1_track> bg_color1 = new();
         public List<camera_pos_key> camera_pos = new();
         public List<camera_lookat_key> camera_lookat = new();

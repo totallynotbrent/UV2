@@ -282,7 +282,18 @@ namespace UV2.Live
             Shader.SetGlobalColor(id_lightmap_add, new Color(add_rgb.x, add_rgb.y, add_rgb.z, 1f));
             Shader.SetGlobalColor(id_lightmap_modulate, new Color(mod_rgb.x, mod_rgb.y, mod_rgb.z, 1f));
 
-            Shader.SetGlobalColor(id_rim_color, Color.white);
+            // the global rim tint is the authored one: the worksheet's
+            // global-light track carries rimColor per key (song 1004 f2400 =
+            // 0.354/0.587/1.0), so a constant white rim is a washed-out
+            // cast. chara renderers override it with their own _RimColor.
+            Color rim_global = Color.white;
+            if (_light_key != null)
+            {
+                Color rim_next = _light_next != null ? _light_next.rim_color : _light_key.rim_color;
+                float rim_blend = _light_next != null ? _light_blend : 0f;
+                rim_global = lerp_c(_light_key.rim_color, rim_next, rim_blend);
+            }
+            Shader.SetGlobalColor(id_rim_color, rim_global);
             Shader.SetGlobalVector(id_toon_color, new Vector4(1f, 1f, 1f, 1f));
             Shader.SetGlobalFloat(id_outline_width, 1.0f);
             Shader.SetGlobalFloat(id_outline_offset, 1.0f);
