@@ -121,6 +121,7 @@ namespace UV2.Live
             float t = clock.time;
 
             eval_bloom(t);
+            eval_exposure(t);
             fog_state = eval_fog(t);
             fog_enabled = fog_state != null;
             fade_color = eval_fade(t);
@@ -375,6 +376,39 @@ namespace UV2.Live
 
         // whether the current bloom key enables the diffusion sub-chain.
         [HideInInspector] public bool bloom_diffusion_enabled;
+
+        // the exposure effect's authored state. the song's ExposureKeys
+        // track carries Gain, Lift and DepthMask per key; with no authored
+        // keys the game runs the effect off, so the tone map stays at
+        // identity instead of a fitted constant.
+        [HideInInspector] public float exposure_gain = 1f;
+        [HideInInspector] public float exposure_lift;
+        [HideInInspector] public bool exposure_valid;
+
+        private void eval_exposure(float t)
+        {
+            if (ws.postfx.exposure.Count == 0)
+            {
+                exposure_valid = false;
+                exposure_gain = 1f;
+                exposure_lift = 0f;
+                return;
+            }
+            int i = key_eval.bracket(ws.postfx.exposure, t);
+            if (i < 0) { exposure_valid = false; exposure_gain = 1f; return; }
+            var cur = ws.postfx.exposure[i];
+            var next = i + 1 < ws.postfx.exposure.Count ? ws.postfx.exposure[i + 1] : null;
+            float gain = cur.gain, lift = cur.lift;
+            if (next != null && next.interpolate_type != 0)
+            {
+                float k = key_eval.interp(cur, next, t);
+                gain = key_eval.lerp_f(cur.gain, next.gain, k);
+                lift = key_eval.lerp_f(cur.lift, next.lift, k);
+            }
+            exposure_gain = gain;
+            exposure_lift = lift;
+            exposure_valid = cur.is_enable != 0;
+        }
 
         // chromatic aberration state (the fork: clamp01(power*0.05)).
         [HideInInspector] public bool chromatic_enabled;

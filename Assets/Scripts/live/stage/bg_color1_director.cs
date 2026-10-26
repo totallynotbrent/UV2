@@ -41,6 +41,10 @@ namespace UV2.Live
         private MaterialPropertyBlock mpb;
         private float last_logged = -1f;
 
+        // one-shot probe per tinted part group.
+        private readonly HashSet<string> _part_probe_done = new();
+        private int _last_probe_second = -1;
+
         // per-group resolved renderer sets (the game resolves by FNV-1 hash of
         // the object/unit name, never substring: uv2_bgcolor1_resolution_decoded.md).
         private readonly Dictionary<string, List<Renderer>> part_sets = new();
@@ -155,7 +159,12 @@ namespace UV2.Live
                     // block is cached, else the instance material. the fast
                     // path's _AmbientColor (0x99) global publish stays.
                     // (uv2_bgcolor1_resolution_decoded.md §3.3)
-                    mpb.SetColor(id_mul_color0, tint);
+                    // the colour and the power are separate values here too
+                    // (StageController.ApplyOrdaryBgColor2): putting the
+                    // power into the colour as well dimmed every tinted
+                    // stage part - the smoke plumes above all - by the
+                    // square of its power.
+                    mpb.SetColor(id_mul_color0, c);
                     mpb.SetFloat(id_color_power, power);
                     foreach (var r in renderers)
                     {
@@ -163,10 +172,39 @@ namespace UV2.Live
                         try { r.SetPropertyBlock(mpb); }
                         catch { /* destroyed mid-shutdown */ }
                     }
+                    if (!_part_probe_done.Contains(track.name))
+                    {
+                        _part_probe_done.Add(track.name);
+                        var pr = renderers[0];
+                        var pm = pr != null && pr.sharedMaterial != null ? pr.sharedMaterial : null;
+                        trace_log.write($"bg_color1: {track.name} tint ({c.r:0.00},{c.g:0.00},{c.b:0.00}) " +
+                            $"power {power:0.00} renderers {renderers.Count}" +
+                            (pm != null ? $" shader {pm.shader.name} queue {pm.renderQueue}" +
+                                $" blend ({pm.GetFloat("_SrcBlend"):0},{pm.GetFloat("_DstBlend"):0})" +
+                                $" color ({pm.GetColor("_Color").r:0.00},{pm.GetColor("_Color").g:0.00},{pm.GetColor("_Color").b:0.00})" +
+                                $" enabled {pr.enabled} active {pr.gameObject.activeInHierarchy}" +
+                                $" pos ({pr.transform.position.x:0.0},{pr.transform.position.y:0.0},{pr.transform.position.z:0.0})"
+                                        : " material null"));
+                    }
                 }
             }
 
             if (chara_dirty) apply_chara_block();
+
+            // one-second probe of the values the game publishes for the
+            // scene: the backlight tint, the character light probe and the
+            // ambient the shader globals carry. the rig seeks to a frame
+            // and snaps, so the last probe before the snap is the frame's.
+            int probe_second = (int)(song_time);
+            if (probe_second != _last_probe_second)
+            {
+                _last_probe_second = probe_second;
+                trace_log.write($"bg_color1 probe t{song_time:0.00}s bgbl tint ({cur_bgbl_tint.r:0.00}," +
+                    $"{cur_bgbl_tint.g:0.00},{cur_bgbl_tint.b:0.00}) chara probe ({cur_light_probe.r:0.00}," +
+                    $"{cur_light_probe.g:0.00},{cur_light_probe.b:0.00}) chara color ({cur_chara_color.r:0.00}," +
+                    $"{cur_chara_color.g:0.00},{cur_chara_color.b:0.00}) ambient global ({last_tint.r:0.00}," +
+                    $"{last_tint.g:0.00},{last_tint.b:0.00})");
+            }
 
             // the BgBL publish: per-renderer _AmbientColor over the cached
             // property-matched set, exactly the game's fast path. the game

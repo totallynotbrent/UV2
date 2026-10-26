@@ -28,6 +28,19 @@ with lip sync.
 `Config.json` is generated on first run and points at the game's
 `umamusume_Data/Persistent` folder if the default is wrong.
 
+The post chain follows the song: every stage the song authors runs on its own
+timeline keys, so a concert arrives with the bloom, depth of field, film
+gradients, tilt shift, colour grade, radial blur, chromatic aberration and
+fades the official plays. `UV2_POSTFX_MASK` overrides that for inspection: a
+letter forces its stage on (`f` film, `s` shafts, `b` bloom, `d` depth of
+field, `g` grade, `t` tilt shift, `c` clarity, `r` radial blur, `l` lens,
+`o` fog and fade), `-x` forces it off, and a leading `^` keeps only the
+listed stages. The sun shafts stay opt-in because the game composites four
+beam geometry buffers and the screen-space stand-in cannot match them yet.
+`UV2_TONEMAP=0` drops the tone map. The tone curve follows the song's own
+grade keys, and the exposure follows its `ExposureKeys` track, which most
+songs leave empty, so the default exposure is 1.
+
 ## Project structure
 
 ```

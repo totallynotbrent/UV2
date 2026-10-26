@@ -26,6 +26,7 @@ namespace UV2.Live
         private live_worksheet ws;
         private readonly List<target> targets = new();
         private readonly List<Transform> roots = new();
+        private readonly HashSet<string> _pose_logged = new();
         private int last_visible = -1;
 
         public void open(live_worksheet worksheet, List<Transform> root_list)
@@ -142,6 +143,19 @@ namespace UV2.Live
                     }
                 }
                 if (show) visible++;
+
+                // the authored pose has to land on the prop or the song's
+                // staging never happens; one trace per track makes that
+                // visible instead of guessed.
+                if (!_pose_logged.Contains(tgt.track.name))
+                {
+                    _pose_logged.Add(tgt.track.name);
+                    trace_log.write($"objects: '{tgt.track.name}' enable p{tgt.track.enable_position} " +
+                                     $"r{tgt.track.enable_rotate} s{tgt.track.enable_scale} " +
+                                     $"key pos ({cur.position.x:0.00},{cur.position.y:0.00},{cur.position.z:0.00}) " +
+                                     $"base ({tgt.base_position.x:0.00},{tgt.base_position.y:0.00},{tgt.base_position.z:0.00}) " +
+                                     $"world ({tr.position.x:0.00},{tr.position.y:0.00},{tr.position.z:0.00})");
+                }
             }
             if (visible != last_visible)
             {

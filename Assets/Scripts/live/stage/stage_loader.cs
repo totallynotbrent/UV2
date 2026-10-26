@@ -41,6 +41,7 @@ namespace UV2.Live
         private bg_color1_director bg_color1;
         private environment_director environment;
         private object_director stage_objects;
+        private particle_playback particles;
         // parked at stage instantiation; the bg_color1 director binds it
         // in wire_drivers (the stage phase runs before the director exists).
         private Transform _stage_instance_root;
@@ -1588,6 +1589,17 @@ namespace UV2.Live
                 _stage_instance_root,
                 geo != null ? geo.transform : null,
             });
+
+            // the stage prefabs carry their own particle systems (the smoke
+            // plumes over the stage); the game starts them, so we start
+            // them too or the concert airs out empty.
+            var part_go = new GameObject("particle_playback");
+            particles = part_go.AddComponent<particle_playback>();
+            particles.bind(new List<Transform>
+            {
+                _stage_instance_root,
+                geo != null ? geo.transform : null,
+            });
             var spring_sims = new Dictionary<int, spring_sim>(chara_springs);
             formation.open(ws, clock, chara_roots, spring_sims);
             foreach (var kv in chara_springs_roots) formation.root_chara[kv.Key] = kv.Value;
@@ -1615,23 +1627,35 @@ namespace UV2.Live
         // samples the global-light track and hands the interpolated key to the shade publisher.
         private void update_light_track()
         {
-            if (ws == null || ws.global_light.Count == 0) return;
+            if (ws == null) return;
             float frame = clock?.time ?? 0f;
             frame *= 60f;
 
-            var keys = ws.global_light;
-            int last = keys.Count - 1;
-            if (frame <= keys[0].frame) { global_shade.set_light_track(keys[0], 0f); return; }
-            if (frame >= keys[last].frame) { global_shade.set_light_track(keys[last], 1f); return; }
+            // the game plays every eligible GlobalLight list in order and
+            // each one replaces the light wholesale, so the last list
+            // holding a key at this frame is the one that stands.
+            var lists = ws.global_light_lists != null && ws.global_light_lists.Count > 0
+                ? ws.global_light_lists
+                : (ws.global_light.Count > 0 ? new List<List<global_light_key>> { ws.global_light } : null);
+            if (lists == null) return;
 
-            for (int i = 0; i < last; i++)
+            for (int li = 0; li < lists.Count; li++)
             {
-                if (frame >= keys[i].frame && frame < keys[i + 1].frame)
+                var keys = lists[li];
+                if (keys == null || keys.Count == 0) continue;
+                int last = keys.Count - 1;
+                if (frame <= keys[0].frame) { global_shade.set_light_track(keys[0], 0f); continue; }
+                if (frame >= keys[last].frame) { global_shade.set_light_track(keys[last], 1f); continue; }
+
+                for (int i = 0; i < last; i++)
                 {
-                    float span = keys[i + 1].frame - keys[i].frame;
-                    float blend = span <= 0 ? 0f : (frame - keys[i].frame) / span;
-                    global_shade.set_light_track(keys[i], keys[i + 1], blend);
-                    return;
+                    if (frame >= keys[i].frame && frame < keys[i + 1].frame)
+                    {
+                        float span = keys[i + 1].frame - keys[i].frame;
+                        float blend = span <= 0 ? 0f : (frame - keys[i].frame) / span;
+                        global_shade.set_light_track(keys[i], keys[i + 1], blend);
+                        break;
+                    }
                 }
             }
         }
@@ -1829,6 +1853,10 @@ namespace UV2.Live
             // list drives the named stage props; both read the song clock.
             diag_pass("environment", () => environment?.update(clock?.time ?? 0f));
             diag_pass("objects", () => stage_objects?.update(clock?.time ?? 0f));
+
+            // the stage's authored particle systems run on the same clock,
+            // so a scrub restarts them instead of leaving stale motes.
+            diag_pass("particles", () => particles?.update(clock?.time ?? 0f));
 
             // the props pass runs after the pose so the hand ik lands correctly.
             diag_pass("props", () =>

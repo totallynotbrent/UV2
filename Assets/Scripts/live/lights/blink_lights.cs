@@ -85,6 +85,15 @@ namespace UV2.Live
                 var c = new blink_container { root = go.transform, mpb = new MaterialPropertyBlock() };
                 foreach (var r in go.GetComponentsInChildren<Renderer>(true)) c.renderers.Add(r);
                 foreach (var l in go.GetComponentsInChildren<Light>(true)) c.lights.Add(l);
+                foreach (var r in c.renderers)
+                {
+                    if (r == null) continue;
+                    foreach (var m in r.sharedMaterials)
+                    {
+                        if (m == null) continue;
+                        if (!c.materials.Contains(m)) c.materials.Add(m);
+                    }
+                }
 
                 // per-slot addressing: children named light<N>_ (or an ancestor
                 // with that name) own one slot each, like the game's fixture
@@ -115,6 +124,7 @@ namespace UV2.Live
 
                 containers[track.name] = c;
                 resolved++;
+                if (resolved <= 2) probe_materials(track.name, c);
             }
             trace_log.write($"blink lights: {resolved} containers resolved, {missing.Count} missing stage units");
             foreach (var m in missing) trace_log.write($"blink light missing: {m}");
@@ -214,7 +224,7 @@ namespace UV2.Live
                         var (power, color) = sample_slot(track, cur, local, slot, slot_count);
                         float p = Mathf.Max(0f, power) * power_scale;
                         var g = kv.Value;
-                        publish_slot_color(g.mpb, color, p);
+                        publish_slot_color(g.mpb, color, p, time_sec);
                         foreach (var r in g.renderers) r.SetPropertyBlock(g.mpb);
                         foreach (var l in g.lights)
                         {
@@ -234,6 +244,12 @@ namespace UV2.Live
                     if (!_last_traced_key.TryGetValue(track.name, out var last_k) || last_k != cur.frame)
                     {
                         _last_traced_key[track.name] = cur.frame;
+
+                        // the blend state follows the key's authored
+                        // LightBlendMode: the fixture materials serialize a
+                        // zero/zero blend, so without this every fixture
+                        // blends to black.
+                        apply_blend(c, cur.light_blend_mode);
                         // every slot, with its published state and how many
                         // renderers carry it: a rig that publishes but never
                         // shows up is distinguishable from one that never
@@ -268,10 +284,11 @@ namespace UV2.Live
 
                 // fallback container-level publish (slot 0's state) for roots
                 // whose stage assets carry no light<N>_ children.
+                apply_blend(c, cur.light_blend_mode);
                 var (cpower, ccolor) = sample_slot(track, cur, local, 0, slot_count);
                 float cp = Mathf.Max(0f, cpower) * power_scale;
                 if (c.mpb == null) c.mpb = new MaterialPropertyBlock();
-                publish_slot_color(c.mpb, ccolor, cp);
+                publish_slot_color(c.mpb, ccolor, cp, time_sec);
                 foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
                 foreach (var l in c.lights)
                 {
@@ -531,12 +548,87 @@ namespace UV2.Live
         // included, and never writes _ColorPower - the material keeps its
         // serialized 1.0. _MulColor0 carries the same value on the game's
         // flag path and is inert on the blink shader.
-        private static void publish_slot_color(MaterialPropertyBlock mpb, Color color, float power)
+        // the game's LightBlendMode table (LiveDefine): the blend state the
+        // official re-asserts on the fixture material every frame.
+        private static void apply_blend(blink_container c, int mode)
         {
-            var rgba = new Color(color.r * power, color.g * power, color.b * power, color.a * power);
-            mpb.SetColor(id_blink_light_color, rgba);
-            mpb.SetColor(id_mul_color0, rgba);
+            if (c == null || c.materials == null) return;
+            var (src, dst) = blend_pair(mode);
+            foreach (var m in c.materials)
+            {
+                if (m == null) continue;
+                if (m.HasProperty(id_src_blend)) m.SetFloat(id_src_blend, (float)src);
+                if (m.HasProperty(id_dst_blend)) m.SetFloat(id_dst_blend, (float)dst);
+            }
         }
+
+        // the mode-to-blend pairs the game ships with.
+        private static (UnityEngine.Rendering.BlendMode, UnityEngine.Rendering.BlendMode) blend_pair(int mode)
+        {
+            switch (mode)
+            {
+                case 1: return (UnityEngine.Rendering.BlendMode.DstColor, UnityEngine.Rendering.BlendMode.One);
+                case 2: return (UnityEngine.Rendering.BlendMode.OneMinusDstColor, UnityEngine.Rendering.BlendMode.One);
+                case 3: return (UnityEngine.Rendering.BlendMode.SrcAlpha, UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                case 4: return (UnityEngine.Rendering.BlendMode.DstColor, UnityEngine.Rendering.BlendMode.Zero);
+                case 5: return (UnityEngine.Rendering.BlendMode.DstColor, UnityEngine.Rendering.BlendMode.SrcColor);
+                default: return (UnityEngine.Rendering.BlendMode.One, UnityEngine.Rendering.BlendMode.One);
+            }
+        }
+
+        private static readonly int id_src_blend = Shader.PropertyToID("_SrcBlend");
+        private static readonly int id_dst_blend = Shader.PropertyToID("_DstBlend");
+
+        // one-time probe of a blink container's materials: the serialized
+        // defaults decide whether the shader has anything to multiply.
+        private static void probe_materials(string owner, blink_container c)
+        {
+            if (c == null) return;
+            var seen = new HashSet<string>();
+            int n = 0;
+            foreach (var r in c.renderers)
+            {
+                if (r == null) continue;
+                var mats = r.sharedMaterials;
+                if (mats == null) continue;
+                foreach (var m in mats)
+                {
+                    if (m == null || !seen.Add(m.name)) continue;
+                    if (n++ >= 3) return;
+                    string sn = m.shader != null ? m.shader.name : "(none)";
+                    var bl = m.GetColor("_BlinkLightColor");
+                    trace_log.write($"blink mat '{owner}' '{m.name}' shader '{sn}' " +
+                                    $"blinkCol=({bl.r:0.00},{bl.g:0.00},{bl.b:0.00},{bl.a:0.00}) " +
+                                    $"colorPower={m.GetFloat("_ColorPower"):0.00} " +
+                                    $"normalCorr={m.GetFloat("_UseNormalCorrection"):0.00} " +
+                                    $"cutoff={m.GetFloat("_CutoffHeight"):0.00} " +
+                                    $"queue={m.renderQueue}");
+                }
+            }
+        }
+
+        // publishes the per-slot state to the game's own properties:
+        // the game's blink-simple contract (StageBlinkLightDriver.ApplyMpbToRen
+        // erer): the published colour carries no power and the shader scales it
+        // by _ColorPower, which is the slot power times the 1.1 emission boost.
+        // folding the power into the colour made every fixture dimmer than the
+        // official by the square of the power.
+        private static void publish_slot_color(MaterialPropertyBlock mpb, Color color, float power, float time_sec)
+        {
+            mpb.SetColor(id_blink_light_color, new Color(color.r, color.g, color.b, 1f));
+            mpb.SetFloat(id_color_power, power * emission_boost);
+            mpb.SetFloat(id_use_normal_correction, 0f);
+            mpb.SetColor(id_mul_color0, color);
+            mpb.SetColor(id_mul_color1, color);
+            mpb.SetFloat(id_app_time, time_sec);
+        }
+
+        private const float emission_boost = 1.1f;
+
+        private static readonly int id_color_power = Shader.PropertyToID("_ColorPower");
+        private static readonly int id_use_normal_correction = Shader.PropertyToID("_UseNormalCorrection");
+        private static readonly int id_mul_color1 = Shader.PropertyToID("_MulColor1");
+        private static readonly int id_app_time = Shader.PropertyToID("_AppTime");
     }
     // one worksheet blink container: name + the per-key model.
     [Serializable]

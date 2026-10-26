@@ -109,9 +109,14 @@ namespace UV2.Live
 
             // the fork processes only the entry NAMED GlobalLight (walker
             // 2456-2459); other-named lists are variation sheets it skips.
-            ws.global_light = (sheet.globalLightDataLists?.FirstOrDefault(g => g?.name == "GlobalLight")?.keys?.thisList
-                ?? sheet.globalLightDataLists?.FirstOrDefault()?.keys?.thisList ?? new())
-                .Select(k => new global_light_key
+            // every eligible GlobalLight list plays in order and each one
+            // overwrites the light wholesale, so the last list holding a key
+            // at the current frame is the one that stands (the game's own
+            // updater: LiveTimelineControl.AlterUpdate_GlobalLight).
+            var global_light_lists = (sheet.globalLightDataLists ?? new())
+                .Where(g => g != null && g.name == "GlobalLight")
+                .Where(g => (g.keys?._attribute ?? 0) == 0)
+                .Select(g => (g.keys?.thisList ?? new()).Select(k => new global_light_key
                 {
                     frame = k.frame,
                     attribute = k.attribute,
@@ -135,7 +140,11 @@ namespace UV2.Live
                     rim_horizon_offset2 = k.RimHorizonOffset2,
                     rim_vertical_offset2 = k.RimVerticalOffset2,
                     blink_light_name = k.BlinkLightName,
-                }).ToList();
+                }).ToList())
+                .Where(list => list.Count > 0)
+                .ToList();
+            ws.global_light_lists = global_light_lists;
+            ws.global_light = global_light_lists.FirstOrDefault() ?? new();
 
             // environment: the concert's mirror block, one group per name.
             ws.environments = (sheet.environmentDataLists ?? new())
@@ -670,6 +679,25 @@ namespace UV2.Live
                     diffusion_threshold = k.diffusionThreshold,
                     diffusion_saturation = k.diffusionSaturation,
                     diffusion_contrast = k.diffusionContrast,
+                }).ToList();
+
+            // the exposure effect: the game drives it from its own
+            // ExposureKeys track, so the tone map's exposure has to come
+            // from the song rather than from a fitted constant.
+            ws.postfx.exposure = (sheet.ExposureKeys?.thisList ?? new())
+                .Select(k => new exposure_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    is_enable = k.IsEnable,
+                    gain = k.Gain,
+                    lift = k.Lift,
+                    depth_mask = k.DepthMask,
+                    mask_gain = k.MaskGain,
+                    mask_lift = k.MaskLift,
                 }).ToList();
 
             Func<Cutt.LiveTimelineKeyPostFilmDataList, List<film_key>> read_film = list =>

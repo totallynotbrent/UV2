@@ -56,22 +56,53 @@ namespace UV2.Live
                 bool tilt_on = director.tilt_enabled;
                 bool grade_on = director.cc != null && director.cc.valid && director.cc_lut != null;
 
-                // the re-enable mask gates each stage independently; the
-                // chain starts dark (all features off) and each letter
-                // turns its stage back on for the isolation tests.
+                // the post chain follows the song: a stage runs when the
+                // song authors it, so the viewer plays the chain the
+                // official plays instead of a hand-picked subset. the mask
+                // overrides that for the isolation benches: a letter turns
+                // its stage on, "-x" turns it off, and a leading "^" makes
+                // the letters the only stages that run.
                 string m = feature_mask;
-                fade_on &= m.Contains("o");
-                fog_on &= m.Contains("o");
-                film_on &= m.Contains("f");
-                dof_on &= m.Contains("d");
-                bloom_on &= m.Contains("b");
-                tilt_on &= m.Contains("t");
-                grade_on &= m.Contains("g");
-                bool radial_on = director.radial_enabled && m.Contains("r");
-                bool shafts_on = m.Contains('s') && shafts_lights.pass_enabled
+                bool solo = m.StartsWith("^");
+                string on_letters = "";
+                string off_letters = "";
+                for (int ci = 0; ci < m.Length; ci++)
+                {
+                    char ch = m[ci];
+                    if (ch == '^') continue;
+                    if (ch == '-')
+                    {
+                        if (ci + 1 < m.Length)
+                        {
+                            off_letters += m[ci + 1];
+                            ci++;
+                        }
+                        continue;
+                    }
+                    on_letters += ch;
+                }
+                System.Func<bool, char, bool> want = (authored, letter) =>
+                {
+                    if (off_letters.IndexOf(letter) >= 0) return false;
+                    if (on_letters.IndexOf(letter) >= 0) return true;
+                    return !solo && authored;
+                };
+
+                fade_on = want(fade_on, 'o');
+                fog_on = want(fog_on, 'o');
+                film_on = want(film_on, 'f');
+                dof_on = want(dof_on, 'd');
+                bloom_on = want(bloom_on, 'b');
+                tilt_on = want(tilt_on, 't');
+                grade_on = want(grade_on, 'g');
+                bool radial_on = want(director.radial_enabled, 'r');
+                // the shafts stay opt-in: the game composites four
+                // beam-geometry buffers and the screen-space stand-in
+                // flattens the frames where the sun is in view.
+                bool shafts_on = on_letters.IndexOf('s') >= 0 && shafts_lights.pass_enabled
                     && shafts_lights.pass_intensity > 0.001f;
-                bool lens_on = (director.lens_distortion_enabled || director.chromatic_enabled) && m.Contains("l");
-                bool clarity_on = director.ball_blur_enabled && m.Contains("c");
+                bool lens_on = want(director.lens_distortion_enabled || director.chromatic_enabled, 'l');
+                bool clarity_on = want(director.ball_blur_enabled, 'c');
 
                 if (!fade_on && !fog_on && !film_on && !dof_on && !bloom_on && !tilt_on && !grade_on
                     && !radial_on && !lens_on && !clarity_on && !tonemap_on) return;
@@ -306,7 +337,14 @@ namespace UV2.Live
                     }
                     if (tonemap_mat != null && tonemap_mat.shader != null && tonemap_mat.shader.isSupported)
                     {
-                        tonemap_mat.SetFloat("_Exposure", tonemap_exposure);
+                        // the exposure comes from the song's authored
+                        // ExposureKeys track; with no authored keys the
+                        // game's effect is off and the tone map runs at
+                        // identity.
+                        float exposure = 1f;
+                        if (director != null && director.exposure_valid)
+                            exposure = director.exposure_gain;
+                        tonemap_mat.SetFloat("_Exposure", exposure);
                         if (tonemap_neutral) tonemap_mat.EnableKeyword("TONEMAP_NEUTRAL");
                         else tonemap_mat.DisableKeyword("TONEMAP_NEUTRAL");
                         cmd.Blit(cur, nxt, tonemap_mat, 0);
@@ -1032,7 +1070,16 @@ namespace UV2.Live
                 shafts_mat.SetVector("_ShaftsParam", new Vector4(
                     shafts_lights.pass_intensity, 0.35f, 0.08f, 0f));
                 shafts_mat.SetVector("_ShaftsPivot", shafts_lights.pass_pivot);
-                shafts_mat.SetFloat("_ShaftsThreshold", 0.55f);
+                // the game's composite smears an occlusion buffer (the bright
+                // emitters rendered on their own), not a luminance threshold
+                // the bright-pass level comes from the authored bloom
+                // track: it is the level the game considers bright enough
+                // to scatter. with no authored bloom there is no authored
+                // level to use, so the pass stays off rather than falling
+                // back to a picked number.
+                if (!director.bloom_state_valid || director.bloom_state == null) return;
+                float shafts_threshold = director.bloom_state.threshold;
+                shafts_mat.SetFloat("_ShaftsThreshold", shafts_threshold);
                 shafts_mat.SetVector("_ShaftsTintA", (Vector4)shafts_lights.pass_tint);
                 shafts_mat.SetVector("_ShaftsTintB", (Vector4)shafts_lights.pass_tint);
                 shafts_mat.SetFloat("_ShaftsBlend", 0f);
@@ -1138,21 +1185,23 @@ namespace UV2.Live
         // blur25 roll90 keys) and the color grade join the chain.
         // phase 6 (10-20): ball blur joins — 1004 and 1151 are the only
         // two songs that author it (clarity pass, letter c).
-        // phase 7 (10-20): radial blur and fog/fade complete the mask —
+        // phase 7 (10-20): radial blur and fog/fade complete the chain —
         // every authored family now rides its letter; the director's
         // per-key validity keeps inert families no-ops (1004 authors no
         // fog, its radial keys gate off at the snapped moments).
+        // the postfx mask overrides the song's own chain for the isolation
+        // benches: a letter forces its stage on, "-x" forces it off and a
+        // leading "^" keeps only the listed stages. the default is the
+        // empty mask, which means "play the stages the song authors" -
+        // son1004 authors bloom, dof, the three film layers, tilt shift,
+        // the colour grade, radial blur, chromatic aberration, the
+        // fluctuation, the vortex and the fades, and the official plays
+        // all of them. the sun shafts stay opt-in: the screen-space
+        // approximation smears the beauty buffer toward the projected sun,
+        // and where the sun sits in frame (f3300) that washes the whole
+        // picture flat. the game's version composites four beam-geometry
+        // buffers instead, which is the route that has to land first.
         public static string feature_mask =
-            // the shafts letter ('s') stays OFF by default: the screen-space
-            // radial approximation smears the whole frame (the game's real
-            // shafts composite 4 beam-geometry RTs, not a scene blur). the
-            // pass stays behind UV2_POSTFX_MASK=s for the geometry route.
-            // the whole chain is off by default (10-24): the official-video
-            // frame comparison needs the raw render, because the post chain
-            // changes the exposure and the bloom far more than it changes
-            // the content, and a brightness delta against the official frame
-            // says nothing about the pose or the camera. the chain comes
-            // back one letter at a time behind UV2_POSTFX_MASK.
             System.Environment.GetEnvironmentVariable("UV2_POSTFX_MASK") ?? "";
 
         // the tone map closes the chain for every frame: the game renders
@@ -1163,11 +1212,12 @@ namespace UV2.Live
         public static bool tonemap_on =
             (System.Environment.GetEnvironmentVariable("UV2_TONEMAP") ?? "1") != "0";
 
-        // the exposure in front of the tone map; UV2_EXPOSURE calibrates it
-        // against the official frames. 0.6 puts the floor band and the
-        // overall mean on the official's numbers at song 1004 f2400
-        // (floor 0.21/0.31/0.48 against the official's 0.17/0.34/0.49).
-        public static float tonemap_exposure = read_float("UV2_EXPOSURE", 0.6f);
+        // the exposure in front of the tone map. it comes from the song's
+        // authored ExposureKeys track (postfx_director.exposure_gain); with
+        // no authored keys the game's effect is off and the tone map runs
+        // at identity. there is no fitted constant here: a hand-calibrated
+        // exposure hides the missing radiance instead of exposing it.
+        public static float tonemap_exposure = 1f;
 
         // the tone curve: unity's neutral fit by default, the aces fit when
         // UV2_TONEMAP_CURVE=aces. the official keeps its blacks black and

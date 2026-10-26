@@ -136,7 +136,11 @@ namespace UV2.Live
             {
                 if (t.keys == null || t.keys.Count == 0) continue;
                 var k = t.current_key(frame);
-                if (k == null || k.enable == 0) continue;
+                // the key's enable byte is not the effect's on/off switch: it
+                // marks the authored sun-position jumps (the official shows
+                // its widest beams at f2400, where the key reads 0). the
+                // magnitude is the power, so gate on that instead.
+                if (k == null || k.power <= 0.001f) continue;
 
                 _volume_drove = true;
                 pass_enabled = true;

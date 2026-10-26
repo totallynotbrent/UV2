@@ -355,6 +355,10 @@ namespace UV2.Live
         public List<additional_track_container> additional_tracks = new();
         public string song_id;
         public List<global_light_key> global_light = new();
+        // every eligible "GlobalLight" list, in the order the song lists
+        // them; the game's updater plays each in turn and the last one
+        // holding a key at the current frame wins.
+        public List<List<global_light_key>> global_light_lists = new();
         public List<environment_track> environments = new();
         public List<object_track> stage_objects = new();
         public List<bg_color1_track> bg_color1 = new();
