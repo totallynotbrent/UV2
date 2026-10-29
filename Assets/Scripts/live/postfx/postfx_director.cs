@@ -29,6 +29,9 @@ namespace UV2.Live
         // the color-correction state: null when no track or enable=0.
         [HideInInspector] public cc_state cc;
 
+        // the tone curve state: null when no track or the key is disabled.
+        [HideInInspector] public tc_state tc;
+
         // the evaluated dof state, read by the render feature.
         [HideInInspector] public bool dof_enabled;
         // the current key's authored chain type (dofBlurType).
@@ -113,6 +116,7 @@ namespace UV2.Live
             cam = target;
             focus_roots = characters;
             cc_lut = null;
+            tc_lut = null;
         }
 
         private void LateUpdate()
@@ -141,6 +145,7 @@ namespace UV2.Live
                     blink_lights.set_film_coupling(fs.blink_light_name, fs.blink_light_brightness_power);
             }
             cc = eval_cc(t);
+            tc = eval_tc(t);
             eval_dof(t);
             eval_tilt(t);
             eval_radial(t);
@@ -514,6 +519,97 @@ namespace UV2.Live
             cc_lut.Apply();
             cc_lut_frame = bracket;
             cc_lut_blend = blend;
+        }
+
+        // the tone curve state: the authored levels and the two curves that
+        // get baked into the lut.
+        public class tc_state
+        {
+            public bool valid;
+            public Color min_level = Color.black;
+            public Color max_level = Color.white;
+            public Color mask_min_level = Color.black;
+            public Color mask_max_level = Color.white;
+            public float depth_mask;
+            public AnimationCurve curve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
+            public AnimationCurve mask_curve = AnimationCurve.Linear(0f, 0f, 1f, 1f);
+        }
+
+        // the graded lut (256x2): row 0 the tone curve, row 1 the mask curve.
+        // the game rebuilds it every frame the pass runs.
+        [HideInInspector] public Texture2D tc_lut;
+        private int tc_lut_frame = -1;
+        private float tc_lut_blend = -1f;
+
+        // the game's ToneCurvePass grades with lerp(min, max, curve(sample)),
+        // so the authored levels and the curve's sampled values matter, not
+        // just the curve. the key is disabled in every surveyed song, which is
+        // why the chain falls through to the output pass.
+        private tc_state eval_tc(float t)
+        {
+            var keys = ws.postfx.tone_curve;
+            if (keys == null || keys.Count == 0) return null;
+            int i = key_eval.bracket(keys, t);
+            if (i < 0) return null;
+            var cur = keys[i];
+            if (cur.is_enable == 0) return null;
+            var next = i + 1 < keys.Count ? keys[i + 1] : null;
+            float blend = 0f;
+            if (next != null && next.interpolate_type != 0 && next.is_enable != 0)
+                blend = key_eval.interp(cur, next, t);
+
+            var s = new tc_state
+            {
+                valid = true,
+                min_level = cur.min_correction_level,
+                max_level = cur.max_correction_level,
+                mask_min_level = cur.mask_min_correction_level,
+                mask_max_level = cur.mask_max_correction_level,
+                depth_mask = cur.depth_mask,
+                curve = cur.tone_curve,
+                mask_curve = cur.mask_tone_curve,
+            };
+            if (blend > 0f && next != null)
+            {
+                s.curve = blend_curves(cur.tone_curve, next.tone_curve, blend);
+                s.mask_curve = blend_curves(cur.mask_tone_curve, next.mask_tone_curve, blend);
+                s.min_level = Color.Lerp(cur.min_correction_level, next.min_correction_level, blend);
+                s.max_level = Color.Lerp(cur.max_correction_level, next.max_correction_level, blend);
+                s.mask_min_level = Color.Lerp(cur.mask_min_correction_level, next.mask_min_correction_level, blend);
+                s.mask_max_level = Color.Lerp(cur.mask_max_correction_level, next.mask_max_correction_level, blend);
+            }
+            rebuild_tc_lut(s, i, blend);
+            return s;
+        }
+
+        // bakes the two curves into the 256x2 lut the shader samples: row 0
+        // the tone curve, row 1 the mask curve, both monochrome.
+        private void rebuild_tc_lut(tc_state s, int bracket, float blend)
+        {
+            if (tc_lut != null && tc_lut_frame == bracket
+                && Mathf.Abs(blend - tc_lut_blend) < 0.004f) return;
+            if (tc_lut == null)
+            {
+                tc_lut = new Texture2D(256, 2, TextureFormat.RGBA32, false);
+                tc_lut.wrapMode = TextureWrapMode.Clamp;
+                tc_lut.filterMode = FilterMode.Bilinear;
+            }
+            var px = new Color32[256 * 2];
+            for (int i = 0; i < 256; i++)
+            {
+                float u = i / 255f;
+                float tone = s.curve != null && s.curve.length > 0 ? Mathf.Clamp01(s.curve.Evaluate(u)) : u;
+                float mask = s.mask_curve != null && s.mask_curve.length > 0
+                    ? Mathf.Clamp01(s.mask_curve.Evaluate(u)) : u;
+                byte vt = (byte)Mathf.Clamp(Mathf.RoundToInt(tone * 255f), 0, 255);
+                byte vm = (byte)Mathf.Clamp(Mathf.RoundToInt(mask * 255f), 0, 255);
+                px[i] = new Color32(vt, vt, vt, 255);
+                px[256 + i] = new Color32(vm, vm, vm, 255);
+            }
+            tc_lut.SetPixels32(px);
+            tc_lut.Apply();
+            tc_lut_frame = bracket;
+            tc_lut_blend = blend;
         }
 
         // fog: the authored key fields publish straight into the classic

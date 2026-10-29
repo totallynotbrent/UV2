@@ -374,14 +374,31 @@ namespace UV2.Live
                     {
                         // the exposure comes from the song's authored
                         // ExposureKeys track; with no authored keys the
-                        // game's effect is off and the tone map runs at
-                        // identity.
+                        // game's effect is off and the grade runs at identity.
                         float exposure = 1f;
                         if (director != null && director.exposure_valid)
                             exposure = director.exposure_gain;
                         tonemap_mat.SetFloat("_Exposure", exposure);
-                        if (tonemap_neutral) tonemap_mat.EnableKeyword("TONEMAP_NEUTRAL");
-                        else tonemap_mat.DisableKeyword("TONEMAP_NEUTRAL");
+
+                        // the game's ToneCurvePass grades with the authored
+                        // lut when a tone curve key is enabled. no surveyed
+                        // song enables one, so the chain lands on the
+                        // output pass, which preserves the scene values.
+                        var tc = director != null ? director.tc : null;
+                        bool curve_on = tc != null && tc.valid && director.tc_lut != null;
+                        if (curve_on)
+                        {
+                            tonemap_mat.SetTexture("_CurveTex", director.tc_lut);
+                            tonemap_mat.SetColor("_MinLevel", tc.min_level);
+                            tonemap_mat.SetColor("_MaxLevel", tc.max_level);
+                            tonemap_mat.SetColor("_MaskMinLevel", tc.mask_min_level);
+                            tonemap_mat.SetColor("_MaskMaxLevel", tc.mask_max_level);
+                            tonemap_mat.EnableKeyword("TONEMAP_GAME_CURVE");
+                        }
+                        else
+                        {
+                            tonemap_mat.DisableKeyword("TONEMAP_GAME_CURVE");
+                        }
                         cmd.Blit(cur, nxt, tonemap_mat, 0);
                         cur = nxt; cur_is_color = false;
                         nxt = nxt_is_a ? tmp_b : tmp_a; nxt_is_a = !nxt_is_a;
@@ -1273,11 +1290,8 @@ namespace UV2.Live
         // exposure hides the missing radiance instead of exposing it.
         public static float tonemap_exposure = 1f;
 
-        // the tone curve: unity's neutral fit by default, the aces fit when
-        // UV2_TONEMAP_CURVE=aces. the official keeps its blacks black and
-        // its hues intact; the aces fit lifts and desaturates the shadows.
-        public static bool tonemap_neutral =
-            (System.Environment.GetEnvironmentVariable("UV2_TONEMAP_CURVE") ?? "neutral") != "aces";
+        // the tone curve comes from the song's authored ToneCurveKeys, not
+        // from a fitted curve: the game has no filmic tone map.
 
         private static float read_float(string name, float fallback)
         {

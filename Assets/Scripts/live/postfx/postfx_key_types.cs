@@ -137,6 +137,24 @@ namespace UV2.Live
         public float depth_cancel_blend_length;
     }
 
+    // the tone curve keys (worksheet ToneCurveKeys). the game's ToneCurvePass
+    // (uv2_six_postfx_families_decoded.md section 7) evaluates the authored
+    // curve into a 256x2 monochrome LUT every frame - row 0 the tone curve,
+    // row 1 the mask curve - and grades with
+    // out = lerp(min_level, max_level, curve(sample)).
+    [Serializable]
+    public class tone_curve_key : live_key
+    {
+        public byte is_enable;
+        public float depth_mask;
+        public AnimationCurve tone_curve = new();
+        public AnimationCurve mask_tone_curve = new();
+        public Color min_correction_level;
+        public Color max_correction_level;
+        public Color mask_min_correction_level;
+        public Color mask_max_correction_level;
+    }
+
     [Serializable]
     public class exposure_key : live_key
     {
@@ -157,6 +175,7 @@ namespace UV2.Live
         public List<dof_key> dof = new();
         public List<bloom_key> bloom = new();
         public List<exposure_key> exposure = new();
+        public List<tone_curve_key> tone_curve = new();
         public List<film_key> film1 = new();
         public List<film_key> film2 = new();
         public List<film_key> film3 = new();

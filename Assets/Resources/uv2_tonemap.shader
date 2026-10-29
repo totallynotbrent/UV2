@@ -1,14 +1,33 @@
-// the final tone map for the concert chain. the game renders the concert
-// into an hdr buffer and compresses it once at the end of the post chain;
-// an ldr buffer clips the additive film layers and the bloom to white.
-// this shader is the aces fitted curve (stephen hill's fit of the academy
-// rrt+odt), the same shape unity's aces tonemapping mode applies.
+// the game's ToneCurvePass (uv2_six_postfx_families_decoded.md section 7)
+// and its final output pass.
+//
+// the game does NOT ship a filmic tone map. it grades the concert with an
+// authored per-key curve baked into a 256x2 monochrome lut: row 0 the tone
+// curve, row 1 the mask curve. the grade is
+//
+//     out = lerp(min_level, max_level, curve(sample))
+//
+// with the mask row covering the pixels above the mask levels and a depth
+// mask choosing which level pair applies. the keys that drive it
+// (ToneCurveKeys) are disabled in every surveyed song, so the authored pass
+// contributes nothing and the chain falls through to the output pass, which
+// is effectively a passthrough (the game's own output shader reduces to
+// abs(scene) with the target's gamma encoding).
+//
+// this shader therefore offers:
+//   TONEMAP_GAME_CURVE  the authored lut grade, when a tone curve key is on
+//   default             the passthrough the game lands on without one
 Shader "live/uv2_tonemap"
 {
     Properties
     {
         _MainTex ("Base", 2D) = "" {}
         _Exposure ("Exposure", Float) = 1
+        _CurveTex ("Curve Lut", 2D) = "gray" {}
+        _MinLevel ("Min Level", Color) = (0,0,0,1)
+        _MaxLevel ("Max Level", Color) = (1,1,1,1)
+        _MaskMinLevel ("Mask Min Level", Color) = (0,0,0,1)
+        _MaskMaxLevel ("Mask Max Level", Color) = (1,1,1,1)
     }
     SubShader
     {
@@ -19,11 +38,16 @@ Shader "live/uv2_tonemap"
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
-            #pragma multi_compile __ TONEMAP_NEUTRAL
+            #pragma multi_compile __ TONEMAP_GAME_CURVE
             #include "UnityCG.cginc"
 
             sampler2D _MainTex;
             float _Exposure;
+            sampler2D _CurveTex;
+            float4 _MinLevel;
+            float4 _MaxLevel;
+            float4 _MaskMinLevel;
+            float4 _MaskMaxLevel;
 
             struct v2f
             {
@@ -39,59 +63,32 @@ Shader "live/uv2_tonemap"
                 return o;
             }
 
-            float3 rrt(float3 v)
-            {
-                float3 a = v * (v + 0.0245786) - 0.000090537;
-                float3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
-                return a / b;
-            }
-
-            // unity's neutral tone mapper (the khronos pbr neutral fit unity
-            // ships as its "Neutral" mode): it keeps the blacks black and
-            // the hues intact, unlike the aces fit which lifts and
-            // desaturates the shadows.
-            float3 neutral(float3 color)
-            {
-                float start_compression = 0.8 - 0.04;
-                float desaturation = 0.15;
-                float3 x = min(color, start_compression.xxx);
-                // the quadratic knee below the compression point, the flat
-                // offset above it. hlsl has no vector-valued ternary, so the
-                // select is a step.
-                float3 below = 1.0 - step(start_compression.xxx, x);
-                float3 offset = lerp(0.04.xxx, 0.08 * x * x, below);
-                color -= offset;
-                float peak = max(color.r, max(color.g, color.b));
-                if (peak < start_compression) return color;
-                float d = 1.0 - start_compression;
-                float new_peak = 1.0 - d * d / (peak + d - start_compression);
-                color *= new_peak / peak;
-                float g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
-                return lerp(color, new_peak.xxx, g);
-            }
-
-            float3 aces_fit(float3 c)
-            {
-                // the academy's input and output matrices.
-                c = float3(
-                    (c.r * 0.59719 + c.g * 0.35458 + c.b * 0.04823),
-                    (c.r * 0.07600 + c.g * 0.90834 + c.b * 0.01566),
-                    (c.r * 0.02840 + c.g * 0.13383 + c.b * 0.83777));
-                c = rrt(c);
-                c = float3(
-                    (c.r * 1.60475 + c.g * -0.53108 + c.b * -0.07367),
-                    (c.r * -0.10208 + c.g * 1.10813 + c.b * -0.00605),
-                    (c.r * -0.00327 + c.g * -0.07276 + c.b * 1.07602));
-                return clamp(c, 0.0, 1.0);
-            }
-
             fixed4 frag(v2f i) : SV_Target
             {
-                float3 c = tex2D(_MainTex, i.uv).rgb * _Exposure;
-            #if TONEMAP_NEUTRAL
-                return fixed4(clamp(neutral(c), 0.0, 1.0), 1.0);
+                float3 scene = tex2D(_MainTex, i.uv).rgb * _Exposure;
+            #if TONEMAP_GAME_CURVE
+                // the curve lut is 256 wide and 2 tall: row 0 holds the tone
+                // curve, row 1 the mask curve. the game samples the tone row
+                // at v=0.25 and the mask row at v=0.75.
+                // the game grades each channel on its own: the red channel
+                // is looked up at u=scene.r, the green at u=scene.g and the
+                // blue at u=scene.b, all from the same lut row.
+                float3 tone = float3(
+                    tex2D(_CurveTex, float2(scene.r, 0.25)).r,
+                    tex2D(_CurveTex, float2(scene.g, 0.25)).r,
+                    tex2D(_CurveTex, float2(scene.b, 0.25)).r);
+                float3 mask_value = float3(
+                    tex2D(_CurveTex, float2(scene.r, 0.75)).r,
+                    tex2D(_CurveTex, float2(scene.g, 0.75)).r,
+                    tex2D(_CurveTex, float2(scene.b, 0.75)).r);
+                float3 graded = lerp(_MinLevel.rgb, _MaxLevel.rgb, tone);
+                float3 mask_graded = lerp(_MaskMinLevel.rgb, _MaskMaxLevel.rgb, mask_value);
+                float3 out_rgb = lerp(graded, mask_graded, step(_MaskMinLevel.rgb, scene));
+                return fixed4(clamp(out_rgb, 0.0, 1.0), 1.0);
             #else
-                return fixed4(aces_fit(c), 1.0);
+                // no authored tone curve: the game hands the frame to its
+                // output pass, which preserves the scene values.
+                return fixed4(clamp(scene, 0.0, 1.0), 1.0);
             #endif
             }
             ENDCG

@@ -731,6 +731,29 @@ namespace UV2.Live
                     mask_lift = k.MaskLift,
                 }).ToList();
 
+            // the tone curve track: the game's ToneCurvePass bakes the
+            // authored curves into a 256x2 lut and grades with
+            // lerp(min_level, max_level, curve(sample)). the keys are
+            // disabled in every surveyed song, so the curve is carried
+            // through anyway and gated downstream on is_enable.
+            ws.postfx.tone_curve = (sheet.ToneCurveKeys?.thisList ?? new())
+                .Select(k => new tone_curve_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    is_enable = k.IsEnable,
+                    depth_mask = k.DepthMask,
+                    tone_curve = k.ToneAnimationCurve,
+                    mask_tone_curve = k.MaskToneCurve,
+                    min_correction_level = k.MinCorrectionLevel,
+                    max_correction_level = k.MaxCorrectionLevel,
+                    mask_min_correction_level = k.MaskMinCorrectionLevel,
+                    mask_max_correction_level = k.MaskMaxCorrectionLevel,
+                }).ToList();
+
             Func<Cutt.LiveTimelineKeyPostFilmDataList, List<film_key>> read_film = list =>
                 (list?.thisList ?? new()).Select(k => new film_key
                 {
