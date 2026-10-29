@@ -29,6 +29,19 @@ namespace UV2.Live
         public static float pass_intensity;
         public static Vector2 pass_pivot;
         public static Color pass_tint = Color.white;
+        // the authored beam's softness, its scatter floor and how quickly the
+        // beam dims away from the light.
+        public static float pass_blur_radius = 1f;
+        public static float pass_black_level = 0.1f;
+        public static float pass_spread = 3f;
+        // the song's global shaft settings: the intensity scales the pass,
+        // the blend mode picks how the shafts land on the frame.
+        public static float pass_global_intensity = 0.5f;
+        public static int pass_blend_mode = 1;
+        // the song's sun centre brightness and multiplex, from the same
+        // settings block.
+        public static float pass_center_brightness = 1.5f;
+        public static float pass_center_multiplex = 1f;
 
         // the stage Sunshafts marker, resolved lazily from the loaded stage.
         private static Transform _shafts_marker;
@@ -144,8 +157,13 @@ namespace UV2.Live
 
                 _volume_drove = true;
                 pass_enabled = true;
-                pass_intensity = Mathf.Clamp01(k.power * 0.01f);
+                // the authored power is a percentage of the beam's full
+                // strength, and the song's intensity scales the whole pass.
+                pass_intensity = Mathf.Clamp01(k.power * 0.01f) * pass_global_intensity;
                 pass_tint = k.color1;
+                pass_blur_radius = k.blur_radius > 0.01f ? k.blur_radius : 1f;
+                // the wider the beam, the softer it spreads outward.
+                pass_spread = 1f / Mathf.Max(pass_blur_radius, 0.25f);
                 // the sun position is world-space on the stage; pivot =
                 // its viewport projection (the game's composite radializes
                 // around the projected sun).

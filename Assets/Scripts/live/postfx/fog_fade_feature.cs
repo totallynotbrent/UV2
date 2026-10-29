@@ -100,11 +100,12 @@ namespace UV2.Live
                 tilt_on = want(tilt_on, 't');
                 grade_on = want(grade_on, 'g');
                 bool radial_on = want(director.radial_enabled, 'r');
-                // the shafts stay opt-in: the game composites four
-                // beam-geometry buffers and the screen-space stand-in
-                // flattens the frames where the sun is in view.
+                // the light shafts ride the post chain by default: the game
+                // composites its beam geometry here, and the sung shafts are
+                // what carries the concert's colour into the washed-out
+                // highlights (the authored sun colour is the tint). the
+                // mask's 's' still forces the layer off.
                 bool shafts_on = !force_off.Contains('s')
-                    && (force_on.Contains('s') || on_letters.IndexOf('s') >= 0)
                     && shafts_lights.pass_enabled && shafts_lights.pass_intensity > 0.001f;
                 bool lens_on = want(director.lens_distortion_enabled || director.chromatic_enabled, 'l');
                 bool clarity_on = want(director.ball_blur_enabled, 'c');
@@ -1127,27 +1128,26 @@ namespace UV2.Live
                         { filterMode = FilterMode.Bilinear };
                 }
 
-                // params: intensity from the key alpha, density fixed at the
-                // game's sun-shafts default, falloff floor clamps the center.
+                // params from the authored volume light: the power sets the
+                // strength, the blur radius the beam's softness, the black
+                // level the floor below which nothing scatters.
                 shafts_mat.SetVector("_ShaftsParam", new Vector4(
-                    shafts_lights.pass_intensity, 0.35f, 0.08f, 0f));
+                    shafts_lights.pass_intensity, 0.35f, shafts_lights.pass_black_level,
+                    shafts_lights.pass_blur_radius));
                 shafts_mat.SetVector("_ShaftsPivot", shafts_lights.pass_pivot);
-                // the game's composite smears an occlusion buffer (the bright
-                // emitters rendered on their own), not a luminance threshold
-                // the bright-pass level comes from the authored bloom
-                // track: it is the level the game considers bright enough
-                // to scatter. with no authored bloom there is no authored
-                // level to use, so the pass stays off rather than falling
-                // back to a picked number.
-                if (!director.bloom_state_valid || director.bloom_state == null) return;
-                float shafts_threshold = director.bloom_state.threshold;
-                shafts_mat.SetFloat("_ShaftsThreshold", shafts_threshold);
+                shafts_mat.SetFloat("_ShaftsSpread", shafts_lights.pass_spread);
+                // the march's beam spread follows the authored blur radius.
+                shafts_mat.SetFloat("_ShaftsBeamSpread", 1f / Mathf.Max(shafts_lights.pass_blur_radius, 0.25f));
+                shafts_mat.SetFloat("_ShaftsHazeAmount", shafts_lights.pass_center_brightness);
+                shafts_mat.SetFloat("_ShaftsCenterMultiplex", shafts_lights.pass_center_multiplex);
                 shafts_mat.SetVector("_ShaftsTintA", (Vector4)shafts_lights.pass_tint);
                 shafts_mat.SetVector("_ShaftsTintB", (Vector4)shafts_lights.pass_tint);
                 shafts_mat.SetFloat("_ShaftsBlend", 0f);
+                shafts_mat.SetFloat("_ShaftsBlendMode", shafts_lights.pass_blend_mode);
                 shafts_mat.SetFloat("_ShaftsAspect", (float)desc.width / desc.height);
 
-                // three radial iterations at half-res, then composite add.
+                // the bright pass and the radial march at half resolution,
+                // then the tinted composite over the frame.
                 cmd.Blit(cur, shafts_rt_a, shafts_mat, 0);
                 cmd.Blit(shafts_rt_a, shafts_rt_b, shafts_mat, 0);
                 cmd.Blit(shafts_rt_b, shafts_rt_a, shafts_mat, 0);

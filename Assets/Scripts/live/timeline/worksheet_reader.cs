@@ -33,8 +33,34 @@ namespace UV2.Live
                 if (sheet == null) return null;
                 var ws = map(sheet, music_id);
 
+                // the song's global sun shafts settings ride along with the
+                // worksheet: the game's sun shafts pass scales its beams by
+                // them, so the timeline data asset carries them.
+                var timeline = load_timeline_data(music_id);
+                if (timeline?.sunShaftsSettings != null)
+                {
+                    var s = timeline.sunShaftsSettings;
+                    ws.sun_shafts = new sun_shafts_settings
+                    {
+                        resolution = s.resolution,
+                        screen_blend_mode = s.screenBlendMode,
+                        sun_color = s.sunColor,
+                        sun_power = s.sunPower,
+                        sun_center_brightness = s.sunCenterBrightness,
+                        sun_center_multiplex = s.sunCenterMultiplex,
+                        intensity = s.intensity,
+                        fade_start = s.fadeStart,
+                        fade_mix = s.fadeMix,
+                        black_level = s.blackLevel,
+                        komorebi_rate = s.komorebiRate,
+                        blur_radius = s.blurRadius,
+                        blur_iterations = s.blurIterations,
+                        border_clear = s.isEnabledBorderClear != 0,
+                    };
+                }
+
                 // prefers the data asset's timeLength; the sheet's TotalTimeLength serializes 0 for main sheets.
-                int time_length = load_data_time_length(music_id);
+                int time_length = timeline?.timeLength ?? 0;
                 if (time_length > 0)
                 {
                     if (sheet.TotalTimeLength > 1f && sheet.TotalTimeLength <= time_length)
@@ -52,15 +78,16 @@ namespace UV2.Live
         }
 
         // loads the song's cutt data asset and returns its authored length.
-        private static int load_data_time_length(int music_id)
+        // opens the song's timeline data asset, which carries the global
+        // post effect settings (the sun shafts, the hdr bloom, the fog).
+        private static Cutt.LiveTimelineData load_timeline_data(int music_id)
         {
             string data_name = $"cutt/cutt_son{music_id}/data";
             var row = meta_row(data_name);
-            if (row == null) return 0;
+            if (row == null) return null;
             var bundle = game_assets.open(row, config.data_root);
-            if (bundle == null) return 0;
-            var data = bundle.LoadAllAssets<Cutt.LiveTimelineData>().FirstOrDefault();
-            return data?.timeLength ?? 0;
+            if (bundle == null) return null;
+            return bundle.LoadAllAssets<Cutt.LiveTimelineData>().FirstOrDefault();
         }
 
         // opens the song's camera cutt bundle and deserializes the worksheet stub.

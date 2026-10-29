@@ -1858,7 +1858,20 @@ namespace UV2.Live
             diag_pass("blink", () => blink_lights.update(clock?.time ?? 0f, ws?.blink_tracks));
             diag_pass("spot", () => spot_lights.update(clock?.time ?? 0f, ws?.spot_tracks, chara_roots));
             diag_pass("laser", () => laser_lights.update(clock?.time ?? 0f, ws?.laser_tracks, chara_roots));
-            diag_pass("shafts", () => shafts_lights.update(clock?.time ?? 0f, ws?.shafts_tracks));
+            diag_pass("shafts", () =>
+            {
+                // the song's global shaft settings scale the pass.
+                var ss = ws?.sun_shafts;
+                if (ss != null)
+                {
+                    shafts_lights.pass_global_intensity = ss.intensity;
+                    shafts_lights.pass_blend_mode = ss.screen_blend_mode;
+                    shafts_lights.pass_black_level = ss.black_level;
+                    shafts_lights.pass_center_brightness = ss.sun_center_brightness;
+                    shafts_lights.pass_center_multiplex = ss.sun_center_multiplex;
+                }
+                shafts_lights.update(clock?.time ?? 0f, ws?.shafts_tracks);
+            });
             diag_pass("volume", () => volume_uv_scroll.update_volume(clock?.time ?? 0f, ws?.volume_tracks));
             diag_pass("uvscroll", () => volume_uv_scroll.update_uv_scroll(clock?.time ?? 0f, ws?.uv_scroll_tracks));
             diag_pass("wash", () => wash_light.update(clock?.time ?? 0f, ws?.wash_tracks));

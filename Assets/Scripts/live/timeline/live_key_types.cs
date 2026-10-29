@@ -3,6 +3,31 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 
+    // the song's global sun shafts settings.
+    //
+    // the game's sun shafts pass reads these: the intensity scales the
+    // shafts, the black level is the floor below which nothing scatters,
+    // the blur radius and its iteration count set the beam's softness, and
+    // the screen blend mode picks how the shafts land on the frame.
+    [Serializable]
+    public class sun_shafts_settings
+    {
+        public int resolution = 1;
+        public int screen_blend_mode = 1;
+        public Color sun_color = Color.white;
+        public float sun_power;
+        public float sun_center_brightness = 1f;
+        public float sun_center_multiplex = 1f;
+        public float intensity = 0.5f;
+        public float fade_start = 40f;
+        public float fade_mix = 18f;
+        public float black_level = 0.1f;
+        public float komorebi_rate;
+        public float blur_radius = 5f;
+        public int blur_iterations = 2;
+        public bool border_clear;
+    }
+
 namespace UV2.Live
 {
     // one authored AnimationCurve keyframe (time/value in 0..1, slopes).
@@ -356,6 +381,8 @@ namespace UV2.Live
         public List<mob_cyalume_group> cyalume_groups = new();
         public List<foot_light_key> foot_light = new();
         public List<volume_track_container> volume_tracks = new();
+        // the song's global sun shafts settings, from the timeline data asset.
+        public sun_shafts_settings sun_shafts = new();
         public List<uv_scroll_track_container> uv_scroll_tracks = new();
         public List<wash_track_container> wash_tracks = new();
         public List<additional_track_container> additional_tracks = new();
