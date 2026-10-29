@@ -69,17 +69,23 @@ Shader "live/uv2_film"
             }
 
             // the game's mask preamble, register-exact:
-            //   p  = ((uv*aspect - 0.5*aspect) * scale.xy), roll-rotated,
-            //        recentered (+0.5, x/aspect), + _PostFilmOffsetParam
-            //   q  = saturate(dot(p,p) * optionParam.x)
-            //   m  = (optionParam.y > 0) ? q/(q + optionParam.y*(1-q)) : 1
-            // the ramp m is 0 at the frame centre and grows toward the
-            // edges, so the normal layer paints the frame edges and the
-            // inverse layer fills the centre. the old port negated the
-            // numerator and painted a bright centre disc instead.
+            //   p   = roll/scale-warp(v1)     cb0[161] roll sin/cos/aspect,
+            //                                   cb0[162] scale
+            //   uv  = p + cb0[153].xy - 0.5    the offset applies BEFORE the
+            //                                   0.5 subtraction
+            //   d2  = dot(uv,uv) * cb0[154].x  optionParam.x = radius
+            //   soft= optionParam.y
+            //   r0.x = (soft>0 ? (0.0001 - d2) : d2)
+            //          / (d2 + (soft - soft*d2))
+            // the rational vignette is NEGATIVE inside the radius and falls
+            // to -inf outward when soft>0, so the plain layer paints the
+            // frame edges faintly and the inverse layer tops out near 0.25.
+            // the old port saturated the distance and divided by a positive
+            // denominator, which made the inverse variant fill the whole
+            // centre at full strength.
             float mask(float2 uv)
             {
-                float aspect = _MainTex_TexelSize.w > 0 ? _MainTex_TexelSize.z / _MainTex_TexelSize.w : 1.0;
+                float aspect = _PostFilmRollParameter.z > 0 ? _PostFilmRollParameter.z : 1.0;
                 float2 p = uv * float2(aspect, 1.0) - float2(0.5 * aspect, 0.5);
                 p *= _PostFilmScaleParameter.xy;
                 float s = _PostFilmRollParameter.x;
@@ -87,11 +93,20 @@ Shader "live/uv2_film"
                 float2 r = float2(p.x * c - p.y * s, p.x * s + p.y * c);
                 r += float2(0.5 * aspect, 0.5);
                 r.x /= aspect;
+                r -= float2(0.5, 0.5);
                 r += _PostFilmOffsetParam.xy;
-                float2 d = (r - float2(0.5, 0.5)) * 2.0;
-                float q = saturate(dot(d, d) * _PostFilmOptionParam.x);
+                float2 d2v = r;
+                float d2 = dot(d2v, d2v) * _PostFilmOptionParam.x;
                 float soft = _PostFilmOptionParam.y;
-                return soft > 0.0 ? q / (q + soft * (1.0 - q)) : 1.0;
+                float num = soft > 0.0 ? (0.0001 - d2) : d2;
+                float den = d2 + (soft - soft * d2);
+                // the denominator vanishes at the radius edge, so the game
+                // divides only where it is safe and lets the edge fall out
+                // of the layer. a division by a vanishing denominator
+                // blows up to infinity, which saturates the layer to the
+                // full colour instead of letting it taper.
+                if (den > 1e-5) return num / den;
+                return 0.0;
             }
 
             // the game's depth chain (the cb0[152]/[164] block):
@@ -139,17 +154,18 @@ Shader "live/uv2_film"
                 fixed4 scene = tex2D(_MainTex, i.uv);
                 float m = mask(i.uv);
                 float dt = depth_term();
-                // the mask: the ps computes pre = dt * m (op 48), then
-                //   r0.y = (1 - m) * dt - pre     (op 49)
-                //   mask = inv * r0.y + pre       (op 50)
-                // so the normal variant paints dt*m (edges) and the
-                // inverse variant paints dt*(1-m) (centre). the combine is
-                // a mad, not a lerp: lerp(pre, y, inv) drops the +pre term
-                // and yields dt*(1-2m) for the inverse variant, which goes
-                // negative past mid-radius and kills the centre fill.
-                float pre = dt * m;
-                float y = dt * (1.0 - m) - pre;
-                float v = _PostFilmIsInverseVignette * y + pre;
+                // the mask tail (@76838): the ps computes
+                //   r0.y = (1 - dt) * dt - m
+                //   mask = lerp(m, r0.y, IsInverseVignette)
+                // so the plain variant paints m and the inverse variant
+                // paints (1-dt)*dt - m. with dt=1 the inverse term is -m,
+                // which is NEGATIVE inside the radius and positive outside
+                // it: the inverse layer clears the centre and rims the
+                // edges. the old mad form produced dt*(1-m) instead, a
+                // positive near-1.0 fill over the whole centre, so the
+                // layer saturated to a white wash.
+                float inv_tail = (1.0 - dt) * dt - m;
+                float v = lerp(m, inv_tail, _PostFilmIsInverseVignette);
                 // the layer scale: the ps multiplies the layer color by
                 // cb0[152].x = _DepthPower = key.depthPower, so a layer
                 // with depthPower 0 paints exactly zero.
@@ -172,8 +188,12 @@ Shader "live/uv2_film"
                 return scene + (v * p) * (g - scene);
             #elif MODE_VIGNETTE_ADD
                 // the game's tail (@90722 ops 50-51):
-                //   L = saturate(mask * (cb0[152].x * G.rgb)); o = C + L.
-                fixed3 layer = saturate(v * (p * g.rgb));
+                //   L = mask * (cb0[152].x * G.rgb); o = C + L.
+                // the mask is SIGNED: the inverse variant is negative inside
+                // the radius, so the layer subtracts there. saturating it
+                // clamped every negative to zero and turned the subtraction
+                // into a plain centre fill.
+                fixed3 layer = v * (p * g.rgb);
                 return fixed4(scene.rgb + layer, scene.a);
             #elif MODE_VIGNETTE_MUL
                 // o = C + 152.x*mask*(C*G - C) (@104130).
