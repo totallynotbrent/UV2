@@ -1,22 +1,31 @@
-// the game's ToneCurvePass (uv2_six_postfx_families_decoded.md section 7)
-// and its final output pass.
+// the game's output stage: unity's universal render pipeline tonemaps the
+// final image in its final blit, and gallop's ToneCurvePass grades the
+// concert with an authored per-key curve.
 //
-// the game does NOT ship a filmic tone map. it grades the concert with an
-// authored per-key curve baked into a 256x2 monochrome lut: row 0 the tone
-// curve, row 1 the mask curve. the grade is
+// both halves are here:
 //
-//     out = lerp(min_level, max_level, curve(sample))
+//   the tonemap is unity's Neutral curve, lifted verbatim from the render
+//   pipeline package (com.unity.render-pipelines.core 14.0.12,
+//   ShaderLibrary/Color.hlsl). the game runs the same package generation
+//   (unity 2022.3.62f2, urp 14), so this is the curve that shapes the
+//   official frames. it also supplies the highlight roll-off the picture
+//   needs: the scene renders well above 1.0, and without it the stage
+//   lights flood the frame to solid white.
 //
-// with the mask row covering the pixels above the mask levels and a depth
-// mask choosing which level pair applies. the keys that drive it
-// (ToneCurveKeys) are disabled in every surveyed song, so the authored pass
-// contributes nothing and the chain falls through to the output pass, which
-// is effectively a passthrough (the game's own output shader reduces to
-// abs(scene) with the target's gamma encoding).
+//   the tone curve is gallop's authored pass (uv2_six_postfx_families_decoded.md
+//   section 7): a 256x2 monochrome lut - row 0 the tone curve, row 1 the
+//   mask curve - graded with
 //
-// this shader therefore offers:
-//   TONEMAP_GAME_CURVE  the authored lut grade, when a tone curve key is on
-//   default             the passthrough the game lands on without one
+//       out = lerp(min_level, max_level, curve(sample))
+//
+//   with the mask row covering the pixels at or above the mask levels and
+//   the depth mask choosing which level pair applies. the keys that drive
+//   it (ToneCurveKeys) are disabled in every surveyed song, so this path is
+//   off in practice and the chain runs the tonemap alone.
+//
+// order: the scene is tonemapped first, then the authored grade, which
+// works on display-referred values the way its correction levels imply.
+
 Shader "live/uv2_tonemap"
 {
     Properties
@@ -49,6 +58,34 @@ Shader "live/uv2_tonemap"
             float4 _MaskMinLevel;
             float4 _MaskMaxLevel;
 
+            // unity's Neutral tonemap (hable/hejl/frostbite fit), copied from
+            // com.unity.render-pipelines.core 14.0.12 ShaderLibrary/Color.hlsl
+            // so the shaping matches the render pipeline the game ships with.
+            float3 neutral_curve(float3 x, float a, float b, float c, float d, float e, float f)
+            {
+                return ((x * (a * x + c * b) + d * e) / (x * (a * x + b) + d * f)) - e / f;
+            }
+
+            float3 neutral_tonemap(float3 x)
+            {
+                x = max(0.0.xxx, x);
+
+                const float a = 0.2;
+                const float b = 0.29;
+                const float c = 0.24;
+                const float d = 0.272;
+                const float e = 0.02;
+                const float f = 0.3;
+                const float white_level = 5.3;
+                const float white_clip = 1.0;
+
+                float3 white_scale = (1.0).xxx / neutral_curve(white_level, a, b, c, d, e, f);
+                x = neutral_curve(x * white_scale, a, b, c, d, e, f);
+                x *= white_scale;
+                x /= white_clip.xxx;
+                return x;
+            }
+
             struct v2f
             {
                 float4 pos : SV_POSITION;
@@ -66,30 +103,24 @@ Shader "live/uv2_tonemap"
             fixed4 frag(v2f i) : SV_Target
             {
                 float3 scene = tex2D(_MainTex, i.uv).rgb * _Exposure;
+                float3 graded = neutral_tonemap(scene);
             #if TONEMAP_GAME_CURVE
                 // the curve lut is 256 wide and 2 tall: row 0 holds the tone
-                // curve, row 1 the mask curve. the game samples the tone row
-                // at v=0.25 and the mask row at v=0.75.
-                // the game grades each channel on its own: the red channel
-                // is looked up at u=scene.r, the green at u=scene.g and the
-                // blue at u=scene.b, all from the same lut row.
+                // curve, row 1 the mask curve. the game looks up each channel
+                // on its own at u=that channel's value.
                 float3 tone = float3(
-                    tex2D(_CurveTex, float2(scene.r, 0.25)).r,
-                    tex2D(_CurveTex, float2(scene.g, 0.25)).r,
-                    tex2D(_CurveTex, float2(scene.b, 0.25)).r);
+                    tex2D(_CurveTex, float2(graded.r, 0.25)).r,
+                    tex2D(_CurveTex, float2(graded.g, 0.25)).r,
+                    tex2D(_CurveTex, float2(graded.b, 0.25)).r);
                 float3 mask_value = float3(
-                    tex2D(_CurveTex, float2(scene.r, 0.75)).r,
-                    tex2D(_CurveTex, float2(scene.g, 0.75)).r,
-                    tex2D(_CurveTex, float2(scene.b, 0.75)).r);
-                float3 graded = lerp(_MinLevel.rgb, _MaxLevel.rgb, tone);
+                    tex2D(_CurveTex, float2(graded.r, 0.75)).r,
+                    tex2D(_CurveTex, float2(graded.g, 0.75)).r,
+                    tex2D(_CurveTex, float2(graded.b, 0.75)).r);
+                float3 tone_graded = lerp(_MinLevel.rgb, _MaxLevel.rgb, tone);
                 float3 mask_graded = lerp(_MaskMinLevel.rgb, _MaskMaxLevel.rgb, mask_value);
-                float3 out_rgb = lerp(graded, mask_graded, step(_MaskMinLevel.rgb, scene));
-                return fixed4(clamp(out_rgb, 0.0, 1.0), 1.0);
-            #else
-                // no authored tone curve: the game hands the frame to its
-                // output pass, which preserves the scene values.
-                return fixed4(clamp(scene, 0.0, 1.0), 1.0);
+                graded = lerp(tone_graded, mask_graded, step(_MaskMinLevel.rgb, graded));
             #endif
+                return fixed4(clamp(graded, 0.0, 1.0), 1.0);
             }
             ENDCG
         }
