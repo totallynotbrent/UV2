@@ -53,9 +53,13 @@ namespace UV2.Live
             var head = find_bone(root, "Head");
             var waist = find_bone(root, "Waist");
             var chest = find_bone(root, "Chest");
-            if (head != null) a.head_height = position_bone.InverseTransformPoint(head.position).y + 0.1f;
-            if (waist != null) a.waist_height = position_bone.InverseTransformPoint(waist.position).y;
-            if (chest != null) a.chest_height = position_bone.InverseTransformPoint(chest.position).y;
+            // heights cache in WORLD units relative to the Position bone (the
+            // game caches the same world heights post-BodyScale): Inverse-
+            // TransformPoint would hand back authored rig units, and the rig
+            // now carries the chara's height scale on Position.
+            if (head != null) a.head_height = head.position.y - position_bone.position.y + 0.1f;
+            if (waist != null) a.waist_height = waist.position.y - position_bone.position.y;
+            if (chest != null) a.chest_height = chest.position.y - position_bone.position.y;
             anchors[root] = a;
         }
 

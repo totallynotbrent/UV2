@@ -7,7 +7,7 @@ namespace UV2Build
     // creates the two empty scenes and wires the bootstrappers into them.
     public static class scene_baker
     {
-        [MenuItem("UV2/Bake Scenes")]
+        [MenuItem("UmaLive/Bake Scenes")]
         public static void bake()
         {
             make_scene("Assets/Scenes/Concert.unity", "UV2.App.scene_bootstrap", "build_concert_scene");

@@ -137,11 +137,26 @@ namespace UV2.Live
         public float depth_cancel_blend_length;
     }
 
+    [Serializable]
+    public class exposure_key : live_key
+    {
+        // the game's exposure effect key (LiveTimelineKeyExposureData):
+        // IsEnable gates the effect, Gain scales the lit image, Lift raises
+        // the blacks and DepthMask ties the amount to depth.
+        public byte is_enable;
+        public float gain;
+        public float lift;
+        public float depth_mask;
+        public float mask_gain;
+        public float mask_lift;
+    }
+
     // the postfx worksheet lists, mirrored from the cutt stub sheet.
     public class postfx_worksheet
     {
         public List<dof_key> dof = new();
         public List<bloom_key> bloom = new();
+        public List<exposure_key> exposure = new();
         public List<film_key> film1 = new();
         public List<film_key> film2 = new();
         public List<film_key> film3 = new();

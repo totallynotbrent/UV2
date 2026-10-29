@@ -26,13 +26,31 @@ namespace UV2.Live
         // runs the timeline on real time even when audio binds.
         public static bool force_free_clock;
         private live_worksheet ws;
+
+        // the worksheet's volumeLight tracks for the shafts walker
+        // (the volume SunShafts entry drives the radial pass).
+        private static stage_loader _instance;
+        public static List<UV2.Live.volume_track_container> volume_tracks_view
+            => _instance != null ? _instance.ws?.volume_tracks : null;
         private timeline_clock clock;
         private readonly List<Transform> chara_roots = new();
+        // the game's standing place of each loaded root, in load order: the
+        // global-light mask bit i selects roster slot i, so the publisher
+        // needs the root's place, not its index in the compacted list.
+        private readonly List<int> chara_places = new();
         // per-chara face morph databases loaded from the head bundles.
         private readonly Dictionary<int, Gallop.FaceDrivenKeyTarget> face_targets = new();
         private camera_director director;
         private formation_driver formation;
         private bg_color1_director bg_color1;
+        private facial_toon toon;
+        private global_light_director global_light;
+        private environment_director environment;
+        private object_director stage_objects;
+        private particle_playback particles;
+        // parked at stage instantiation; the bg_color1 director binds it
+        // in wire_drivers (the stage phase runs before the director exists).
+        private Transform _stage_instance_root;
         private motion_player motion;
         private vocal_mixer vocals;
 
@@ -51,23 +69,45 @@ namespace UV2.Live
             crowd_rig.reset();
             audience_keys.reset();
             props_system.reset();
-            UV2.UI.load_progress.report($"binding worksheet ({ws.camera_pos.Count} cam keys)");
+            UV2.UI.load_progress.reset();
+            UV2.UI.load_progress.report($"binding worksheet ({ws.camera_pos.Count} cam keys)", 0.04f);
             trace_log.write($"worksheet bound: {ws.camera_pos.Count} cam keys, {ws.motion_sequences.Count} motion seqs, {ws.formation.Count} formation groups, total {ws.total_frames} frames");
             yield return null;
+
+            // the vocal stems decode in parallel with stage + cast loading
+            // (begun below) so the early song sections carry vocals on every
+            // song; the bind at the end gates the music start.
+            var vocals_go = new GameObject("vocal_mixer");
+            vocals = vocals_go.AddComponent<vocal_mixer>();
+            vocals.begin_decode(sel.music_id, sel.slots);
+
+            // the instrumental decodes on a worker too: its ~1.2s hca decode
+            // was a single long main-thread frame right at the open.
+            var oke_task = start_oke_decode(sel.music_id);
 
             if (!run_phase_stage(sel)) yield break;
             int stage_step = 0;
             var stage_bundles = _stage_material_names.Concat(new[] { _stage_first_controller }).ToList();
             foreach (var name in stage_bundles)
             {
-                UV2.UI.load_progress.report($"loading stage {sel.stage_id}: bundle {++stage_step}/{stage_bundles.Count}");
+                // the trailing bundle name segment identifies what is loading.
+                string short_name = name.Split('/').Last();
+                UV2.UI.load_progress.report($"loading stage {sel.stage_id}: {short_name} ({++stage_step}/{stage_bundles.Count})",
+                    0.04f + 0.30f * stage_step / stage_bundles.Count);
                 yield return null;
-                if (!run_phase_stage_bundle(name)) yield break;
+                yield return run_phase_stage_bundle(name);
+                if (!stage_bundles_ok) yield break;
             }
 
             // instantiates the laser and spotlight fixtures for the stage.
             yield return instantiate_laser_fixtures();
             yield return instantiate_spotlight_fixtures();
+            // blink fixtures the stage hierarchy lacks load as standalone
+            // prefabs: the worksheet names the family (e.g. wash_ground),
+            // but a stage id in the name may not match the loaded stage —
+            // 1004's worksheet asks for 10112_blinklight_wash_ground while
+            // the only such fixture in the game ships under live10101.
+            yield return instantiate_blink_fixtures(sel);
 
             blink_lights.bind(ws?.blink_tracks, null);
             spot_lights.bind(ws?.spot_tracks);
@@ -79,29 +119,41 @@ namespace UV2.Live
             additional_light.bind(ws?.additional_tracks);
 
             // wires the audience, mob, and cyalume tracks onto the crowd rig.
-            UV2.UI.load_progress.report("binding crowd");
+            UV2.UI.load_progress.report("binding crowd", 0.36f);
             yield return null;
             bind_crowd(sel);
 
             int cast_step = 0, cast_total = sel.slots.Count(s => s.chara_id > 0);
+            // spring physics director exists before the cast so load_character
+            // can bind each character's containers as it loads.
+            var physics_go = new GameObject("physics_director");
+            var physics = physics_go.AddComponent<physics_director>();
+            physics.bind_clock(clock);
             foreach (var slot in sel.slots.Where(s => s.chara_id > 0))
             {
-                UV2.UI.load_progress.report($"loading cast {++cast_step}/{cast_total}");
+                UV2.UI.load_progress.report($"loading {chara_name(slot.chara_id)} (cast {++cast_step}/{cast_total})",
+                    0.36f + 0.52f * cast_step / Mathf.Max(1, cast_total));
                 yield return null;
-                var root = run_phase_character(slot);
-                if (root == null) { _cast_missed++; continue; }
+                var staged = new System.Collections.Generic.List<Transform>();
+                yield return run_phase_character_steps(slot, staged);
+                if (staged.Count == 0) { _cast_missed++; continue; }
+                var root = staged[0];
                 chara_roots.Add(root);
+                // the standing place the game assigns this character: the
+                // selection's position minus one (position 1 = centre =
+                // roster slot 0).
+                chara_places.Add(Mathf.Max(0, slot.position - 1));
                 UV2.Live.chara_parts.record(root);
                 UV2.Live.chara_parts.record_height(root, slot.chara_id);
+                yield return null;
             }
             trace_log.write($"cast: {chara_roots.Count} loaded, {_cast_missed} missed, {chara_roots.Count} roots total");
-
             // resolves the song's props against the loaded cast.
-            UV2.UI.load_progress.report("binding props");
+            UV2.UI.load_progress.report("binding props", 0.90f);
             yield return null;
             bind_props(sel);
 
-            UV2.UI.load_progress.report("loading motion clips");
+            UV2.UI.load_progress.report("loading motion clips", 0.93f);
             yield return null;
             var clips = run_phase_clips(sel);
             if (clips == null) yield break;
@@ -109,22 +161,20 @@ namespace UV2.Live
             wire_drivers(clips, sel.music_id, sel.slots.Select(x => x.chara_id).ToList());
             trace_log.write("drivers wired: camera_director, formation, motion; concert open returning true");
 
-            // the vocal stems: decode the banks but keep every stem silent
-            // until its part row arrives — the bgm below is the timing
-            // master and must start only once the whole stage is live.
-            UV2.UI.load_progress.report("starting vocals");
-            yield return null;
-            var vocals_go = new GameObject("vocal_mixer");
-            vocals = vocals_go.AddComponent<vocal_mixer>();
-            vocals.open(clock, chara_roots, sel.slots, sel.music_id);
+            // the vocal stems: bind what the parallel decode produced and
+            // keep every stem silent until its part row arrives — the bgm
+            // below is the timing master and must start only once the whole
+            // stage is live and every stem exists.
+            UV2.UI.load_progress.report("binding vocals", 0.96f);
+            yield return vocals.bind(clock, chara_roots, sel.slots, sel.music_id);
 
-            UV2.UI.load_progress.report("concert ready");
+            UV2.UI.load_progress.report("concert ready", 1f);
             _open_ok = true;
 
             // the music starts last, with everything visible: starting it
             // mid-load made the song audible during the loading phase and
             // led the visible concert by the remaining load time.
-            start_music(sel.music_id);
+            start_music(sel.music_id, oke_task);
         }
 
         // loads the worksheet and resolves the stage manifest; false on failure.
@@ -133,6 +183,7 @@ namespace UV2.Live
             try
             {
                 ws = worksheet_reader.load(sel.music_id);
+                _instance = this;
                 if (ws == null) { last_error = $"no worksheet in the cutt bundles for song {sel.music_id}"; return false; }
                 clock = new timeline_clock();
                 if (sel.stage_id <= 0)
@@ -202,10 +253,56 @@ namespace UV2.Live
                 {
                     if (m == null) { mats.Append(" null"); continue; }
                     mats.Append(" ").Append(m.name).Append("[").Append(m.shader != null ? m.shader.name : "NULLSHADER").Append("]");
+                    // the base texture tells bound-but-white apart from
+                    // missing: a shader with no _MainTex assigned draws its
+                    // white default over the whole surface.
+                    if (m.HasProperty("_MainTex"))
+                    {
+                        var tex = m.GetTexture("_MainTex");
+                        mats.Append("{main=").Append(tex != null ? tex.name : "NONE").Append("}");
+                    }
+                    if (m.HasProperty("_Color"))
+                    {
+                        var col = m.GetColor("_Color");
+                        mats.Append("{col=").Append(col.r.ToString("0.00")).Append(",").Append(col.g.ToString("0.00")).Append(",").Append(col.b.ToString("0.00")).Append("}");
+                    }
+                    // the mirror floor shades from its distortion map and
+                    // mask, not from a base texture, so their presence is
+                    // logged too: a floor without them draws as flat white.
+                    foreach (var tex_prop in new[] { "_DistMap", "_MaskTex", "_ReflectionTex" })
+                    {
+                        if (!m.HasProperty(tex_prop)) continue;
+                        var tex = m.GetTexture(tex_prop);
+                        mats.Append('{').Append(tex_prop.Substring(1)).Append('=')
+                            .Append(tex != null ? tex.name : "NONE").Append('}');
+                    }
+                    if (m.HasProperty("_ReflectionRate"))
+                        mats.Append("{rate=").Append(m.GetFloat("_ReflectionRate").ToString("0.000")).Append('}');
+                    mats.Append("{queue=").Append(m.renderQueue).Append('}');
                 }
-                trace_log.write($"render probe '{r.gameObject.name}' layer={r.gameObject.layer} enabled={r.enabled} active={r.gameObject.activeInHierarchy} frustum={in_frustum} mats={mats.ToString().Trim()}");
+                Bounds b = r.bounds;
+                mats.Append("{bounds=").Append(b.center.ToString("F2")).Append(',').Append(b.size.ToString("F2")).Append('}');
+                trace_log.write($"render probe '{r.gameObject.name}' layer={r.gameObject.layer} enabled={r.enabled} active={r.gameObject.activeInHierarchy} frustum={in_frustum} sort={r.sortingOrder} mats={mats.ToString().Trim()}");
             }
             trace_log.write($"render probe complete: {probed} meshes");
+        }
+
+        // diagnostic switch: UV2_DEBUG_HIDE_GROUND=1 hides the opaque stage
+        // ground so the reflective floor mesh underneath can be inspected on
+        // its own. it changes nothing else and is off by default.
+        private void apply_debug_floor_switch(Transform root)
+        {
+            if (root == null) return;
+            if (System.Environment.GetEnvironmentVariable("UV2_DEBUG_HIDE_GROUND") != "1") return;
+            int hidden = 0;
+            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null) continue;
+                if (!r.gameObject.name.StartsWith("stage_ground", StringComparison.OrdinalIgnoreCase)) continue;
+                r.enabled = false;
+                hidden++;
+            }
+            trace_log.write($"debug floor switch: hid {hidden} stage ground renderers");
         }
 
         // auto-attaches mirror_reflection to renderers that carry mirror
@@ -290,6 +387,71 @@ namespace UV2.Live
             trace_log.write($"laser fixtures instantiated: {placed}");
         }
 
+        // instantiates missing blink fixtures: worksheet tracks whose root
+        // name is absent from the stage hierarchy resolve through the meta
+        // store (sourceresources fixture prefabs), stage id flexible.
+        private System.Collections.IEnumerator instantiate_blink_fixtures(selection_state sel)
+        {
+            if (ws?.blink_tracks == null) yield break;
+            var geo = GameObject.Find("stage_geometry");
+            var parent = geo != null ? geo.transform : null;
+            int placed = 0;
+            foreach (var t in ws.blink_tracks)
+            {
+                if (string.IsNullOrEmpty(t.name)) continue;
+                if (!blink_lights.is_blink_root_name(t.name)) continue;
+                if (blink_lights.find_stage_object(t.name) != null) continue;
+                // the family suffix drops the stage id: pfb_env_live<NNNNN>_
+                // blinklight_<family>. try the named id first, then the
+                // 10101 standalone (the only stages that ship standalone
+                // blink fixtures).
+                string family = t.name.Substring(t.name.IndexOf("blinklight_", StringComparison.Ordinal));
+                string[] candidates =
+                {
+                    $"sourceresources/3d/env/live/live{sel.stage_id}/prefabs/{t.name}",
+                    $"sourceresources/3d/env/live/live10101/prefabs/pfb_env_live10101_{family}",
+                };
+                GameObject piece = null;
+                foreach (var path in candidates)
+                {
+                    var row = meta_row(path);
+                    if (row == null) continue;
+                    if (!string.IsNullOrEmpty(row.prereq))
+                        foreach (var pre in row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
+                        {
+                            var pre_row = meta_row(pre.Trim());
+                            if (pre_row != null) game_assets.open(pre_row, config.data_root);
+                        }
+                    var bundle = game_assets.open(row, config.data_root);
+                    if (bundle == null) continue;
+                    foreach (var asset_name in bundle.GetAllAssetNames())
+                        if (asset_name.EndsWith(".prefab"))
+                        {
+                            piece = bundle.LoadAsset<GameObject>(asset_name);
+                            break;
+                        }
+                    if (piece != null) break;
+                }
+                if (piece == null)
+                {
+                    trace_log.write($"blink fixture: no prefab for missing '{t.name}'");
+                    continue;
+                }
+                var inst = Instantiate(piece, parent);
+                inst.name = t.name;
+                placed++;
+                foreach (var child in inst.GetComponentsInChildren<Transform>(true))
+                    blink_lights.record_stage_child(child.name, child.gameObject);
+                blink_lights.record_stage_child(t.name, inst);
+            }
+            if (placed > 0)
+            {
+                trace_log.write($"blink fixtures instantiated from prefabs: {placed}");
+                blink_lights.bind(ws.blink_tracks, null);
+            }
+            yield return null;
+        }
+
         // instantiates the spotlight fixtures from the common spotlight3d bundle.
         private System.Collections.IEnumerator instantiate_spotlight_fixtures()
         {
@@ -340,15 +502,18 @@ namespace UV2.Live
 
         private bool run_phase_stage(selection_state sel) => true;
 
-        private bool run_phase_stage_bundle(string name)
+        private System.Collections.IEnumerator run_phase_stage_bundle(string name)
         {
-            try
+            var b = load_bundle_keep_safe(name);
+            Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
+            if (b != null && name.Contains("controller"))
             {
-                var b = load_bundle_keep(name);
-                Debug.Log($"[stage_loader] bundle {name}: {(b == null ? "FAILED" : "ok, assets: " + b.GetAllAssetNames().Length)}");
-                if (b != null && name.Contains("controller"))
+                // the prereq chain yields between bundle groups; runs outside
+                // try/catch so the paint can happen (cs1626 forbids yielding
+                // inside a try that catches).
+                yield return load_controller_prereqs_steps(name);
+                try
                 {
-                    load_controller_prereqs(name);
                     string[] all = b.GetAllAssetNames();
                     string prefab_name = all.FirstOrDefault(n => n.EndsWith(".prefab"));
                     if (prefab_name != null)
@@ -376,6 +541,9 @@ namespace UV2.Live
                             var ctrl = stage.GetComponent<Gallop.Live.StageController>();
                             _stage_controller = ctrl;
                             var geo_root = new GameObject("stage_geometry");
+                            // the stage phase runs before wire_drivers creates the
+                            // bg_color1 director, so park the roots and bind later.
+                            _stage_instance_root = stage.transform;
                             crowd_rig.record_stage_audience_table(ctrl);
                             mob_control.record_rig(stage.transform);
                             cyalume.record_pen_meshes(stage.transform);
@@ -428,32 +596,46 @@ namespace UV2.Live
             // state reflect the live render, not the freshly-instantiated pose.
             StartCoroutine(probe_beam_after_frame(geo_root.transform));
             attach_mirror_reflections(geo_root.transform);
+            apply_debug_floor_switch(geo_root.transform);
                             volume_uv_scroll.record_stage_materials(geo_root.transform);
                             // spawns the cyalume rig before the crowd records it.
                             crowd_rig.start_stage_animations(geo_root.transform);
                             crowd_rig.spawn_cyalume_rig(geo_root.transform);
+                            crowd_rig.dump_crowd_structure(geo_root.transform);
+                            crowd_rig.dump_pattern_images(geo_root.transform);
                             mob_control.record_rig(geo_root.transform);
                             cyalume.record_pen_meshes(geo_root.transform);
                             shader_manager.fix_game_shaders(geo_root.transform, "stage_geometry");
                             shader_manager.audit_shaders(geo_root.transform, "stage_geometry");
+                            // the crowd meshes ship without uv coordinates, so
+                            // the sprite placement happens after the game's own
+                            // shaders are settled.
+                            cyalume_spread.spread(geo_root.transform);
                         }
                     }
                 }
-                return true;
-            }
-            catch (Exception e)
-            {
-                last_error = $"{e.GetType().Name}: {e.Message}";
-                Debug.LogError($"[stage_loader] stage bundle phase failed: {e}");
-                return false;
+                catch (Exception e)
+                {
+                    last_error = $"{e.GetType().Name}: {e.Message}";
+                    Debug.LogError($"[stage_loader] stage bundle phase failed: {e}");
+                    _stage_bundle_failed = true;
+                }
             }
         }
 
+        private bool _stage_bundle_failed;
+
+        // true when every stage bundle phase finished without a failure.
+        private bool stage_bundles_ok => !_stage_bundle_failed;
+
         // opens the controller's prereq bundles so its external refs resolve on load.
-        private void load_controller_prereqs(string controller_name)
+        // opens a batch of prereq bundles with yields between groups so the
+        // loading bar paints; the stage controller's 33-bundle chain was one
+        // ~7.6s main-thread block that froze the window.
+        private System.Collections.IEnumerator load_controller_prereqs_steps(string controller_name)
         {
             var row = meta_row(controller_name);
-            if (row == null || string.IsNullOrEmpty(row.prereq)) return;
+            if (row == null || string.IsNullOrEmpty(row.prereq)) yield break;
             int opened = 0;
             foreach (var pre in row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
             {
@@ -471,6 +653,8 @@ namespace UV2.Live
                         if (pre2_row != null) game_assets.open(pre2_row, config.data_root);
                     }
                 }
+                // the ui paints between each bundle group.
+                yield return null;
             }
             trace_log.write($"stage controller prereqs: {opened} opened for {controller_name}");
         }
@@ -520,6 +704,35 @@ namespace UV2.Live
             }
         }
 
+        // the per-character load split into yield points so the loading bar
+        // paints between its heavy halves: the load phase held one ~1.8s
+        // main-thread frame per chara (bundle open + head merge + shader fix)
+        // and the window could not pump between characters, freezing the bar.
+        private System.Collections.IEnumerator run_phase_character_steps(UV2.App.slot_pick slot,
+            System.Collections.Generic.List<Transform> sink)
+        {
+            Transform root = null;
+            try { root = load_character_head(slot.chara_id, slot.dress_id); }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] character phase failed: {e}");
+            }
+            if (root == null) yield break;
+            // let the ui paint the bar before the shader fix + physics bind.
+            yield return null;
+            try
+            {
+                finish_character(root, slot.chara_id, slot.dress_id);
+                sink.Add(root);
+            }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] character finish failed: {e}");
+            }
+        }
+
         private System.Collections.Generic.Dictionary<string, AnimationClip> run_phase_clips(selection_state sel)
         {
             try
@@ -552,7 +765,46 @@ namespace UV2.Live
         // the song clock, exposed for the -uv2frame seek mode in scene_boot.
         public timeline_clock song_clock { get { return clock; } }
 
+        // seeks the song clock and drives every driver at the seeked time.
+        // the drivers also run on their own LateUpdate, but that order is
+        // undefined: a capture fired from another component's LateUpdate can
+        // land before the camera and the pose were ever applied at the
+        // scrubbed frame. calling apply_at here makes the frame deterministic.
+        public void seek_and_apply(float seconds)
+        {
+            if (clock == null) return;
+            clock.pause();
+            clock.seek(seconds);
+            apply_at(seconds);
+        }
+
+        // drives the camera, the formation and the pose at one song time.
+        public void apply_at(float t)
+        {
+            motion?.apply_at(t);
+            formation?.apply_at(t);
+            director?.apply_at(t);
+        }
+
+        // the music source, exposed for the control panel's seek bridge.
+        public AudioSource music_source { get { return _music_source; } }
+        private AudioSource _music_source;
+
         public System.Collections.IEnumerator open(selection_state sel) { yield return open_core(sel); }
+
+        // load_bundle_keep wrapped for the coroutine path: a throw here must
+        // mark the stage failed instead of aborting the open coroutine.
+        private AssetBundle load_bundle_keep_safe(string name)
+        {
+            try { return load_bundle_keep(name); }
+            catch (Exception e)
+            {
+                last_error = $"{e.GetType().Name}: {e.Message}";
+                Debug.LogError($"[stage_loader] stage bundle open failed: {e}");
+                _stage_bundle_failed = true;
+                return null;
+            }
+        }
 
         private AssetBundle load_bundle_keep(string name)
         {
@@ -564,6 +816,144 @@ namespace UV2.Live
         }
 
         // loads the character's body prefab and merges its head onto the skeleton.
+        // the game's per-character body scale (UmaContainerCharacter):
+        // Position.localScale = scale/160.7529, with scale = chara_data.scale
+        // in cm (135..180 across the cast). height 0/missing falls back to 1.
+        // spring bone distances are measured from the live rig at bind, and
+        // collider riders parent under the scaled bones, so both follow
+        // automatically; collider radii and record collision_radius are the
+        // authored values, which are correct under this scale by the game's
+        // own ScaleParams algebra (legacyScale cancels the bone lossyScale).
+        private void apply_chara_scale(Transform character_root, int chara_id)
+        {
+            float body_scale = 1f;
+            try
+            {
+                var db = UV2.Data.master_db.reader.open(config.master_db_path);
+                if (db != null)
+                {
+                    try
+                    {
+                        var rows = db.query($"SELECT scale FROM chara_data WHERE id={chara_id}");
+                        if (rows.Count > 0)
+                        {
+                            int cm = (int)rows[0].get_int(0);
+                            if (cm > 0) body_scale = cm / 160.7529f;
+                        }
+                    }
+                    finally { db.Dispose(); }
+                }
+            }
+            catch (System.Exception e)
+            {
+                trace_log.write($"chara {chara_id}: scale read failed ({e.Message}), using 1.0");
+            }
+            var position = character_root.Find("Position");
+            if (position != null)
+            {
+                position.localScale = new Vector3(body_scale, body_scale, body_scale);
+                trace_log.write($"chara {chara_id}: body scale {body_scale:0.000} applied to Position");
+            }
+        }
+
+        // loads the character's bundles and instantiates the body with its
+        // head merged and tail mounted (the half of the load that resolves
+        // asset references); the finish half below does the runtime passes.
+        private Transform load_character_head(int chara_id, int dress_id)
+        {
+            var body_opt = manifest_reader.chara_body(chara_id, dress_id);
+            if (body_opt == null)
+            {
+                Debug.LogWarning($"[stage_loader] no body entry for chara {chara_id} dress {dress_id}");
+                return null;
+            }
+            var body = body_opt.Value;
+
+            var row = meta_row(body.bundle);
+            if (row == null) { Debug.LogWarning($"[stage_loader] chara {chara_id}: no meta row for {body.bundle}"); return null; }
+
+            // loads the prereq bundles first so the prefab's material refs resolve.
+            if (!string.IsNullOrEmpty(row.prereq))
+            {
+                foreach (var pre in row.prereq.Split(';', System.StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var pre_row = meta_row(pre.Trim());
+                    var pre_bundle = pre_row == null ? null : game_assets.open(pre_row, config.data_root);
+                    Debug.Log($"[stage_loader] chara {chara_id} prereq {pre.Trim()}: {(pre_bundle == null ? "FAILED" : "ok, assets: " + pre_bundle.GetAllAssetNames().Length)}");
+                }
+            }
+
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) { Debug.LogWarning($"[stage_loader] chara {chara_id}: bundle open failed {body.bundle}"); return null; }
+
+            string[] all = bundle.GetAllAssetNames();
+            string prefab_name = all.FirstOrDefault(n => n.EndsWith(body.prefab + ".prefab"))
+                                 ?? all.FirstOrDefault(n => n.EndsWith(".prefab"));
+            if (prefab_name == null)
+            {
+                Debug.LogWarning($"[stage_loader] chara {chara_id}: no prefab in {body.bundle} (want {body.prefab}; assets: {string.Join(", ", all.Take(4))})");
+                bundle.Unload(true);
+                return null;
+            }
+
+            var prefab = bundle.LoadAsset<GameObject>(prefab_name);
+            bundle.Unload(false);
+            if (prefab == null) { Debug.LogWarning($"[stage_loader] chara {chara_id}: LoadAsset null for {prefab_name}"); return null; }
+
+            var instance = Instantiate(prefab);
+
+            // the body prefab ships without a head; it merges on from the head bundle.
+            int head_renderers = attach_head(instance.transform, chara_id);
+
+            // the tail mesh carries the Sp_Hi_Tail bones the spring chains bind.
+            int tail_renderers = mount_tail(instance.transform, chara_id, dress_id);
+            trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: "
+                + $"{instance.GetComponentsInChildren<Renderer>(true).Length} renderers (head +{head_renderers}, tail +{tail_renderers})");
+            return instance.transform;
+        }
+
+        // the runtime half of the character load: shader fix, height scale,
+        // generic textures, and the spring container bind.
+        private void finish_character(Transform instance, int chara_id, int dress_id)
+        {
+            var body_opt = manifest_reader.chara_body(chara_id, dress_id);
+            var body = body_opt.Value;
+
+            shader_manager.fix_game_shaders(instance, $"chara {chara_id}");
+
+            // the game scales the whole rig by the chara's height
+            // (UmaContainerCharacter: Position.localScale = scale/160.7529),
+            // and every spring length/collider offset rides that scale.
+            apply_chara_scale(instance, chara_id);
+
+            // generic bodies ship null texture slots; assign them after the shader swap.
+            assign_generic_body_textures(instance, chara_id, body.bundle);
+
+            // spring physics: containers load after the skeleton is complete
+            // (head merged), so every spring root resolves by name.
+            if (physics_director.instance != null)
+            {
+                var (body_folder, chara_body, bust, tail_id) = chara_container_info(chara_id, dress_id);
+                if (body_folder != null)
+                {
+                    int cloth_idx = cloth_slot(dress_id);
+                    var sim = physics_director.instance.attach_character(
+                        chara_id, body_folder, cloth_idx, bust,
+                        chara_body, tail_id, instance, load_container_prefab);
+                    if (sim != null)
+                    {
+                        chara_springs[chara_id] = sim;
+                        chara_springs_roots[instance] = chara_id;
+                    }
+                    // the skirt knee-correction pass rides the v1 bridge
+                    // (attach_character returns null there by design, so the
+                    // skirt binds unconditionally).
+                    physics_director.instance.attach_skirt(chara_id, body_folder,
+                        cloth_idx, instance, load_asset_object);
+                }
+            }
+        }
+
         private Transform load_character(int chara_id, int dress_id)
         {
             var body_opt = manifest_reader.chara_body(chara_id, dress_id);
@@ -610,13 +1000,268 @@ namespace UV2.Live
             // the body prefab ships without a head; it merges on from the head bundle.
             int head_renderers = attach_head(instance.transform, chara_id);
 
+            // the tail mesh carries the Sp_Hi_Tail bones the spring chains bind.
+            int tail_renderers = mount_tail(instance.transform, chara_id, dress_id);
+
             int chara_renderers = instance.GetComponentsInChildren<Renderer>(true).Length;
             trace_log.write($"chara {chara_id} dress {dress_id} -> {body.prefab}: {chara_renderers} renderers (head +{head_renderers})");
             shader_manager.fix_game_shaders(instance.transform, $"chara {chara_id}");
 
+            // the game scales the whole rig by the chara's height
+            // (UmaContainerCharacter: Position.localScale = scale/160.7529),
+            // and every spring length/collider offset rides that scale.
+            apply_chara_scale(instance.transform, chara_id);
+
             // generic bodies ship null texture slots; assign them after the shader swap.
             assign_generic_body_textures(instance.transform, chara_id, body.bundle);
+
+            // spring physics: containers load after the skeleton is complete
+            // (head merged), so every spring root resolves by name.
+            if (physics_director.instance != null)
+            {
+                var (body_folder, chara_body, bust, tail_id) = chara_container_info(chara_id, dress_id);
+                if (body_folder != null)
+                {
+                    int cloth_idx = cloth_slot(dress_id);
+                    var sim = physics_director.instance.attach_character(
+                        chara_id, body_folder, cloth_idx, bust,
+                        chara_body, tail_id, instance.transform, load_container_prefab);
+                    if (sim != null)
+                    {
+                        chara_springs[chara_id] = sim;
+                        chara_springs_roots[instance.transform] = chara_id;
+                    }
+                    // the skirt knee-correction pass rides the v1 bridge
+                    // (attach_character returns null there by design, so the
+                    // skirt binds unconditionally).
+                    physics_director.instance.attach_skirt(chara_id, body_folder,
+                        cloth_idx, instance.transform, load_asset_object);
+                }
+            }
             return instance.transform;
+        }
+
+        // loads any single asset from a bundle by manifest name (skirt
+        // parameter ScriptableObjects; falls back to the first asset).
+        UnityEngine.Object load_asset_object(string bundle_name)
+        {
+            var row = meta_row(bundle_name);
+            if (row == null) return null;
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) return null;
+            foreach (var n in bundle.GetAllAssetNames())
+            {
+                var a = bundle.LoadAsset<UnityEngine.Object>(n);
+                if (a != null) return a;
+            }
+            return null;
+        }
+
+        // resolves the tail mesh prefab for one character and merges it onto
+        // the body (the fork's exclusive-then-shared order):
+        //   1. exclusive tail{dress_chara}_{sub} (costume-specific model),
+        //   2. shared tail{tail_model_id:0000}_00 from the chara row.
+        // the tail's textures load by manifest name; missing texture rows
+        // leave the material slots to the bundle's own defaults.
+        private int mount_tail(Transform character, int chara_id, int dress_id)
+        {
+            var (folder, chara_body, bust, tail_id) = chara_container_info(chara_id, dress_id);
+            if (tail_id <= 0) return 0;
+
+            // the exclusive tail names the character + costume sub slot.
+            string sub = chara_body && folder != null ? folder.Substring(folder.Length - 2) : "00";
+            string excl_tail = $"3d/chara/tail/tail{chara_id}_{sub}/pfb_tail{chara_id}_{sub}";
+            string shared_tail = $"3d/chara/tail/tail{tail_id:0000}_00/pfb_tail{tail_id:0000}_00";
+
+            var tail_instance = load_mesh_prefab(excl_tail);
+            if (tail_instance == null)
+                tail_instance = load_mesh_prefab(shared_tail);
+            if (tail_instance == null)
+            {
+                trace_log.write($"chara {chara_id}: no tail prefab ({excl_tail} | {shared_tail})");
+                return 0;
+            }
+
+            string tail_stem = tail_instance.name.Replace("(Clone)", "");
+            int renderers = tail_mount.mount(character, tail_instance, s => trace_log.write($"chara {chara_id}: {s}"));
+            // textures load after the mount: the renderer must live under the
+            // character to be found. the tail stem in the manifest strips the
+            // pfb_ prefix (tex_tail0001_00_1001_diff, not tex_pfb_...).
+            load_tail_textures(character, chara_id, tail_stem);
+            return renderers;
+        }
+
+        // loads texture bundles named tex_{tail}_{head}_{suffix} into the
+        // tail's materials: per-head rows first (diff/shad), then the shared
+        // _0000 base/ctrl set. the manifest names the tail without the pfb_
+        // prefix (tex_tail0001_00_1001_diff).
+        private void load_tail_textures(Transform character, int chara_id, string tail_stem)
+        {
+            string stem = tail_stem.StartsWith("pfb_") ? tail_stem.Substring(4) : tail_stem;
+            string dir = $"3d/chara/tail/{stem}/textures";
+            var names = new HashSet<string>();
+            foreach (var suffix in new[] { "diff", "shad_c" })
+                names.Add($"{dir}/tex_{stem}_{chara_id}_{suffix}");
+            names.Add($"{dir}/tex_{stem}_0000_base");
+            names.Add($"{dir}/tex_{stem}_0000_ctrl");
+            using var meta = meta_reader.reader.open(config.meta_db_path);
+            if (meta == null) return;
+            var rows = meta.lookup(names);
+            var loaded = new Dictionary<string, Texture2D>();
+            foreach (var kv in rows)
+            {
+                var bundle = game_assets.open(kv.Value, config.data_root);
+                if (bundle == null) continue;
+                foreach (var n in bundle.GetAllAssetNames())
+                {
+                    var t = bundle.LoadAsset<Texture2D>(n);
+                    if (t != null) loaded[n] = t;
+                }
+            }
+            if (loaded.Count == 0) return;
+            int assigned = 0;
+
+            // the tail prefab ships an unresolved material slot; the tail's
+            // own materials bundle (sourceresources/.../mtl_{stem}) carries
+            // the real material.
+            Material tail_mat = null;
+            try
+            {
+                var mtl_row = meta_row($"sourceresources/3d/chara/tail/{stem}/materials/mtl_{stem}");
+                if (mtl_row != null)
+                {
+                    var mtl_bundle = game_assets.open(mtl_row, config.data_root);
+                    if (mtl_bundle != null)
+                        tail_mat = mtl_bundle.LoadAsset<Material>(mtl_bundle.GetAllAssetNames().FirstOrDefault());
+                }
+            }
+            catch { }
+
+            foreach (var r in character.GetComponentsInChildren<Renderer>(true))
+            {
+                if (!r.name.Contains("Tail") && !r.name.Contains("tail")) continue;
+                var mats = r.materials;
+                bool changed = false;
+                for (int mi = 0; mi < mats.Length; mi++)
+                {
+                    var m = mats[mi];
+                    // a null slot or a material whose shader never resolved
+                    // renders magenta: the mtl bundle's material replaces it.
+                    if ((m == null || m.shader == null) && tail_mat != null)
+                    {
+                        m = tail_mat;
+                        mats[mi] = m;
+                        changed = true;
+                    }
+                    if (m == null || m.shader == null) continue;
+                    Texture tex = null;
+                    try { tex = m.GetTexture("_MainTex"); } catch { }
+                    if (tex != null) continue;
+                    foreach (var kv in loaded)
+                    {
+                        string prop = kv.Key.Contains("diff") ? "_MainTex"
+                            : kv.Key.Contains("shad") ? "_ToonMap"
+                            : kv.Key.Contains("base") ? "_TripleMaskMap"
+                            : "_OptionMaskMap";
+                        try
+                        {
+                            if (m.GetTexture(prop) == null)
+                            {
+                                m.SetTexture(prop, kv.Value);
+                                assigned++;
+                            }
+                        } catch { }
+                    }
+                }
+                if (changed) r.materials = mats;
+            }
+            trace_log.write($"chara {chara_id} tail textures: {loaded.Count} loaded, {assigned} slots assigned, mat {(tail_mat == null ? "none" : "set")}");
+        }
+
+        // loads a mesh prefab bundle by manifest name and returns the live instance.
+        private GameObject load_mesh_prefab(string bundle_name)
+        {
+            var row = meta_row(bundle_name);
+            if (row == null) return null;
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) return null;
+            string want = bundle_name.Split('/').Last();
+            string prefab_name = bundle.GetAllAssetNames().FirstOrDefault(n => n.EndsWith($"/{want}.prefab"))
+                                 ?? bundle.GetAllAssetNames().FirstOrDefault(n => n.EndsWith(".prefab"));
+            var prefab = string.IsNullOrEmpty(prefab_name) ? null : bundle.LoadAsset<GameObject>(prefab_name);
+            return prefab == null ? null : Instantiate(prefab);
+        }
+
+        // per-character spring sims (formation keys address them by chara id).
+        readonly Dictionary<int, spring_sim> chara_springs = new();
+        // root transform per chara id, for the formation driver's key routing.
+        readonly Dictionary<Transform, int> chara_springs_roots = new();
+
+        // resolves the container bundle folder + axes for one character from
+        // the master db (mirrors manifest_reader.chara_body's naming rules):
+        // body folder, whether it is character-specific, the bust size
+        // (shared bodies), and the tail model id.
+        (string folder, bool chara_body, int bust, int tail_id) chara_container_info(
+            int chara_id, int dress_id)
+        {
+            var db = UV2.Data.master_db.reader.open(config.master_db_path);
+            if (db == null) return (null, false, 0, 0);
+            try
+            {
+            var dress_rows = db.query(
+                $"SELECT chara_id, body_type, body_type_sub, tail_model_id FROM dress_data WHERE id={dress_id}");
+            if (dress_rows.Count == 0) return (null, false, 0, 0);
+            int dress_chara = (int)dress_rows[0].get_int(0);
+            int body_type = (int)dress_rows[0].get_int(1);
+            int body_sub = (int)dress_rows[0].get_int(2);
+            int dress_tail = (int)dress_rows[0].get_int(3);
+
+            if (dress_chara != 0)
+            {
+                // character-specific body: one folder, tail id from the chara row.
+                var chara_rows = db.query(
+                    $"SELECT bust, tail_model_id FROM chara_data WHERE id={dress_chara}");
+                int bust = 0, tail_id = dress_tail;
+                if (chara_rows.Count > 0)
+                {
+                    bust = (int)chara_rows[0].get_int(0);
+                    if (tail_id < 0) tail_id = (int)chara_rows[0].get_int(1);
+                }
+                return ($"3d/chara/body/bdy{dress_chara}_{body_sub:d2}", true, bust, tail_id);
+            }
+
+            // shared body: the folder rides the dress's body_type; the bust
+            // size and tail come from the character row.
+            var rows = db.query(
+                $"SELECT bust, tail_model_id FROM chara_data WHERE id={chara_id}");
+            if (rows.Count == 0) return (null, false, 0, 0);
+            int bust2 = (int)rows[0].get_int(0);
+            int tail2 = dress_tail;
+            if (tail2 < 0) tail2 = (int)rows[0].get_int(1);
+            return ($"3d/chara/body/bdy{body_type:d4}_{body_sub:d2}", false, bust2, tail2);
+            }
+            finally { db.Dispose(); }
+        }
+
+        // the dress's cloth slot: the container bundles ship cloth00..04 and
+        // the worn dress resolves one. until the cloth index decode lands,
+        // every character binds cloth00 (the base slot the containers carry
+        // for all bodies) — the loader falls back down from the slot given.
+        int cloth_slot(int dress_id) => 0;
+
+        // loads a container prefab bundle by manifest name (instances are
+        // plain GameObjects with one data-only component).
+        GameObject load_container_prefab(string bundle_name)
+        {
+            var row = meta_row(bundle_name);
+            if (row == null) return null;
+            var bundle = game_assets.open(row, config.data_root);
+            if (bundle == null) return null;
+            string want = bundle_name.Split('/').Last();
+            string prefab_name = bundle.GetAllAssetNames().FirstOrDefault(n => n.EndsWith($"/{want}.prefab"))
+                                 ?? bundle.GetAllAssetNames().FirstOrDefault(n => n.EndsWith(".prefab"));
+            var prefab = string.IsNullOrEmpty(prefab_name) ? null : bundle.LoadAsset<GameObject>(prefab_name);
+            return prefab == null ? null : Instantiate(prefab);
         }
 
         // finds the shader's main texture property; it may not be _MainTex.
@@ -965,7 +1610,47 @@ namespace UV2.Live
             var bgc_go = new GameObject("bg_color1_director");
             bg_color1 = bgc_go.AddComponent<bg_color1_director>();
             bg_color1.open(ws, clock, chara_roots);
-            formation.open(ws, clock, chara_roots);
+
+            var glo_go = new GameObject("global_light_director");
+            global_light = glo_go.AddComponent<global_light_director>();
+            global_light.open(ws);
+
+            // the facial-toon shaping block: twenty per-standing-place groups
+            // that drive the head materials' toon values.
+            var toon_go = new GameObject("facial_toon");
+            toon = toon_go.AddComponent<facial_toon>();
+            toon.open(ws, chara_roots, chara_places);
+            // BgBL's ambient sweep runs over the controller instance +
+            // stage_geometry (the game's ShaderParamObject hierarchy).
+            var geo = GameObject.Find("stage_geometry");
+            bg_color1.bind_stage(_stage_instance_root, geo != null ? geo.transform : null);
+
+            // the environment track publishes the authored mirror state, and
+            // the object list moves and shows the named stage props.
+            var env_go = new GameObject("environment_director");
+            environment = env_go.AddComponent<environment_director>();
+            environment.open(ws);
+            var obj_go = new GameObject("object_director");
+            stage_objects = obj_go.AddComponent<object_director>();
+            stage_objects.open(ws, new List<Transform>
+            {
+                _stage_instance_root,
+                geo != null ? geo.transform : null,
+            });
+
+            // the stage prefabs carry their own particle systems (the smoke
+            // plumes over the stage); the game starts them, so we start
+            // them too or the concert airs out empty.
+            var part_go = new GameObject("particle_playback");
+            particles = part_go.AddComponent<particle_playback>();
+            particles.bind(new List<Transform>
+            {
+                _stage_instance_root,
+                geo != null ? geo.transform : null,
+            });
+            var spring_sims = new Dictionary<int, spring_sim>(chara_springs);
+            formation.open(ws, clock, chara_roots, spring_sims);
+            foreach (var kv in chara_springs_roots) formation.root_chara[kv.Key] = kv.Value;
 
             var motion_go = new GameObject("motion_player");
             motion = motion_go.AddComponent<motion_player>();
@@ -987,40 +1672,58 @@ namespace UV2.Live
             motion.play();
         }
 
-        // samples the global-light track and hands the interpolated key to the shade publisher.
-        private void update_light_track()
+        // resolves the instrumental bank and starts its decode on a worker;
+        // null task when the bank is missing (start_music falls back to the
+        // old inline decode path).
+        private System.Threading.Tasks.Task<(float[] pcm, int channels, int rate)?> start_oke_decode(int music_id)
         {
-            if (ws == null || ws.global_light.Count == 0) return;
-            float frame = clock?.time ?? 0f;
-            frame *= 60f;
-
-            var keys = ws.global_light;
-            int last = keys.Count - 1;
-            if (frame <= keys[0].frame) { global_shade.set_light_track(keys[0], 0f); return; }
-            if (frame >= keys[last].frame) { global_shade.set_light_track(keys[last], 1f); return; }
-
-            for (int i = 0; i < last; i++)
-            {
-                if (frame >= keys[i].frame && frame < keys[i + 1].frame)
-                {
-                    float span = keys[i + 1].frame - keys[i].frame;
-                    float blend = span <= 0 ? 0f : (frame - keys[i].frame) / span;
-                    global_shade.set_light_track(keys[i], keys[i + 1], blend);
-                    return;
-                }
-            }
-        }
-
-        private AudioSource music_source;
-
-        // decodes the song's instrumental bank and starts playback; the clock locks to it.
-        private void start_music(int music_id)
-        {
-            // tries the _01 and _02 oke variants; take whichever the install carries.
+            // oke_02 is the karaoke master; oke_01 carries guide vocals on
+            // some songs and doubles the chara stems when played with them.
             var candidates = new[]
             {
-                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
                 $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_02.awb",
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
+            };
+            meta_reader.asset_row bank_row = null;
+            foreach (var c in candidates)
+            {
+                bank_row = meta_row(c);
+                if (bank_row != null) break;
+            }
+            if (bank_row == null)
+            {
+                trace_log.write($"music: no oke bank for song {music_id}");
+                return null;
+            }
+
+            string path = System.IO.Path.Combine(config.data_root, "dat", bank_row.hash.Substring(0, 2), bank_row.hash);
+            if (!System.IO.File.Exists(path))
+            {
+                trace_log.write($"music: oke bank missing on disk: {path}");
+                return null;
+            }
+            byte[] bank = System.IO.File.ReadAllBytes(path);
+            var waves = live_audio.parse_afs2(bank);
+            if (waves.Count == 0)
+            {
+                trace_log.write("music: afs2 parse found no waves");
+                return null;
+            }
+            trace_log.write($"music: oke decode started on worker (take {bank_row.name.Substring(bank_row.name.LastIndexOf('_') + 1)}, {waves.Count} waves)");
+            return System.Threading.Tasks.Task.Run<(float[] pcm, int channels, int rate)?>(
+                () => live_audio.decode_wave_pcm(bank, waves[0]));
+        }
+
+        // decodes the song's instrumental bank and starts playback; the clock locks to it.
+        private void start_music(int music_id,
+            System.Threading.Tasks.Task<(float[] pcm, int channels, int rate)?> oke_task = null)
+        {
+            // tries the _02 (karaoke) oke first, falls back to _01; take
+            // whichever the install carries.
+            var candidates = new[]
+            {
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_02.awb",
+                $"sound/l/{music_id}/snd_bgm_live_{music_id}_oke_01.awb",
             };
             meta_reader.asset_row bank_row = null;
             foreach (var c in candidates)
@@ -1044,12 +1747,31 @@ namespace UV2.Live
             var waves = live_audio.parse_afs2(bank);
             if (waves.Count == 0)
             {
-                UV2.UI.load_progress.report("starting music");
-            trace_log.write("music: afs2 parse found no waves");
+                trace_log.write("music: afs2 parse found no waves");
                 return;
             }
 
-            var clip = live_audio.decode_wave(bank, waves[0], $"oke_{music_id}");
+            AudioClip clip = null;
+            if (oke_task != null)
+            {
+                // the worker rode the load window; this wait is the leftover
+                // tail only, not a fresh ~1.2s main-thread decode.
+                var decoded = oke_task.Result;
+                if (decoded.HasValue)
+                {
+                    var (pcm, channels, rate) = decoded.Value;
+                    if (pcm != null && pcm.Length > 0)
+                    {
+                        clip = AudioClip.Create($"oke_{music_id}", pcm.Length / channels, channels, rate, false);
+                        clip.SetData(pcm, 0);
+                    }
+                }
+                if (clip == null) trace_log.write("music: worker oke decode failed, decoding inline");
+            }
+            if (clip == null)
+            {
+                clip = live_audio.decode_wave(bank, waves[0], $"oke_{music_id}");
+            }
             if (clip == null)
             {
                 trace_log.write("music: oke decode failed");
@@ -1057,13 +1779,33 @@ namespace UV2.Live
             }
 
             var go = new GameObject("live_music");
-            music_source = go.AddComponent<AudioSource>();
-            music_source.clip = clip;
-            music_source.loop = false;
-            music_source.Play();
-            if (!force_free_clock) clock.bind_master(music_source);
+            _music_source = go.AddComponent<AudioSource>();
+            _music_source.clip = clip;
+            _music_source.loop = false;
+            _music_source.Play();
+            if (!force_free_clock) clock.bind_master(_music_source);
             else trace_log.write("clock: forced free-run for this run");
-            trace_log.write($"music: oke playing ({clip.frequency}Hz, {clip.length:0.0}s, {waves.Count} waves)");
+            trace_log.write($"music: oke playing ({clip.frequency}Hz, {clip.length:0.0}s, take {bank_row.name.Substring(bank_row.name.LastIndexOf('_') + 1)})");
+        }
+
+        // the cast slot's display name from the text table (category 6).
+        private string chara_name(int chara_id)
+        {
+            try
+            {
+                using var db = master_db.reader.open(config.master_db_path);
+                if (db == null) return $"chara {chara_id}";
+                foreach (var r in db.query(
+                    $"SELECT `index`, text FROM text_data WHERE category=6"))
+                    if ((int)r.get_int(0) == chara_id)
+                    {
+                        string n = r.get_text(1);
+                        db.Dispose();
+                        return string.IsNullOrEmpty(n) ? $"chara {chara_id}" : n;
+                    }
+            }
+            catch { }
+            return $"chara {chara_id}";
         }
 
         // picks the stage id from the song's livesettings for selections without one.
@@ -1085,7 +1827,8 @@ namespace UV2.Live
             _diag_hook();
             clock?.advance(Time.deltaTime);
             diag_pass("motion", () => motion?.play());
-            diag_pass("lights_track", update_light_track);
+            diag_pass("lights_track", () =>
+                global_light?.update(clock?.time ?? 0f, FindObjectOfType<Camera>()));
             diag_pass("blink", () => blink_lights.update(clock?.time ?? 0f, ws?.blink_tracks));
             diag_pass("spot", () => spot_lights.update(clock?.time ?? 0f, ws?.spot_tracks, chara_roots));
             diag_pass("laser", () => laser_lights.update(clock?.time ?? 0f, ws?.laser_tracks, chara_roots));
@@ -1105,6 +1848,11 @@ namespace UV2.Live
             });
             diag_pass("shade", () =>
             {
+                // the director resolved the per-roster-slot light states; the
+                // scene-wide rim and rotation ride along for the shader globals.
+                if (global_light != null)
+                    global_shade.set_slot_states(global_light.slot_states, global_light.rim_color,
+                        global_light.scene_rotation);
                 global_shade.publish(FindObjectOfType<Camera>());
                 // bg_color1 first: its Chara* groups overwrite the whole
                 // property block on the character renderers, which wipes any
@@ -1113,11 +1861,24 @@ namespace UV2.Live
                 // global-light mpb is re-applied per frame so "any competing
                 // writer loses"), so the chara pin must be the last writer.
                 bg_color1?.update(clock?.time ?? 0f);
-                global_shade.publish_chara_block(chara_roots);
+                global_shade.publish_chara_block(chara_roots, chara_places);
+                // the facial toon lands LAST: the game dispatches global
+                // light, then bg colour, then facial toon, so the toon's own
+                // light direction wins the shared head property.
+                toon?.update(clock?.time ?? 0f);
             });
 
             // foot lights run after the pose so they track the characters exactly.
             diag_pass("foot", () => foot_light.update(clock?.time ?? 0f, ws?.foot_light, chara_roots));
+
+            // the environment track drives the floor mirror and the object
+            // list drives the named stage props; both read the song clock.
+            diag_pass("environment", () => environment?.update(clock?.time ?? 0f));
+            diag_pass("objects", () => stage_objects?.update(clock?.time ?? 0f));
+
+            // the stage's authored particle systems run on the same clock,
+            // so a scrub restarts them instead of leaving stale motes.
+            diag_pass("particles", () => particles?.update(clock?.time ?? 0f));
 
             // the props pass runs after the pose so the hand ik lands correctly.
             diag_pass("props", () =>
@@ -1184,6 +1945,37 @@ namespace UV2.Live
                         if (slot > 0 && slot - 1 < chara_roots.Count)
                             mic_info = $" | chara {chara_roots[slot - 1].position}";
                         trace_log.write($"props bench: {s.name} at {s.position} (parent {s.parent?.name}, active {s.gameObject.activeSelf}){mic_info}");
+                    }
+
+                    // the cast's stage positions and visibility in one line:
+                    // the formation driver writes localPosition, so a root at
+                    // the origin means its group never reached it, and an
+                    // inactive root means the visible key hid the chara.
+                    int cast_active = 0;
+                    string cast_state = "";
+                    for (int i = 0; i < chara_roots.Count; i++)
+                    {
+                        var root = chara_roots[i];
+                        if (root == null) continue;
+                        bool on = root.gameObject.activeSelf;
+                        if (on) cast_active++;
+                        cast_state += $" {i + 1}:{(on ? "+" : "-")}{root.localPosition}";
+                    }
+                    trace_log.write($"cast bench: active {cast_active}/{chara_roots.Count} |{cast_state}");
+
+                    // what the formation driver thinks each group's key says.
+                    if (ws != null && ws.formation != null)
+                    {
+                        float ft = clock?.time ?? 0f;
+                        foreach (var gkv in ws.formation)
+                        {
+                            var gkeys = gkv.Value;
+                            if (gkeys == null || gkeys.Count == 0) continue;
+                            int gi = UV2.Live.key_eval.bracket(gkeys, ft);
+                            if (gi < 0) continue;
+                            var gk = gkeys[gi];
+                            trace_log.write($"formation group {gkv.Key}: key f{gk.frame} pos {gk.position} visible {gk.visible}");
+                        }
                     }
                 }
 

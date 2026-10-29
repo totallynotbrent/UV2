@@ -143,16 +143,38 @@ namespace UV2.Live
         public Vector3 ik_l_low;
         public Vector3 ik_r_high;
         public Vector3 ik_r_low;
+        public byte warm_up_cy_spring;    // warmUpCySpring: triggers the warm-up pass
+        public float cy_spring_warm_up_time;   // seconds (0 = default 1.0s)
+        public float cy_spring_rate;      // amplitude scale for the springs
+    }
+
+    // charaWind track key: per-formation-group wind enable + param override.
+    [Serializable]
+    public class chara_wind_key : live_key
+    {
+        public byte enable_wind;
+        public byte enable_vertical;
+        public byte enable_horizontal;
+        public float vertical_cycle;
+        public float horizontal_cycle;
+        public float vertical_angle_width;
+        public float horizontal_angle_width;
+        public int parts_mask;
+        public Vector3 power_scale;        // per-part scales head/body/tail
+        public Vector3 direction;
+        public Vector3 right;
+        public byte is_local_direction;
     }
 
     // one authored global-light key: the toon light direction for the frame.
+    //
+    // the key carries the authored curve and the interpolation type like
+    // every other keyed type: the game's CalculateInterpolationValue reads
+    // the NEXT key's interpolate type and curve, so the curve belongs to the
+    // key that terminates the span.
     [Serializable]
-    public class global_light_key
+    public class global_light_key : live_key
     {
-        public int frame;
-        public int attribute;
-        public int interpolate_type;
-        public int easing_type;
         public Vector3 light_dir;
         public Color rim_color;
         public float rim_step;
@@ -171,6 +193,11 @@ namespace UV2.Live
         public float rim_horizon_offset2;
         public float rim_vertical_offset2;
         public string blink_light_name = "";
+
+        // the authored AnimationCurve the stub carried, kept native so the
+        // blend evaluates with unity's own curve sampler (the game's
+        // CurveInterpolateKeyframes calls curve.Evaluate on the same object).
+        public AnimationCurve native_curve;
     }
 
     // one bgColor1 key: the concert's ambient + character tint track.
@@ -271,6 +298,54 @@ namespace UV2.Live
         public List<audience_key> keys = new();
     }
 
+    // one environment key: the concert's mirror state for the frame.
+    // son1004_full_data.json, environmentDataLists["Environment"]:
+    // isValidMirror gates the block, isMirror turns the floor mirror on,
+    // mirrorReflectionRate is the authored blend rate and characterMirror
+    // is the per-slot bitmask of mirrored characters.
+    [Serializable]
+    public class environment_key : live_key
+    {
+        public byte is_valid_mirror;
+        public byte is_mirror;
+        public byte is_bg_mirror;
+        public int character_mirror;
+        public float mirror_reflection_rate;
+        public byte is_toon_mirror;
+    }
+
+    // one environment group: the game ships a single "Environment" group.
+    [Serializable]
+    public class environment_track
+    {
+        public string name = "";
+        public List<environment_key> keys = new();
+    }
+
+    // one stage-object key: a named prop's transform and render state.
+    [Serializable]
+    public class object_key : live_key
+    {
+        public Vector3 position;
+        public Vector3 rotate;
+        public Vector3 scale = Vector3.one;
+        public byte render_enable;
+        public int attach_target;
+        public int character_position;
+        public int offset_value_type;
+    }
+
+    // one stage-object track: the prop name plus the per-axis enable flags.
+    [Serializable]
+    public class object_track
+    {
+        public string name = "";
+        public byte enable_position;
+        public byte enable_rotate;
+        public byte enable_scale;
+        public List<object_key> keys = new();
+    }
+
     public class live_worksheet
     {
         public List<blink_track_container> blink_tracks = new();
@@ -286,6 +361,12 @@ namespace UV2.Live
         public List<additional_track_container> additional_tracks = new();
         public string song_id;
         public List<global_light_key> global_light = new();
+        // every eligible "GlobalLight" list, in the order the song lists
+        // them; the game's updater plays each in turn and the last one
+        // holding a key at the current frame wins.
+        public List<List<global_light_key>> global_light_lists = new();
+        public List<environment_track> environments = new();
+        public List<object_track> stage_objects = new();
         public List<bg_color1_track> bg_color1 = new();
         public List<camera_pos_key> camera_pos = new();
         public List<camera_lookat_key> camera_lookat = new();
@@ -299,6 +380,9 @@ namespace UV2.Live
         public List<timescale_key> timescale = new();
         public List<List<motion_seq_key>> motion_sequences = new();
         public Dictionary<string, List<formation_key>> formation = new();
+        // charaWind: per-formation-group spring wind keys (1004 ships none
+        // enabled, so wind stays off unless a key turns it on).
+        public Dictionary<string, List<chara_wind_key>> chara_wind = new();
         public float total_frames;
 
         // propsList = per-prop render state; propsAttachList = joint attach + offset per frame.
@@ -316,6 +400,58 @@ namespace UV2.Live
         public List<transmitted_key> transmitted = new();
         // lightShafts: god-ray shafts, 26/51 songs.
         public List<shafts_track_container> shafts_tracks = new();
+
+        // facialToonSet: the per-face toon shaping block, twenty sub-tracks
+        // (centre, left1, right1, left2, right2, motion5..motion19).
+        public List<facial_toon_track> facial_toon = new();
+
+        // lensFlareList: the flare tracks, one per authored flare source.
+        public List<lens_flare_track> lens_flare = new();
+    }
+
+    // one facial-toon sub-track: a name and its key list.
+    [Serializable]
+    public class facial_toon_track
+    {
+        public string name;
+        public List<facial_toon_key> keys = new();
+    }
+
+    // one facial-toon key: the face shaping values the game publishes.
+    [Serializable]
+    public class facial_toon_key : live_key
+    {
+        public float cheek_threshold;
+        public float nose_threshold;
+        public float cylinder_blend;
+        public float hair_normal_blend;
+        public byte use_original_directional_light;
+        public Vector3 original_directional_light_dir;
+        public float eye_toon_step;
+        public float eye_toon_feather;
+        public float eye_saturation;
+    }
+
+    // one lens flare track: a name and its key list.
+    [Serializable]
+    public class lens_flare_track
+    {
+        public string name;
+        public List<lens_flare_key> keys = new();
+    }
+
+    // one lens flare key: the authored flare state.
+    [Serializable]
+    public class lens_flare_key : live_key
+    {
+        public Vector3 offset;
+        public Color color;
+        public float brightness;
+        public float fade_speed;
+        public byte enable_parameter;
+        public byte enable_flare;
+        public byte is_auto_brightness;
+        public byte is_override_position;
     }
 
     // one projector entry: name + keys.

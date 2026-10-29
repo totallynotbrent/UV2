@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - "v*"
-    branches:
-      - "experimental"
   workflow_dispatch:
     inputs:
       release_tag:
@@ -66,6 +64,15 @@ jobs:
       - name: Pre-pull Unity editor image (survives Docker Hub rate limits)
         shell: pwsh
         run: |
+          # windows-2022 runners occasionally boot with the docker service
+          # not listening yet; wait for the daemon before pulling so a
+          # slow boot does not burn every pull attempt against a dead pipe.
+          foreach ($i in 1..12) {
+            docker info *> $null
+            if ($LASTEXITCODE -eq 0) { break }
+            Write-Host "docker daemon not up (attempt $i); waiting 10s"
+            Start-Sleep -Seconds 10
+          }
           $img = "unityci/editor:windows-2022.3.62f2-windows-il2cpp-3"
           # pull from the mirror (no auth.docker.io token round-trip) and
           # retag under the canonical name; fall back to a direct pull.
@@ -98,7 +105,7 @@ jobs:
           projectPath: .
           unityVersion: 2022.3.62f2
           targetPlatform: StandaloneWindows64
-          buildName: UV2
+          buildName: UmaLive
           buildsPath: build
           allowDirtyBuild: true
           versioning: Semantic
@@ -115,28 +122,28 @@ jobs:
       - name: Package Windows build
         shell: pwsh
         run: |
-          $stage = "build/stage_uv2"
+          $stage = "build/stage_umalive"
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           Copy-Item -Path "build/StandaloneWindows64/*" -Destination $stage -Recurse -Force
-          Remove-Item -Path "$stage/UV2_BackUpThisFolder_ButDontShipItWithYourGame" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "$stage/UmaLive_BackUpThisFolder_ButDontShipItWithYourGame" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "$stage/GameAssembly.pdb" -Force -ErrorAction SilentlyContinue
           Copy-Item -Path "launcher_out/*" -Destination $stage -Recurse -Force
           Copy-Item -Path "Tools/benchmark-postfx.ps1" -Destination $stage -Force
-          Compress-Archive -Path "$stage/*" -DestinationPath "UV2-Windows-x64.zip" -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath "UmaLive-Windows-x64.zip" -Force
 
       - name: Write release digest
         shell: pwsh
         run: |
-          $hash = Get-FileHash "UV2-Windows-x64.zip" -Algorithm SHA256
-          ("{0}  UV2-Windows-x64.zip" -f $hash.Hash.ToLower()) | Set-Content -Path "UV2-Windows-x64.zip.sha256" -Encoding ascii
+          $hash = Get-FileHash "UmaLive-Windows-x64.zip" -Algorithm SHA256
+          ("{0}  UmaLive-Windows-x64.zip" -f $hash.Hash.ToLower()) | Set-Content -Path "UmaLive-Windows-x64.zip.sha256" -Encoding ascii
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: UV2-Windows-x64
+          name: UmaLive-Windows-x64
           path: |
-            UV2-Windows-x64.zip
-            UV2-Windows-x64.zip.sha256
+            UmaLive-Windows-x64.zip
+            UmaLive-Windows-x64.zip.sha256
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
@@ -152,9 +159,9 @@ jobs:
             NAME="experimental"
             gh release delete "$NAME" --yes --cleanup-tag 2>/dev/null || true
             NOTE=$(git log --format='%s' -1 -- . ':!.github')
-            gh release create "$NAME" "UV2-Windows-x64.zip" "UV2-Windows-x64.zip.sha256" --target "$GITHUB_SHA" --prerelease --title "$NAME" --notes "$NOTE"
+            gh release create "$NAME" "UmaLive-Windows-x64.zip" "UmaLive-Windows-x64.zip.sha256" --target "$GITHUB_SHA" --prerelease --title "$NAME" --notes "$NOTE"
             # re-assert the prerelease flag so the releases list endpoint agrees even if it drifts.
             gh release edit "$NAME" --prerelease
           else
-            gh release create "$RELEASE_TAG" "UV2-Windows-x64.zip" "UV2-Windows-x64.zip.sha256" --title "$RELEASE_TAG" --notes ""
+            gh release create "$RELEASE_TAG" "UmaLive-Windows-x64.zip" "UmaLive-Windows-x64.zip.sha256" --title "$RELEASE_TAG" --notes ""
           fi

@@ -48,7 +48,16 @@ namespace UV2.Live
         public void play()
         {
             if (ws == null || clock == null) return;
-            float t = clock.time;
+            apply_at(clock.time);
+        }
+
+        // poses the cast for one specific song time.
+        // the seek path calls this directly so a capture at a scrubbed frame
+        // shows the authored pose, not the pose the last LateUpdate left on
+        // the bones.
+        public void apply_at(float t)
+        {
+            if (ws == null) return;
 
             for (int slot = 1; slot <= animators.Count; slot++)
             {

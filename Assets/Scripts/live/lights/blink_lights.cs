@@ -31,9 +31,14 @@ namespace UV2.Live
             public List<Renderer> renderers = new();
             public List<Light> lights = new();
             public MaterialPropertyBlock mpb;
+            public List<Material> materials = new();
 
             // per-slot renderers/lights resolved from light<N>_ child names.
             public Dictionary<int, slot_group> slot_renderers = new();
+
+            // the container's renderers grouped by material flavour, for the
+            // roots that carry no light<N>_ children.
+            public List<blink_flavor_group> flavor_groups = new();
         }
 
         // one light<N_> slot's renderers and lights under a blink root.
@@ -41,6 +46,23 @@ namespace UV2.Live
         {
             public List<Renderer> renderers = new();
             public List<Light> lights = new();
+            public MaterialPropertyBlock mpb = new();
+            public List<blink_flavor_group> flavor_groups = new();
+        }
+
+        // the game's material flavours: the driver detects them per renderer
+        // and each flavour publishes a different property set.
+        public const int flavor_none = 0;
+        public const int flavor_blink_simple = 1;
+        public const int flavor_uv_alpha_mask = 2;
+        public const int flavor_light_add1 = 3;
+
+        // renderers sharing one material flavour; they take the same MPB.
+        public class blink_flavor_group
+        {
+            public int flavor;
+            public bool has_color_power_multiply;
+            public List<Renderer> renderers = new();
             public MaterialPropertyBlock mpb = new();
         }
 
@@ -84,6 +106,15 @@ namespace UV2.Live
                 var c = new blink_container { root = go.transform, mpb = new MaterialPropertyBlock() };
                 foreach (var r in go.GetComponentsInChildren<Renderer>(true)) c.renderers.Add(r);
                 foreach (var l in go.GetComponentsInChildren<Light>(true)) c.lights.Add(l);
+                foreach (var r in c.renderers)
+                {
+                    if (r == null) continue;
+                    foreach (var m in r.sharedMaterials)
+                    {
+                        if (m == null) continue;
+                        if (!c.materials.Contains(m)) c.materials.Add(m);
+                    }
+                }
 
                 // per-slot addressing: children named light<N>_ (or an ancestor
                 // with that name) own one slot each, like the game's fixture
@@ -112,8 +143,15 @@ namespace UV2.Live
                     if (lig != null) g.lights.Add(lig);
                 }
 
+                // the material flavour decides which properties each
+                // renderer takes, so the groups are built once per bind.
+                build_flavor_groups(c.renderers, c.flavor_groups);
+                foreach (var kv in c.slot_renderers)
+                    build_flavor_groups(kv.Value.renderers, kv.Value.flavor_groups);
+
                 containers[track.name] = c;
                 resolved++;
+                if (resolved <= 2) probe_materials(track.name, c);
             }
             trace_log.write($"blink lights: {resolved} containers resolved, {missing.Count} missing stage units");
             foreach (var m in missing) trace_log.write($"blink light missing: {m}");
@@ -152,7 +190,7 @@ namespace UV2.Live
         }
 
         // blink root names start with pfb_env_live and contain blinklight or blinkbeamlight.
-        private static bool is_blink_root_name(string name) =>
+        public static bool is_blink_root_name(string name) =>
             name.StartsWith("pfb_env_live") &&
             (name.Contains("blinklight") || name.Contains("blinkbeamlight"));
 
@@ -167,6 +205,7 @@ namespace UV2.Live
         public static void clear_film_coupling() => film_coupling.Clear();
 
         private static readonly List<string> _census_reported = new();
+        private static readonly Dictionary<string, int> _last_traced_key = new();
 
         // samples every container's key track and publishes per-slot color*power.
         public static void update(float time_sec, List<blink_track_container> blink_tracks)
@@ -176,15 +215,34 @@ namespace UV2.Live
             foreach (var track in blink_tracks)
             {
                 if (!containers.TryGetValue(track.name, out var c) || c == null) continue;
+                apply_render_queues(c);
 
-                // find the current key: the last key whose frame <= now.
-                var cur = track.current_key(time_sec);
-                if (cur == null) continue;
+                // find the current key: the last key whose frame <= now,
+                // blended toward the next when the game interpolates.
+                var cur = track.current_key_blended(time_sec);
+                if (cur == null)
+                {
+                    // the game's roots start off: black colours and zero
+                    // power until their first key plays.
+                    foreach (var fg in c.flavor_groups) publish_off(fg, time_sec);
+                    foreach (var kv in c.slot_renderers)
+                        foreach (var fg in kv.Value.flavor_groups) publish_off(fg, time_sec);
+                    continue;
+                }
 
-                // key-relative clock, like the game's progressTime.
-                float local = Mathf.Max(0f, time_sec - cur.time);
+                // key-relative clock, like the game's progressTime. the
+                // anchor stays the unblended key's start; the blend shapes
+                // the values, not the clock.
+                var cur_anchor = track.current_key(time_sec);
+                float local = Mathf.Max(0f, time_sec - cur_anchor.time);
                 int slot_count = track.slot_count;
                 if (slot_count <= 0) continue;
+                // the game's container count is the FIXTURE count (the
+                // highest resolvable light<N>_ index plus one), not the
+                // authored array length: the worksheets ship ten array
+                // slots per key while a rig has three fixtures, and the
+                // chase envelopes step over the fixtures that exist.
+                if (c.slot_renderers.Count > 0) slot_count = c.slot_renderers.Count;
 
                 float power_scale = 1f;
                 if (film_coupling.TryGetValue(track.name, out var film_power) && film_power > 0f)
@@ -201,12 +259,8 @@ namespace UV2.Live
                         var (power, color) = sample_slot(track, cur, local, slot, slot_count);
                         float p = Mathf.Max(0f, power) * power_scale;
                         var g = kv.Value;
-                        g.mpb.SetColor(id_mul_color0, color);
-                        g.mpb.SetColor(id_mul_color1, color);
-                        g.mpb.SetFloat(id_color_power, p);
-                        g.mpb.SetColor(id_emission_color, color);
-                        g.mpb.SetFloat(id_emission_power, p);
-                        foreach (var r in g.renderers) r.SetPropertyBlock(g.mpb);
+                        foreach (var fg in g.flavor_groups)
+                            publish_slot_color(fg, color, p, time_sec);
                         foreach (var l in g.lights)
                         {
                             l.intensity = p;
@@ -220,20 +274,56 @@ namespace UV2.Live
                         _census_reported.Add(track.name);
                         trace_log.write($"blink slots: '{track.name}' {c.slot_renderers.Count} slot groups, {slot_count} worksheet slots, key at f{cur.frame}");
                     }
+                    // trace key changes (family + applied color/power) so a
+                    // cue that fails to show has a paper trail.
+                    if (!_last_traced_key.TryGetValue(track.name, out var last_k) || last_k != cur.frame)
+                    {
+                        _last_traced_key[track.name] = cur.frame;
+
+                        // the blend state follows the key's authored
+                        // LightBlendMode: the fixture materials serialize a
+                        // zero/zero blend, so without this every fixture
+                        // blends to black.
+                        apply_blend(c, cur.light_blend_mode);
+                        // every slot, with its published state and how many
+                        // renderers carry it: a rig that publishes but never
+                        // shows up is distinguishable from one that never
+                        // publishes.
+                        var parts = new System.Text.StringBuilder();
+                        var cam = Camera.main;
+                        for (int s = 0; s < slot_count; s++)
+                        {
+                            var st = sample_slot(track, cur, local, s, slot_count);
+                            c.slot_renderers.TryGetValue(s, out var sg);
+                            int rc = sg != null ? sg.renderers.Count : 0;
+                            int lc = sg != null ? sg.lights.Count : 0;
+                            string view = "";
+                            if (sg != null && sg.renderers.Count > 0)
+                            {
+                                var r0 = sg.renderers[0];
+                                if (r0 != null)
+                                {
+                                    bool in_view = false;
+                                    if (cam != null)
+                                        in_view = GeometryUtility.TestPlanesAABB(
+                                            GeometryUtility.CalculateFrustumPlanes(cam), r0.bounds);
+                                    view = $"[{r0.gameObject.name} en{(r0.enabled ? 1 : 0)} ac{(r0.gameObject.activeInHierarchy ? 1 : 0)} fw{(in_view ? 1 : 0)}]";
+                                }
+                            }
+                            parts.Append($" [{s}]p{st.Item1:0.00}r{st.Item2.r:0.00}g{st.Item2.g:0.00}b{st.Item2.b:0.00}m{rc}l{lc}{view}");
+                        }
+                        trace_log.write($"blink key: '{track.name}' f{cur.frame}{parts}");
+                    }
                     continue;
                 }
 
                 // fallback container-level publish (slot 0's state) for roots
                 // whose stage assets carry no light<N>_ children.
+                apply_blend(c, cur.light_blend_mode);
                 var (cpower, ccolor) = sample_slot(track, cur, local, 0, slot_count);
                 float cp = Mathf.Max(0f, cpower) * power_scale;
-                if (c.mpb == null) c.mpb = new MaterialPropertyBlock();
-                c.mpb.SetColor(id_mul_color0, ccolor);
-                c.mpb.SetColor(id_mul_color1, ccolor);
-                c.mpb.SetFloat(id_color_power, cp);
-                c.mpb.SetColor(id_emission_color, ccolor);
-                c.mpb.SetFloat(id_emission_power, cp);
-                foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
+                foreach (var fg in c.flavor_groups)
+                    publish_slot_color(fg, ccolor, cp, time_sec);
                 foreach (var l in c.lights)
                 {
                     l.intensity = cp;
@@ -260,11 +350,11 @@ namespace UV2.Live
                         wait = r * interval;
                         break;
                     }
-                case 2: // ascend: slot i waits i*waitTime
-                    wait = slot * cur.wait_time;
+                case 2: // ascend: container i waits i*intervalTime (0x7ff8e4d7e344)
+                    wait = slot * interval;
                     break;
-                case 3: // descend: slot i waits (n-1-i)*waitTime
-                    wait = (slot_count - slot - 1) * cur.wait_time;
+                case 3: // descend: container i waits (n-1-i)*intervalTime
+                    wait = (slot_count - slot - 1) * interval;
                     break;
             }
 
@@ -436,11 +526,270 @@ namespace UV2.Live
             return i < arr.Count ? arr[i] : arr[arr.Count - 1];
         }
 
-        private static readonly int id_emission_power = Shader.PropertyToID("_EmissionPower");
-        private static readonly int id_emission_color = Shader.PropertyToID("_EmissionColor");
+        private static readonly int id_blink_light_color = Shader.PropertyToID("_BlinkLightColor");
         private static readonly int id_mul_color0 = Shader.PropertyToID("_MulColor0");
-        private static readonly int id_mul_color1 = Shader.PropertyToID("_MulColor1");
+
+        // the game's BlinkLightController sets each fixture material's render
+        // queue from the shader's last path segment: base 3100 plus the table
+        // value (decode: uv2_live10112_blink_rig_decoded.md B.6).
+        private static readonly Dictionary<string, int> render_queue_table = new()
+        {
+            { "LightBlend", 0 },
+            { "LightBlink", 10 },
+            { "LightBlinkSimple", 11 },
+            { "LightBlinkBlend", 12 },
+            { "StageLightBlinkCutoff", 13 },
+            { "StageLightBlinkFadeout", 14 },
+            { "StageBeamLight", 20 },
+            { "StageBeamLightCutoff", 21 },
+            { "StageBeamLightFadeout", 22 },
+        };
+
+        private static void apply_render_queues(blink_container c)
+        {
+            if (c == null) return;
+            if (c.materials.Count == 0)
+            {
+                foreach (var r in c.renderers)
+                {
+                    if (r == null) continue;
+                    var mats = r.sharedMaterials;
+                    for (int i = 0; i < mats.Length; i++)
+                    {
+                        var m = mats[i];
+                        if (m != null && !c.materials.Contains(m)) c.materials.Add(m);
+                    }
+                }
+            }
+
+            foreach (var m in c.materials)
+            {
+                if (m == null) continue;
+                var sh = m.shader;
+                if (sh == null) continue;
+                string full = sh.name;
+                if (string.IsNullOrEmpty(full)) continue;
+                int slash = full.LastIndexOf('/');
+                string tail = slash >= 0 ? full.Substring(slash + 1) : full;
+                if (!render_queue_table.TryGetValue(tail, out int add)) continue;
+                int queue = 3100 + add;
+                if (m.renderQueue != queue) m.renderQueue = queue;
+            }
+        }
+
+        // the game's BlinkLightController publishes the authored colour times
+        // the slot's power as one full RGBA into _BlinkLightColor, alpha
+        // included, and never writes _ColorPower - the material keeps its
+        // serialized 1.0. _MulColor0 carries the same value on the game's
+        // flag path and is inert on the blink shader.
+        // the game's LightBlendMode table (LiveDefine): the blend state the
+        // official re-asserts on the fixture material every frame.
+        private static void apply_blend(blink_container c, int mode)
+        {
+            if (c == null || c.materials == null) return;
+            var (src, dst) = blend_pair(mode);
+            foreach (var m in c.materials)
+            {
+                if (m == null) continue;
+                if (m.HasProperty(id_src_blend)) m.SetFloat(id_src_blend, (float)src);
+                if (m.HasProperty(id_dst_blend)) m.SetFloat(id_dst_blend, (float)dst);
+            }
+        }
+
+        // the mode-to-blend pairs the game ships with.
+        private static (UnityEngine.Rendering.BlendMode, UnityEngine.Rendering.BlendMode) blend_pair(int mode)
+        {
+            switch (mode)
+            {
+                case 1: return (UnityEngine.Rendering.BlendMode.DstColor, UnityEngine.Rendering.BlendMode.One);
+                case 2: return (UnityEngine.Rendering.BlendMode.OneMinusDstColor, UnityEngine.Rendering.BlendMode.One);
+                case 3: return (UnityEngine.Rendering.BlendMode.SrcAlpha, UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+                case 4: return (UnityEngine.Rendering.BlendMode.DstColor, UnityEngine.Rendering.BlendMode.Zero);
+                case 5: return (UnityEngine.Rendering.BlendMode.DstColor, UnityEngine.Rendering.BlendMode.SrcColor);
+                default: return (UnityEngine.Rendering.BlendMode.One, UnityEngine.Rendering.BlendMode.One);
+            }
+        }
+
+        private static readonly int id_src_blend = Shader.PropertyToID("_SrcBlend");
+        private static readonly int id_dst_blend = Shader.PropertyToID("_DstBlend");
+
+        // one-time probe of a blink container's materials: the serialized
+        // defaults decide whether the shader has anything to multiply.
+        private static void probe_materials(string owner, blink_container c)
+        {
+            if (c == null) return;
+            var seen = new HashSet<string>();
+            int n = 0;
+            foreach (var r in c.renderers)
+            {
+                if (r == null) continue;
+                var mats = r.sharedMaterials;
+                if (mats == null) continue;
+                foreach (var m in mats)
+                {
+                    if (m == null || !seen.Add(m.name)) continue;
+                    if (n++ >= 3) return;
+                    string sn = m.shader != null ? m.shader.name : "(none)";
+                    var bl = m.GetColor("_BlinkLightColor");
+                    trace_log.write($"blink mat '{owner}' '{m.name}' shader '{sn}' " +
+                                    $"blinkCol=({bl.r:0.00},{bl.g:0.00},{bl.b:0.00},{bl.a:0.00}) " +
+                                    $"colorPower={m.GetFloat("_ColorPower"):0.00} " +
+                                    $"normalCorr={m.GetFloat("_UseNormalCorrection"):0.00} " +
+                                    $"cutoff={m.GetFloat("_CutoffHeight"):0.00} " +
+                                    $"queue={m.renderQueue}");
+                }
+            }
+        }
+
+        // publishes the per-slot state to the game's own properties:
+        // the game's blink-simple contract (StageBlinkLightDriver.ApplyMpbToRen
+        // erer): the published colour carries no power and the shader scales it
+        // by _ColorPower, which is the slot power times the 1.1 emission boost.
+        // folding the power into the colour made every fixture dimmer than the
+        // official by the square of the power.
+        private static void publish_slot_color(blink_flavor_group group, Color color, float power, float time_sec)
+        {
+            var mpb = group.mpb;
+            mpb.Clear();
+            if (group.flavor == flavor_uv_alpha_mask)
+            {
+                mpb.SetColor(id_mul_color0, color);
+                mpb.SetColor(id_mul_color1, color);
+                mpb.SetFloat(id_color_power, power);
+                mpb.SetFloat(id_color_power_multiply, emission_boost);
+                mpb.SetFloat(id_app_time, time_sec);
+            }
+            else if (group.flavor == flavor_light_add1)
+            {
+                mpb.SetColor(id_mul_color0, color);
+                mpb.SetColor(id_mul_color1, color);
+                mpb.SetFloat(id_color_power, power);
+                if (group.has_color_power_multiply)
+                    mpb.SetFloat(id_color_power_multiply, emission_boost);
+            }
+            else if (group.flavor == flavor_blink_simple)
+            {
+                mpb.SetColor(id_blink_light_color, new Color(color.r, color.g, color.b, 1f));
+                mpb.SetFloat(id_color_power, power * emission_boost);
+                mpb.SetFloat(id_use_normal_correction, 0f);
+            }
+            foreach (var r in group.renderers) r.SetPropertyBlock(mpb);
+        }
+
+        // the game's off state: a fixture that plays no key goes black with
+        // zero power instead of keeping its last published state.
+        private static void publish_off(blink_flavor_group group, float time_sec)
+        {
+            var mpb = group.mpb;
+            mpb.Clear();
+            if (group.flavor == flavor_uv_alpha_mask)
+            {
+                mpb.SetColor(id_mul_color0, Color.black);
+                mpb.SetColor(id_mul_color1, Color.black);
+                mpb.SetFloat(id_color_power, 0f);
+                mpb.SetFloat(id_color_power_multiply, emission_boost);
+                mpb.SetFloat(id_app_time, time_sec);
+            }
+            else if (group.flavor == flavor_light_add1)
+            {
+                mpb.SetColor(id_mul_color0, Color.black);
+                mpb.SetColor(id_mul_color1, Color.black);
+                mpb.SetFloat(id_color_power, 0f);
+                if (group.has_color_power_multiply)
+                    mpb.SetFloat(id_color_power_multiply, emission_boost);
+            }
+            else if (group.flavor == flavor_blink_simple)
+            {
+                mpb.SetColor(id_blink_light_color, Color.black);
+                mpb.SetFloat(id_color_power, 0f);
+                mpb.SetFloat(id_use_normal_correction, 0f);
+            }
+            foreach (var r in group.renderers) r.SetPropertyBlock(mpb);
+        }
+
+        // the game's DetectType: the renderer's material flavour decides
+        // which property set the driver publishes to it.
+        private static int detect_flavor(Renderer r, out bool has_color_power_multiply)
+        {
+            has_color_power_multiply = false;
+            if (r == null) return flavor_none;
+            var mats = r.sharedMaterials;
+            if (mats == null) return flavor_none;
+
+            bool is_uv_alpha_mask = false, is_blink_simple = false, is_light_add1 = false;
+            bool has_blink_color = false, has_color_power = false;
+            bool has_mul0 = false, has_mul1 = false;
+
+            for (int i = 0; i < mats.Length; i++)
+            {
+                var m = mats[i];
+                if (m == null) continue;
+                var sh = m.shader;
+                string sn = sh != null ? (sh.name ?? "") : "";
+
+                if (sn.IndexOf("UVAlphaMask", StringComparison.OrdinalIgnoreCase) >= 0)
+                    is_uv_alpha_mask = true;
+                if (sn.IndexOf("LightBlinkSimple", StringComparison.OrdinalIgnoreCase) >= 0)
+                    is_blink_simple = true;
+                if (!is_uv_alpha_mask &&
+                    sn.IndexOf("LightAdd1", StringComparison.OrdinalIgnoreCase) >= 0)
+                    is_light_add1 = true;
+
+                if (m.HasProperty(id_blink_light_color)) has_blink_color = true;
+                if (m.HasProperty(id_color_power)) has_color_power = true;
+                if (m.HasProperty(id_mul_color0)) has_mul0 = true;
+                if (m.HasProperty(id_mul_color1)) has_mul1 = true;
+                if (m.HasProperty(id_color_power_multiply)) has_color_power_multiply = true;
+            }
+
+            if (!is_blink_simple && has_blink_color && has_color_power)
+                is_blink_simple = true;
+            if (!is_uv_alpha_mask && has_mul0 && has_mul1 && has_color_power && has_color_power_multiply)
+                is_uv_alpha_mask = true;
+            if (!is_light_add1 && !is_uv_alpha_mask && has_mul0 && has_mul1 && has_color_power)
+                is_light_add1 = true;
+
+            if (is_uv_alpha_mask) return flavor_uv_alpha_mask;
+            if (is_light_add1) return flavor_light_add1;
+            if (is_blink_simple) return flavor_blink_simple;
+            return flavor_none;
+        }
+
+        // groups a renderer's list into per-flavour buckets.
+        private static void build_flavor_groups(List<Renderer> renderers, List<blink_flavor_group> groups)
+        {
+            groups.Clear();
+            if (renderers == null) return;
+            foreach (var r in renderers)
+            {
+                if (r == null) continue;
+                int flavor = detect_flavor(r, out bool has_multiply);
+                if (flavor == flavor_none) continue;
+                blink_flavor_group g = null;
+                foreach (var existing in groups)
+                {
+                    if (existing.flavor == flavor && existing.has_color_power_multiply == has_multiply)
+                    {
+                        g = existing;
+                        break;
+                    }
+                }
+                if (g == null)
+                {
+                    g = new blink_flavor_group { flavor = flavor, has_color_power_multiply = has_multiply };
+                    groups.Add(g);
+                }
+                g.renderers.Add(r);
+            }
+        }
+
+        private const float emission_boost = 1.1f;
+
         private static readonly int id_color_power = Shader.PropertyToID("_ColorPower");
+        private static readonly int id_color_power_multiply = Shader.PropertyToID("_ColorPowerMultiply");
+        private static readonly int id_use_normal_correction = Shader.PropertyToID("_UseNormalCorrection");
+        private static readonly int id_mul_color1 = Shader.PropertyToID("_MulColor1");
+        private static readonly int id_app_time = Shader.PropertyToID("_AppTime");
     }
     // one worksheet blink container: name + the per-key model.
     [Serializable]
@@ -464,6 +813,96 @@ namespace UV2.Live
                 else break;
             return cur;
         }
+
+        // the index of the current key (for the next-key lookup).
+        public int current_key_index(float time_sec)
+        {
+            if (keys == null || keys.Count == 0) return -1;
+            float frame = time_sec * 60f;
+            int i = 0;
+            for (int j = 0; j < keys.Count; j++)
+                if (keys[j].frame <= frame) i = j;
+                else break;
+            return i;
+        }
+
+        // the game blends EVERY numeric + color field from the current
+        // key toward the next by the interpolation factor (the blink
+        // consumer 0x7ff8e4dc3527-396a: powerMin/powerMax/loopCount/
+        // waitTime/turnOn/turnOff/keepTime/intervalTime and the color
+        // arrays all lerp by CalculateInterpolationValue; the power
+        // array lerps elementwise). discrete fields (pattern, colorType,
+        // blend mode) come from the current key raw. with no blend the
+        // returned key equals the current key.
+        public blink_key current_key_blended(float time_sec)
+        {
+            blink_key cur = current_key(time_sec);
+            if (cur == null) return null;
+            int i = current_key_index(time_sec);
+            var next = (i >= 0 && i + 1 < keys.Count) ? keys[i + 1] : null;
+            if (next == null || next.interpolate_type == 0) return cur;
+            float span = next.time - cur.time;
+            float raw = span <= 0f ? 0f : Mathf.Clamp01((time_sec - cur.time) / span);
+            float k;
+            switch (next.interpolate_type)
+            {
+                case 1: k = raw; break;
+                case 2: k = key_eval.evaluate_curve(next.curve, raw); break;
+                case 3: k = Mathf.Clamp01(live_easing.evaluate(next.easing_type,
+                            Mathf.Max(0f, time_sec - cur.time), 0f, 1f,
+                            Mathf.Max(0.0001f, span))); break;
+                default: return cur;
+            }
+            var b = new blink_key
+            {
+                frame = cur.frame,
+                attribute = cur.attribute,
+                interpolate_type = cur.interpolate_type,
+                key_index = cur.key_index,
+                pattern = cur.pattern,
+                color_type = cur.color_type,
+                light_blend_mode = cur.light_blend_mode,
+                loop_count = Mathf.RoundToInt(Mathf.Lerp(cur.loop_count, next.loop_count, k)),
+                is_reverse_hue = cur.is_reverse_hue,
+            };
+            b.power_array = lerp_array(cur.power_array, next.power_array, k, 1f);
+            b.color0_array = lerp_colors(cur.color0_array, next.color0_array, k);
+            b.color1_array = lerp_colors(cur.color1_array, next.color1_array, k);
+            b.power_min = Mathf.Lerp(cur.power_min, next.power_min, k);
+            b.power_max = Mathf.Lerp(cur.power_max, next.power_max, k);
+            b.wait_time = Mathf.Lerp(cur.wait_time, next.wait_time, k);
+            b.turn_on_time = Mathf.Lerp(cur.turn_on_time, next.turn_on_time, k);
+            b.turn_off_time = Mathf.Lerp(cur.turn_off_time, next.turn_off_time, k);
+            b.keep_time = Mathf.Lerp(cur.keep_time, next.keep_time, k);
+            b.interval_time = Mathf.Lerp(cur.interval_time, next.interval_time, k);
+            return b;
+        }
+
+        private static List<float> lerp_array(List<float> a, List<float> b, float k, float def)
+        {
+            int n = Mathf.Max(a?.Count ?? 0, b?.Count ?? 0);
+            var out_l = new List<float>(n);
+            for (int i = 0; i < n; i++)
+            {
+                float av = a != null && i < a.Count ? a[i] : def;
+                float bv = b != null && i < b.Count ? b[i] : def;
+                out_l.Add(Mathf.Lerp(av, bv, k));
+            }
+            return out_l;
+        }
+
+        private static List<Color> lerp_colors(List<Color> a, List<Color> b, float k)
+        {
+            int n = Mathf.Max(a?.Count ?? 0, b?.Count ?? 0);
+            var out_l = new List<Color>(n);
+            for (int i = 0; i < n; i++)
+            {
+                Color ac = a != null && i < a.Count ? a[i] : Color.black;
+                Color bc = b != null && i < b.Count ? b[i] : Color.black;
+                out_l.Add(Color.Lerp(ac, bc, k));
+            }
+            return out_l;
+        }
     }
 
     // one blink key: the per-slot power/color arrays + the envelope timing,
@@ -474,6 +913,8 @@ namespace UV2.Live
         public int frame;
         public int attribute;
         public int interpolate_type;
+        public int easing_type;
+        public List<curve_key> curve = new();
         public List<float> power_array = new();
         public List<Color> color0_array = new();
         public List<Color> color1_array = new();

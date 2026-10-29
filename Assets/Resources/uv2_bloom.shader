@@ -16,6 +16,21 @@ Shader "live/uv2_bloom"
     Properties
     {
         _MainTex ("Base", 2D) = "" {}
+        // engine-material SetVector targets must appear in the property
+        // sheet or the write silently no-ops: the pyramid's _Parameter
+        // (threshold/intensity folds) never bound, leaving the bloom
+        // texture as the raw quarter-res scene (the +0.19 washout).
+        _Parameter ("FastBloomParams", Vector) = (0.001, 0.001, 0.15, 0.7)
+        _BloomBlendMode ("BlendMode", Float) = 1
+        _bloomDofWeight ("DofWeight", Float) = 0.75
+        _BloomIsScreenBlend ("IsScreenBlend", Float) = 0
+        _BloomShaping ("Shaping", Float) = 1
+        _DiffusionBlur ("DiffusionBlur", Float) = 1.5
+        _BloomTex ("BloomTex", 2D) = "" {}
+        _DiffusionTex ("DiffusionTex", 2D) = "" {}
+        _DiffusionCurve ("DiffusionCurve", Vector) = (1, 0.9, 1.1, 0.1)
+        _DiffusionParams ("DiffusionParams", Vector) = (0, 0, 0, 0)
+        _DiffusionScreen ("DiffusionScreen", Vector) = (0, 0, 0, 0)
     }
     SubShader
     {
@@ -27,10 +42,12 @@ Shader "live/uv2_bloom"
         // shape: bright-pass blur with saturation/contrast grading.
         Pass
         {
+            Name "BLOOMCOMPOSITE" 
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag_composite
             #pragma multi_compile _ DIFFUSION_ON
+            #pragma multi_compile _ BLOOM_DEBUG
             #include "UnityCG.cginc"
 
             sampler2D _MainTex;
@@ -41,6 +58,7 @@ Shader "live/uv2_bloom"
             float _BloomIsScreenBlend;  // id 225: 0 for the Add family
             float4 _DiffusionParams;  // (lift, -, -, fp)
             float4 _DiffusionScreen;  // (-, -, -, lever: add vs screen)
+            float4 _DiffusionCurve;   // (bright, saturation, contrast, threshold)
             float _DiffusionBlur;
             float _BloomShaping;   // the composite's shaping constant row
 
@@ -62,15 +80,20 @@ Shader "live/uv2_bloom"
             {
                 float4 src = tex2D(_MainTex, i.uv);
                 float4 bloom = tex2D(_BloomTex, i.uv);
-                // the game's film-variant composite (postbloom_composite_
-                // pass0_math.md §4 @51362 + audience doc Q3): C = t2(rgb
-                // source) * cb0[139].y (filmPower) + bloom - ADDITIVE, not
-                // screen. the screen form lifts every midtone; the additive
-                // form is why the official concert's stage falls to near
-                // black in cutaways (filmPower 0) and stays dim through mid
-                // scenes. the fork ran the real game shader with
-                // OutputDimmer 1 and its look matched.
-                float4 col = saturate(src) * _BloomShaping + bloom;
+                #if BLOOM_DEBUG
+                // debug: emit the bloom pyramid the composite folds —
+                // the rig reads the actual C-term input.
+                return float4(bloom.rgb, 1);
+                #endif
+                // the game's film-variant combine @51362 with the runtime
+                // unbound constants (cb0[139] = cb0[163] = 0, verified in
+                // postbloom_composite_pass0_math.md): r0 = warped_src -
+                // bloom, then out = r0*r0 + bloom, all * _DimmerColor.
+                // the (src-bloom)^2 fold COMPRESSES the highlight: a hot
+                // source over hot bloom lands at (0.6)^2+0.3 = 0.66, never
+                // clipping, where a plain additive saturates to a white
+                // wash. that fold is the game's overexposure guard.
+                float4 col = (saturate(src) - bloom) * (saturate(src) - bloom) + bloom;
 
 #ifdef DIFFUSION_ON
                 // the game's diffusion composite (PostDiffusionBloom_Rich
@@ -98,8 +121,35 @@ Shader "live/uv2_bloom"
                 // the non-diffusion postbloom composite (@51362).
                 float4 diff = tex2D(_DiffusionTex, i.uv);
                 float3 B = src.rgb + diff.rgb * _DiffusionParams.w * (1.0 - _DiffusionScreen.w * src.rgb);
-                float3 C = B * B * (2.0 - bloom.rgb) + bloom.rgb + _DiffusionParams.x;
-                col.rgb = max(B, max(C, 0.0));
+                // the decoded tail @54922: C = B^2*(2-bloom) + bloom - 151.w,
+                // max(C,0), max(B,C), then the 151.xyz luma S-curve
+                // (saturation x, chroma gain y, contrast z, pivot 0.5).
+                // the decoded tail @54922 ops 22-25: r3 = B^2 + bloom,
+                // r1 = -bloom*B^2 + r3 = B^2*(1-bloom) + bloom — a screen
+                // blend of B^2 with bloom, NOT (2-bloom); the (2-bloom)
+                // reading over-lifted highlights into clip. the +cb0[151].x
+                // (_ColorPower.x) row is not among the diffusion chain's
+                // published ids (179/185/183/172/225/204/182) so it binds
+                // zero at runtime, same doctrine as the fp/lift/lever rows.
+                // the B^2*(1-bloom)+bloom reading lifted the frame
+                // +0.30 vs the official landmark (54.300s): the game's
+                // rows that weight this term bind zero at runtime
+                // (p2b2 luma-identity), so the C term collapses to the
+                // bloom texture alone and the composite keeps only
+                // max(src, bloom) + the 151 S-curve.
+                float3 C = bloom.rgb;
+                float3 m = max(B, max(C, 0.0));
+                // the 151 row in worksheet field order: x bright (pre-scale),
+                // y saturation (chroma gain), z contrast (pivot-0.5 S), w
+                // diffusion threshold (the C subtract). 1004 authors
+                // (1.0, 0.9, 1.1, 0.1) — mild desat, slight contrast, small
+                // highlight soften.
+                float3 sm = m * _DiffusionCurve.x;
+                float lum = dot(sm, float3(0.2125, 0.7154, 0.0721));
+                float3 ch = sm - lum;
+                ch = _DiffusionCurve.y * ch + lum;
+                ch = (ch - 0.5) * _DiffusionCurve.z + 0.5;
+                col.rgb = ch;
 #endif
                 return col;
             }
@@ -110,6 +160,7 @@ Shader "live/uv2_bloom"
         // once, intensity once (the only fold the downsample does).
         Pass
         {
+            Name "BLOOMDOWN"
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag_down
@@ -135,18 +186,22 @@ Shader "live/uv2_bloom"
             float4 frag_down(v2f i) : SV_Target
             {
                 float2 tx = _Parameter.xy;
-                float4 s = tex2D(_MainTex, i.uv);
-                s += tex2D(_MainTex, i.uv + float2(tx.x, tx.y));
-                s += tex2D(_MainTex, i.uv + float2(-tx.x, tx.y));
+                // the game's downsample (fastbloom sp_00) averages EXACTLY
+                // FOUR taps and scales by 0.25: the four uv corners
+                // (v1.xy, v1.zw, v2.xy, v2.zw) the vertex stage emits. UV2
+                // sampled the centre plus four corners — five taps scaled by
+                // 0.25 — so the pyramid carried 1.25x the game's energy and
+                // the composite's add blew out the highlights.
+                float4 s = tex2D(_MainTex, i.uv + float2(-tx.x, -tx.y));
                 s += tex2D(_MainTex, i.uv + float2(tx.x, -tx.y));
-                s += tex2D(_MainTex, i.uv + float2(-tx.x, -tx.y));
+                s += tex2D(_MainTex, i.uv + float2(-tx.x, tx.y));
+                s += tex2D(_MainTex, i.uv + float2(tx.x, tx.y));
                 s *= 0.25;
-                // the game's downsample (@3302): max(avg + _Parameter.x, 0)
-                // * scale - the threshold folds HERE as the negative offset and
-                // the intensity multiplies HERE (audience_props_bloom_answers
-                // Q3: 'threshold as -threshold offset applies at EVERY pyramid
-                // level, per TAP, BEFORE the blur weights. there is NO separate
-                // intensity multiply at the composite').
+                // the game's downsample (@3302): out = max(avg - threshold, 0)
+                // * intensity — the intensity folds HERE, once, and the
+                // threshold is the negative offset (audience doc Q3: the
+                // threshold applies at EVERY pyramid level, per TAP, and
+                // there is NO intensity multiply at the composite).
                 return max(s - _Parameter.z, 0.0) * _Parameter.w;
             }
             ENDCG
@@ -158,6 +213,7 @@ Shader "live/uv2_bloom"
         // threshold fold, no intensity.
         Pass
         {
+            Name "BLOOMBLURH"
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag_blur_h
@@ -186,24 +242,23 @@ Shader "live/uv2_bloom"
             float4 frag_blur_h(v2f i) : SV_Target
             {
                 float2 step_h = float2(_Parameter.x, 0.0);
-                // the game's 9-tap kernel samples the CENTER once (weight
-                // 0.225) plus each offset once per side; the weights sum to
-                // exactly 1.0. folding the center into the (t0+t1) pair
-                // doubled it and left the pyramid at 1.225 total gain - the
-                // over-bright bloom. the threshold fold applies to EVERY
-                // tap including the center (fastbloom decode: per-tap
-                // max(sample + offset, 0) before the weights).
-                float4 sum = max(tex2D(_MainTex, i.uv) - _Parameter.z, 0.0) * WEIGHTS[0];
+                // the game's HORIZONTAL blur (fastbloom sp_10, pass 3
+                // 'BlurHorizontal'): it accumulates the taps with the fixed
+                // weights, does NOT fold the threshold, and multiplies the
+                // accumulated result by the intensity. the VERTICAL blur
+                // (sp_08, pass 2 'BlurVertical') is the one that folds.
+                // the 9-tap kernel samples the CENTER once (weight 0.225)
+                // plus each offset once per side; the weights sum to
+                // exactly 1.0.
+                float4 sum = tex2D(_MainTex, i.uv) * WEIGHTS[0];
                 [unroll]
                 for (int s = 1; s < 5; s++)
                 {
                     float4 t0 = tex2D(_MainTex, i.uv + step_h * TAPS[s]);
                     float4 t1 = tex2D(_MainTex, i.uv - step_h * TAPS[s]);
-                    t0 = max(t0 - _Parameter.z, 0.0);
-                    t1 = max(t1 - _Parameter.z, 0.0);
                     sum += (t0 + t1) * WEIGHTS[s];
                 }
-                return sum;
+                return sum * _Parameter.w;
             }
             ENDCG
         }
@@ -212,6 +267,7 @@ Shader "live/uv2_bloom"
         // pass folded it), no intensity (the downsample folded it).
         Pass
         {
+            Name "BLOOMBLURV" 
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag_blur_v
@@ -240,7 +296,11 @@ Shader "live/uv2_bloom"
             float4 frag_blur_v(v2f i) : SV_Target
             {
                 float2 step_v = float2(0.0, _Parameter.y);
-                // same center-once kernel as the H pass; weights sum to 1.0.
+                // the game's VERTICAL blur (fastbloom sp_08, pass 2
+                // 'BlurVertical'): per tap `max(sample - threshold, 0)`,
+                // fixed weights, and NO intensity multiply. the HORIZONTAL
+                // blur (sp_10, pass 3) is the one that does not fold and
+                // does multiply the intensity.
                 float4 sum = max(tex2D(_MainTex, i.uv) - _Parameter.z, 0.0) * WEIGHTS[0];
                 [unroll]
                 for (int s = 1; s < 5; s++)
@@ -251,9 +311,6 @@ Shader "live/uv2_bloom"
                     t1 = max(t1 - _Parameter.z, 0.0);
                     sum += (t0 + t1) * WEIGHTS[s];
                 }
-                // the blur passes carry no intensity scale: the game folds
-                // intensity at the downsample only (audience doc Q3); the
-                // threshold folds per tap at every pyramid level (@5346).
                 return sum;
             }
             ENDCG

@@ -47,10 +47,16 @@ namespace UV2.Live
         {
             if (stage_root == null) return 0;
             int spawned = 0;
+            bool diag_done = false;
             foreach (var ctrl in stage_root.GetComponentsInChildren<Transform>(true))
             {
                 if (!ctrl.name.Contains("cyalume_controller")) continue;
                 var holder = ctrl.GetComponent<Gallop.AssetHolder>();
+                if (!diag_done)
+                {
+                    diag_done = true;
+                    trace_log.write($"cyalume spawn diag: controller '{ctrl.name}' holder={(holder != null)} table={(holder?._assetTable != null)} list={(holder?._assetTable?.list?.Count ?? -1)}");
+                }
                 if (holder?._assetTable?.list == null) continue;
                 foreach (var entry in holder._assetTable.list)
                 {
@@ -64,6 +70,145 @@ namespace UV2.Live
             if (spawned > 0)
                 trace_log.write($"crowd rig: spawned {spawned} pen-light/mob objects from the controller asset tables");
             return spawned;
+        }
+
+        // writes the song's pen-light pattern textures beside the trace so the
+        // sprites that light the audience can be looked at directly.
+        public static void dump_pattern_images(Transform root)
+        {
+            foreach (var kv in cyalume.pattern_textures())
+            {
+                var tex = kv.Value;
+                if (tex == null) continue;
+                try
+                {
+                    var png = tex.EncodeToPNG();
+                    string path = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), $"uv2_cyalume_{kv.Key}.png");
+                    System.IO.File.WriteAllBytes(path, png);
+                    trace_log.write($"cyalume: pattern {kv.Key} ({tex.width}x{tex.height}) written to {path}");
+                }
+                catch (Exception e)
+                {
+                    trace_log.write($"cyalume: pattern {kv.Key} dump failed: {e.GetType().Name}");
+                }
+            }
+        }
+
+        // describes the crowd geometry the stage carries so the portrait of
+        // the audience area is on record: every pen light, mob and flare
+        // mesh with its vertex count, world footprint and material.
+        public static void dump_crowd_structure(Transform root)
+        {
+            if (root == null) return;
+            int shown = 0;
+            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (r == null) continue;
+                string owner = r.gameObject.name;
+                if (!(owner.Contains("cyalume", StringComparison.OrdinalIgnoreCase)
+                      || owner.Contains("audience", StringComparison.OrdinalIgnoreCase)
+                      || owner.Contains("mob", StringComparison.OrdinalIgnoreCase)
+                      || owner.Contains("flare", StringComparison.OrdinalIgnoreCase)
+                      || owner.Contains("lash", StringComparison.OrdinalIgnoreCase))) continue;
+                if (shown >= 22) break;
+                shown++;
+                int verts = 0;
+                var mf = r.GetComponent<MeshFilter>();
+                if (mf != null && mf.sharedMesh != null) verts = mf.sharedMesh.vertexCount;
+                var sk = r as SkinnedMeshRenderer;
+                if (sk != null && sk.sharedMesh != null) verts = sk.sharedMesh.vertexCount;
+                var b = r.bounds;
+                string mesh_extra = "";
+                var mesh = mf != null ? mf.sharedMesh : (sk != null ? sk.sharedMesh : null);
+                if (mesh != null)
+                {
+                    var cols = mesh.colors32;
+                    string col_note = "no_colors";
+                    if (cols != null && cols.Length > 0)
+                    {
+                        int sr = 0, sg = 0, sb = 0, sa = 0, ma = 0;
+                        foreach (var c in cols) { sr += c.r; sg += c.g; sb += c.b; sa += c.a; if (c.a > ma) ma = c.a; }
+                        int n = cols.Length;
+                        col_note = $"vc_avg({sr / n},{sg / n},{sb / n},{sa / n}) vc_alpha_max {ma}";
+                    }
+                    var uv = mesh.uv;
+                    string uv_note = "no_uv";
+                    if (uv != null && uv.Length > 0)
+                    {
+                        float u0 = float.MaxValue, u1 = float.MinValue, v0 = float.MaxValue, v1 = float.MinValue;
+                        foreach (var t in uv)
+                        {
+                            if (t.x < u0) u0 = t.x; if (t.x > u1) u1 = t.x;
+                            if (t.y < v0) v0 = t.y; if (t.y > v1) v1 = t.y;
+                        }
+                        uv_note = $"uv[{u0:0.00},{u1:0.00}]x[{v0:0.00},{v1:0.00}]";
+                    }
+                    // the game may carry the sprite placement in another
+                    // channel that its controller copies into uv0 at run time.
+                    int uv2_len = mesh.uv2 != null ? mesh.uv2.Length : 0;
+                    int uv3_len = mesh.uv3 != null ? mesh.uv3.Length : 0;
+                    int uv4_len = mesh.uv4 != null ? mesh.uv4.Length : 0;
+                    if (uv2_len + uv3_len + uv4_len > 0)
+                        uv_note += $" uv2({uv2_len}) uv3({uv3_len}) uv4({uv4_len})";
+                    mesh_extra = $" {{{col_note} {uv_note} inst={(sk != null ? sk.sharedMesh.blendShapeCount : -1)}}}";
+                }
+                string mats = "";
+                var mm = r.sharedMaterial;
+                if (mm != null)
+                {
+                    string col = "";
+                    if (mm.HasProperty("_Color")) col += $" c={mm.GetColor("_Color")}";
+                    if (mm.HasProperty("_BaseColor")) col += $" bc={mm.GetColor("_BaseColor")}";
+                    if (mm.HasProperty("_EmissionColor")) col += $" em={mm.GetColor("_EmissionColor")}";
+                    var main = mm.HasProperty("_MainTex") ? mm.GetTexture("_MainTex") : null;
+                    mats = $" [{mm.name}|{mm.shader.name}{col} tex={(main != null ? main.name : "-")} q={mm.renderQueue}]";
+                    // the pen light field lives or dies on its material, so
+                    // every property it carries is written down.
+                    if (owner.Contains("cyalume", StringComparison.OrdinalIgnoreCase)
+                        || owner.Contains("mob", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // the game's crowd shaders carry a handful of colour
+                        // and brightness properties; their names are probed by
+                        // hand because the material api differs per unity
+                        // version.
+                        string[] wanted_properties =
+                        {
+                            "_MainTex", "_BaseMap", "_Tex", "_PatternTex", "_CyalumeTex", "_DetailTex",
+                            "_Color", "_BaseColor", "_TintColor", "_ColorPower", "_Brightness", "_Intensity",
+                            "_EmissionColor", "_GlowColor", "_PenColor", "_LightColor", "_CandleColor",
+                            "_Rate", "_Power", "_Gain", "_Opacity", "_Alpha", "_Cutoff",
+                            "_Scroll", "_Speed", "_Phase", "_Blend", "_Fade", "_Cull"
+                        };
+                        var sb = new System.Text.StringBuilder();
+                        foreach (var pn in wanted_properties)
+                        {
+                            if (!mm.HasProperty(pn)) continue;
+                            string pv = "?";
+                            var tx = mm.GetTexture(pn);
+                            if (tx != null) pv = tx.name;
+                            else
+                            {
+                                try { pv = mm.GetColor(pn).ToString(); }
+                                catch
+                                {
+                                    try { pv = mm.GetVector(pn).ToString(); }
+                                    catch { try { pv = mm.GetFloat(pn).ToString("0.000"); } catch { pv = "?"; } }
+                                }
+                            }
+                            if (sb.Length > 260) break;
+                            if (sb.Length > 0) sb.Append(' ');
+                            sb.Append(pn).Append('=').Append(pv);
+                        }
+                        mats += $" {{props:{sb}}}";
+                    }
+                }
+                var block = new MaterialPropertyBlock();
+                r.GetPropertyBlock(block);
+                var bound = block.GetTexture(Shader.PropertyToID("_MainTex"));
+                if (bound != null) mats += $" [block _MainTex={bound.name}]";
+                trace_log.write($"crowd mesh '{owner}' {r.GetType().Name} verts={verts} bounds c({b.center.x:F1},{b.center.y:F1},{b.center.z:F1}) s({b.size.x:F1},{b.size.y:F1},{b.size.z:F1}) en={r.enabled} act={r.gameObject.activeInHierarchy} vis={r.isVisible}{mesh_extra}{mats}");
+            }
+            trace_log.write($"crowd structure: {shown} mesh(es) described");
         }
 
         // loads the song's crowd clips from the livesettings type=10 rows.

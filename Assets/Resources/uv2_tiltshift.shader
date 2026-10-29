@@ -9,6 +9,9 @@ Shader "live/uv2_tiltshift"
     Properties
     {
         _MainTex ("Base", 2D) = "" {}
+        _BlurArea ("BlurArea", Float) = 0.5
+        _BlurSize ("BlurSize", Float) = 1
+        _Params ("Params", Vector) = (0,0,0,0)
     }
     SubShader
     {

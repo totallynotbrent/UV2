@@ -41,9 +41,21 @@ namespace UV2.Live
         private MaterialPropertyBlock mpb;
         private float last_logged = -1f;
 
+        // one-shot probe per tinted part group.
+        private readonly HashSet<string> _part_probe_done = new();
+        private int _last_probe_second = -1;
+
         // per-group resolved renderer sets (the game resolves by FNV-1 hash of
         // the object/unit name, never substring: uv2_bgcolor1_resolution_decoded.md).
         private readonly Dictionary<string, List<Renderer>> part_sets = new();
+
+        // BgBL's ambient set: the game's [this+0x268], built once in
+        // StartShaderParam by PROPERTY match (material.HasProperty(_AmbientColor)),
+        // not by name. every renderer under the stage hierarchy whose material
+        // carries _AmbientColor gets the backlight tint each frame.
+        // (uv2_bgbl_unit_membership_decoded.md §4/§8)
+        private List<Renderer> ambient_set;
+        private bool ambient_resolved;
 
         // the game's FNV-1 over the low byte of each char (FNVHash::Generate
         // 0x7ff8e4e11d00: h = h*prime XOR (c & 0xff), mul first).
@@ -71,6 +83,16 @@ namespace UV2.Live
             trace_log.write($"bg_color1: {ws.bg_color1.Count} groups " +
                 $"({string.Join(",", System.Linq.Enumerable.Select(ws.bg_color1, t => $"{t.name}:{t.keys.Count}"))})");
         }
+
+        // the stage hierarchy roots for the ambient sweep: the controller
+        // instance + the stage_geometry container the loader builds.
+        public void bind_stage(Transform controller_root, Transform geometry_root)
+        {
+            stage_controller_root = controller_root;
+            stage_geometry_root = geometry_root;
+        }
+        private Transform stage_controller_root;
+        private Transform stage_geometry_root;
 
         // one shading pass per frame; the stage loader calls this from its
         // shade pass so ordering vs global_shade's fallback is deterministic.
@@ -106,7 +128,11 @@ namespace UV2.Live
                 if (chara_group_names.Contains(track.name))
                 {
                     cur_chara_color = c;
-                    cur_light_probe = c;
+                    // the game's chara ambient is the key colour times the
+                    // key's colourPower, multiplied across all four channels
+                    // before SetLightProbeColor. the chara shader multiplies
+                    // the whole final colour by it.
+                    cur_light_probe = new Color(c.r * power, c.g * power, c.b * power, c.a * power);
                     cur_toon_dark = lerp_color(cur.toon_dark_color, next?.toon_dark_color, blend);
                     cur_toon_bright = lerp_color(cur.toon_bright_color, next?.toon_bright_color, blend);
                     cur_outline_color = lerp_color(cur.outline_color, next?.outline_color, blend);
@@ -116,6 +142,16 @@ namespace UV2.Live
                     cur_outline_width = Mathf.Max(0f, lerp_f(cur.outline_width_power, next?.outline_width_power, blend)) * 0.325f;
                     chara_dirty = true;
                 }
+                else if (track.name == "BgBL")
+                {
+                    // BgBL = the game's cached backlight group. UpdateBgColor1's
+                    // fast path: tint = color*power onto the ambient ShaderParam,
+                    // then SetVector(_AmbientColor) on every cached stage renderer
+                    // whose material carries the property (StartShaderParam's
+                    // [this+0x268]). (uv2_bgbl_unit_membership_decoded.md §3/§4)
+                    cur_bgbl_tint = tint;
+                    bgbl_bound = true;
+                }
                 else if (part_sets.TryGetValue(track.name, out var renderers) && renderers.Count > 0)
                 {
                     // the game's slow path tints resolved stage parts via
@@ -123,7 +159,12 @@ namespace UV2.Live
                     // block is cached, else the instance material. the fast
                     // path's _AmbientColor (0x99) global publish stays.
                     // (uv2_bgcolor1_resolution_decoded.md §3.3)
-                    mpb.SetColor(id_mul_color0, tint);
+                    // the colour and the power are separate values here too
+                    // (StageController.ApplyOrdaryBgColor2): putting the
+                    // power into the colour as well dimmed every tinted
+                    // stage part - the smoke plumes above all - by the
+                    // square of its power.
+                    mpb.SetColor(id_mul_color0, c);
                     mpb.SetFloat(id_color_power, power);
                     foreach (var r in renderers)
                     {
@@ -131,10 +172,73 @@ namespace UV2.Live
                         try { r.SetPropertyBlock(mpb); }
                         catch { /* destroyed mid-shutdown */ }
                     }
+                    if (!_part_probe_done.Contains(track.name))
+                    {
+                        _part_probe_done.Add(track.name);
+                        var pr = renderers[0];
+                        var pm = pr != null && pr.sharedMaterial != null ? pr.sharedMaterial : null;
+                        var mr = pr as MeshRenderer;
+                        var mf = pr != null ? pr.GetComponent<MeshFilter>() : null;
+                        var mesh = mf != null ? mf.sharedMesh : null;
+                        var tex = pm != null ? pm.GetTexture("_MainTex") : null;
+                        var bs = pr != null ? pr.bounds.size : Vector3.zero;
+                        string tex_desc = "NULL";
+                        if (tex != null) tex_desc = tex.width.ToString() + "x" + tex.height.ToString();
+                        string vert_desc = mesh == null ? "no-mesh" : mesh.vertexCount.ToString();
+                        trace_log.write($"bg_color1: {track.name} tint ({c.r:0.00},{c.g:0.00},{c.b:0.00}) " +
+                            $"power {power:0.00} renderers {renderers.Count}" +
+                            (pm != null ? $" shader {pm.shader.name} queue {pm.renderQueue}" +
+                                $" blend ({pm.GetFloat("_SrcBlend"):0},{pm.GetFloat("_DstBlend"):0})" +
+                                $" hasblend ({pm.HasProperty("_SrcBlend")})" +
+                                $" color ({pm.GetColor("_Color").r:0.00},{pm.GetColor("_Color").g:0.00},{pm.GetColor("_Color").b:0.00})" +
+                                $" tex {tex_desc}" +
+                                $" verts {vert_desc}" +
+                                $" bounds ({bs.x:0.00},{bs.y:0.00},{bs.z:0.00})" +
+                                $" scale ({pr.transform.lossyScale.x:0.00},{pr.transform.lossyScale.y:0.00},{pr.transform.lossyScale.z:0.00})" +
+                                $" enabled {pr.enabled} active {pr.gameObject.activeInHierarchy}" +
+                                $" pos ({pr.transform.position.x:0.0},{pr.transform.position.y:0.0},{pr.transform.position.z:0.0})"
+                                    : " material null"));
+                    }
                 }
             }
 
             if (chara_dirty) apply_chara_block();
+
+            // one-second probe of the values the game publishes for the
+            // scene: the backlight tint, the character light probe and the
+            // ambient the shader globals carry. the rig seeks to a frame
+            // and snaps, so the last probe before the snap is the frame's.
+            int probe_second = (int)(song_time);
+            if (probe_second != _last_probe_second)
+            {
+                _last_probe_second = probe_second;
+                trace_log.write($"bg_color1 probe t{song_time:0.00}s bgbl tint ({cur_bgbl_tint.r:0.00}," +
+                    $"{cur_bgbl_tint.g:0.00},{cur_bgbl_tint.b:0.00}) chara probe ({cur_light_probe.r:0.00}," +
+                    $"{cur_light_probe.g:0.00},{cur_light_probe.b:0.00}) chara color ({cur_chara_color.r:0.00}," +
+                    $"{cur_chara_color.g:0.00},{cur_chara_color.b:0.00}) ambient global ({last_tint.r:0.00}," +
+                    $"{last_tint.g:0.00},{last_tint.b:0.00})");
+            }
+
+            // the BgBL publish: per-renderer _AmbientColor over the cached
+            // property-matched set, exactly the game's fast path. the game
+            // also forwards the tint to MobShadowController::SetAmbientColor
+            // (audience blob shadows) when one exists.
+            if (bgbl_bound)
+            {
+                try_resolve_ambient_set();
+                if (ambient_set != null && ambient_set.Count > 0)
+                {
+                    mpb.SetColor(id_ambient, cur_bgbl_tint);
+                    for (int i = 0; i < ambient_set.Count; i++)
+                    {
+                        var r = ambient_set[i];
+                        if (r == null) continue;
+                        try { r.SetPropertyBlock(mpb); }
+                        catch { /* destroyed mid-shutdown */ }
+                    }
+                }
+                bgbl_bound = false;
+            }
 
             // the game publishes the winning group's tint as the shader
             // global _AmbientColor EVERY frame (slow path AND fast path of
@@ -193,7 +297,7 @@ namespace UV2.Live
             // exact-hash rule on renderer names (unit object + unit name).
             foreach (var track in ws.bg_color1)
             {
-                if (chara_group_names.Contains(track.name)) continue;
+                if (chara_group_names.Contains(track.name) || track.name == "BgBL") continue;
                 uint want = fnv1(track.name);
                 var set = new List<Renderer>();
                 foreach (var r in all)
@@ -212,6 +316,74 @@ namespace UV2.Live
             foreach (var kv in part_sets) if (kv.Value.Count > 0) bound.Add($"{kv.Key}:{kv.Value.Count}");
             trace_log.write($"bg_color1: part sets {string.Join(",", bound)}");
             return true;
+        }
+
+        // the game's StartShaderParam ambient list: property match over the
+        // stage hierarchy, cached once. [this+0x268] in the disasm.
+        private void try_resolve_ambient_set()
+        {
+            if (ambient_resolved) return;
+            var roots = new List<Transform>();
+            if (stage_controller_root != null) roots.Add(stage_controller_root);
+            if (stage_geometry_root != null) roots.Add(stage_geometry_root);
+            if (roots.Count == 0) return;
+
+            var set = new List<Renderer>();
+            foreach (var root in roots)
+            {
+                if (root == null) continue;
+                foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (r == null) continue;
+                    bool has = false;
+                    try
+                    {
+                        var mats = r.sharedMaterials;
+                        for (int i = 0; i < mats.Length; i++)
+                        {
+                            var m = mats[i];
+                            if (m == null) continue;
+                            if (m.HasProperty(id_ambient)) { has = true; break; }
+                        }
+                    }
+                    catch { continue; }
+                    if (has) set.Add(r);
+                }
+            }
+            ambient_set = set;
+            ambient_resolved = true;
+            trace_log.write($"bg_color1: BgBL ambient set {set.Count} renderers (property-matched)");
+            if (set.Count == 0)
+            {
+                // diag: name the first few materials the sweep saw and
+                // whether they carry the property, to catch resolution
+                // ordering or stripped-shader surprises.
+                var probe = new List<string>();
+                foreach (var root in roots)
+                {
+                    if (root == null) continue;
+                    foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+                    {
+                        if (r == null || probe.Count >= 8) break;
+                        var mats = r.sharedMaterials;
+                        for (int i = 0; i < mats.Length && probe.Count < 8; i++)
+                        {
+                            var m = mats[i];
+                            if (m == null) continue;
+                            probe.Add($"{r.name}/{m.name}={m.shader?.name}?{safe_has(m)}");
+                        }
+                        if (probe.Count >= 8) break;
+                    }
+                    if (probe.Count >= 8) break;
+                }
+                trace_log.write($"bg_color1: ambient probe {string.Join(" | ", probe)}");
+            }
+        }
+
+        private bool safe_has(Material m)
+        {
+            try { return m.HasProperty(id_ambient); }
+            catch { return false; }
         }
 
         private static Color lerp_color(Color a, Color? b, float t)
@@ -272,6 +444,10 @@ namespace UV2.Live
         private Color cur_outline_color = Color.white;
         private float cur_outline_width;
         private float cur_saturation = 1f;
+
+        // last BgBL backlight tint (the game's ambient ShaderParam value).
+        private Color cur_bgbl_tint = Color.black;
+        private bool bgbl_bound;
 
         // one trace line every 5s of song time keeps the bench readable.
         private void maybe_log(string part, Color tint, float song_time)

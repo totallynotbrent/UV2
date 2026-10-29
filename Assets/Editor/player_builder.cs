@@ -12,7 +12,7 @@ namespace UV2Build
             var opts = new BuildPlayerOptions
             {
                 scenes = scenes,
-                locationPathName = "Builds/UV2.exe",
+                locationPathName = "Builds/UmaLive.exe",
                 target = BuildTarget.StandaloneWindows64,
                 options = BuildOptions.None
             };

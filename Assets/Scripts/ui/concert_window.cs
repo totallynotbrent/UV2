@@ -37,13 +37,50 @@ namespace UV2.UI
 
             var progress_rect = ui_theme.make_text(root, "progress", "starting concert...", 17, ui_theme.text_main).GetComponent<RectTransform>();
             progress_rect.anchorMin = progress_rect.anchorMax = new Vector2(0.5f, 0f);
-            progress_rect.pivot = new Vector2(0.5f, 0.5f);
-            progress_rect.anchoredPosition = new Vector2(0, 120);
+            progress_rect.pivot = new Vector2(0.5f, 0f);
+            progress_rect.sizeDelta = new Vector2(900f, 26f);
+            progress_rect.anchoredPosition = new Vector2(0, 176f);
 
-            var progress_text = progress_rect.GetComponent<UnityEngine.UI.Text>();
+            var progress_text = progress_rect.GetComponent<TMPro.TextMeshProUGUI>();
+            progress_text.alignment = TMPro.TextAlignmentOptions.Bottom;
+
+            // the loading bar + percent: a slim track under the status line.
+            // the cluster stacks upward (progress 176..202, bar 135..145,
+            // pct 104..124, trail 12..92) with real gaps so no two rects
+            // intersect — the first cut reused the 100-tall default text
+            // boxes and every label overlapped the bar.
+            var bar_track = ui_theme.panel(root, "bar_track",
+                new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), Vector2.zero, Vector2.zero,
+                new Color(0.13f, 0.13f, 0.16f, 1f));
+            bar_track.pivot = new Vector2(0.5f, 0.5f);
+            bar_track.anchoredPosition = new Vector2(0, 140f);
+            bar_track.sizeDelta = new Vector2(420f, 10f);
+            // fill grows left->right inside the track: pinned to the track's
+            // left edge with pivot (0, .5) and full-height y anchors — the
+            // earlier center-pivot version centered the fill on the left
+            // corner and spilled left outside the track as it grew.
+            var bar_fill_rect = ui_theme.panel(bar_track, "fill", new Vector2(0f, 0f), new Vector2(0f, 1f),
+                Vector2.zero, Vector2.zero, ui_theme.accent);
+            bar_fill_rect.pivot = new Vector2(0f, 0.5f);
+            bar_fill_rect.anchoredPosition = Vector2.zero;
+            bar_fill_rect.sizeDelta = new Vector2(0f, 0f);
+            var pct_label = ui_theme.make_text(root, "pct", "", 15, ui_theme.text_dim);
+            place_bottom_center(pct_label.transform, new Vector2(0, 104f), new Vector2(900f, 20f));
+            pct_label.alignment = TMPro.TextAlignmentOptions.Bottom;
+            var trail_label = ui_theme.make_text(root, "trail", "", 14, ui_theme.text_dim);
+            place_bottom_center(trail_label.transform, new Vector2(0, 12f), new Vector2(900f, 80f));
+            trail_label.alignment = TMPro.TextAlignmentOptions.Bottom;
+
+            var pct_text = pct_label;
+            var trail_text = trail_label;
             _pending_loader = loader;
             _pending_canvas = canvas.gameObject;
+            UV2.UI.load_progress.ui_active = true;
+            UV2.UI.load_progress.ui_hidden_at = -1f;
             _progress_text = progress_text;
+            _bar_fill = bar_fill_rect.GetComponent<UnityEngine.UI.Image>();
+            _pct_text = pct_text;
+            _trail_text = trail_text;
             StartCoroutine(run_open(loader, progress_text));
 
             // the launcher only knows the song and cast; the stage resolves from the install here.
@@ -107,15 +144,38 @@ namespace UV2.UI
         // frame; tears the ui down on success, keeps it on failure.
         private UV2.Live.stage_loader _pending_loader;
         private GameObject _pending_canvas;
-        private UnityEngine.UI.Text _progress_text;
+        private TMPro.TextMeshProUGUI _progress_text;
+        private UnityEngine.UI.Image _bar_fill;
+        private float _bar_width = 420f;
+        private TMPro.TextMeshProUGUI _pct_text;
+        private TMPro.TextMeshProUGUI _trail_text;
 
-        private System.Collections.IEnumerator run_open(UV2.Live.stage_loader loader, UnityEngine.UI.Text progress_text)
+        static void place_bottom_center(Transform t, Vector2 pos, Vector2? size = null)
+        {
+            var r = (RectTransform)t;
+            r.anchorMin = r.anchorMax = r.pivot = new Vector2(0.5f, 0f);
+            if (size.HasValue)
+                r.sizeDelta = size.Value;
+            r.anchoredPosition = pos;
+        }
+
+        private System.Collections.IEnumerator run_open(UV2.Live.stage_loader loader, TMPro.TextMeshProUGUI progress_text)
         {
             yield return loader.open(selection_store.load());
             if (loader.opened)
             {
                 trace_log.write("concert open: SUCCESS - tearing down the summary ui");
+                // mark the ui gone BEFORE the canvas is destroyed: a capture
+                // that lands in the same frame would photograph the loading
+                // screen over the stage.
+                UV2.UI.load_progress.ui_active = false;
+                UV2.UI.load_progress.ui_hidden_at = Time.realtimeSinceStartup;
                 Destroy(_pending_canvas);
+                // the external control surface lives in the launcher window;
+                // the player only hosts the ipc bridge that polls the
+                // launcher's control file and publishes status back.
+                var bridge_go = new GameObject("control_bridge");
+                bridge_go.AddComponent<UV2.UI.control_bridge>().open(loader);
                 Destroy(gameObject);
                 yield break;
             }
@@ -128,7 +188,20 @@ namespace UV2.UI
         private void Update()
         {
             if (_progress_text != null && _pending_loader != null && !_pending_loader.opened)
+            {
                 _progress_text.text = UV2.UI.load_progress.describe();
+                if (_bar_fill != null)
+                {
+                    float f = Mathf.Clamp01(UV2.UI.load_progress.bar_fraction());
+                    // y stays 0: the fill stretches to the track's height
+                    // through its 0..1 y anchors; only the width is driven.
+                    _bar_fill.rectTransform.sizeDelta = new Vector2(_bar_width * f, 0f);
+                }
+                if (_pct_text != null)
+                    _pct_text.text = $"{Mathf.RoundToInt(Mathf.Clamp01(UV2.UI.load_progress.bar_fraction()) * 100f)}%";
+                if (_trail_text != null)
+                    _trail_text.text = UV2.UI.load_progress.describe_trail();
+            }
         }
     }
 }

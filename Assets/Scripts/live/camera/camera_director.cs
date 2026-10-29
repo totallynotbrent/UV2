@@ -5,6 +5,11 @@ using UnityEngine;
 
 namespace UV2.Live
 {
+    // camera drive level: full = authored motion, partial = each cut holds its
+    // static pose (no blending, shake, or cinematic clips) but still flips to
+    // the next cut, free = manual fly.
+    public enum camera_mode { full = 0, partial, free }
+
     // drives the authored camera along the worksheet tracks: position, look-at, fov, roll, and the cinematic motion override.
     public class camera_director : MonoBehaviour
     {
@@ -14,8 +19,58 @@ namespace UV2.Live
 
         private Camera cam;
         private Vector3? trace_prev_pos;
+        // the live look-at target this frame (the game's dof focal type-0
+        // transform target; read by the postfx chain's dof eval).
+        public Vector3 current_look_point;
         // the clock frame of the previous update, for the camera-delay window.
         private float prev_frame;
+
+        private camera_mode _mode = camera_mode.full;
+        public camera_mode mode
+        {
+            get => _mode;
+            set { if (_mode != value) { _mode = value; free_seeded = false; } }
+        }
+
+        // free-fly state, seeded from the live rotation on first use.
+        private float free_yaw, free_pitch;
+        private bool free_seeded;
+
+        // manual fly: right-drag looks, wasd/qe moves along the view, shift
+        // sprints, the scroll wheel zooms the field of view.
+
+        private void free_fly()
+        {
+            if (!free_seeded)
+            {
+                var e = cam.transform.eulerAngles;
+                free_yaw = e.y;
+                free_pitch = e.x > 180f ? e.x - 360f : e.x;
+                free_seeded = true;
+            }
+            if (Input.GetMouseButton(1))
+            {
+                free_yaw += Input.GetAxis("Mouse X") * 2.4f;
+                free_pitch -= Input.GetAxis("Mouse Y") * 2.4f;
+                free_pitch = Mathf.Clamp(free_pitch, -89f, 89f);
+                cam.transform.rotation = Quaternion.Euler(free_pitch, free_yaw, 0f);
+            }
+            var move = Vector3.zero;
+            if (Input.GetKey(KeyCode.W)) move += Vector3.forward;
+            if (Input.GetKey(KeyCode.S)) move += Vector3.back;
+            if (Input.GetKey(KeyCode.A)) move += Vector3.left;
+            if (Input.GetKey(KeyCode.D)) move += Vector3.right;
+            if (Input.GetKey(KeyCode.Q)) move += Vector3.down;
+            if (Input.GetKey(KeyCode.E)) move += Vector3.up;
+            float speed = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift) ? 12f : 3f;
+            if (move != Vector3.zero)
+                cam.transform.position += cam.transform.rotation * move * (speed * Time.deltaTime);
+            // scroll adjusts fov in freecam (w/s already dollies, so the
+            // wheel is free for zoom); clamped to unity's sane band.
+            float wheel = Input.GetAxis("Mouse ScrollWheel");
+            if (!Mathf.Approximately(wheel, 0f))
+                cam.fieldOfView = Mathf.Clamp(cam.fieldOfView - wheel * 12f, 5f, 120f);
+        }
 
         // handshake state: the authored key params + the running noise time.
         private Vector2 n0, n1, n2;
@@ -135,7 +190,38 @@ namespace UV2.Live
         private void LateUpdate()
         {
             if (ws == null || clock == null || cam == null) return;
-            float t = clock.time;
+
+            if (_mode == camera_mode.free)
+            {
+                free_fly();
+                return;
+            }
+
+            apply_at(clock.time);
+        }
+
+        // the song time the camera was last driven for.
+        private float last_applied_time = -1f;
+        private float last_applied_frame = -1f;
+
+        // true when the camera has been driven for this song frame.
+        // the capture path asks this before grabbing the framebuffer.
+        public bool applied_at(float t)
+        {
+            if (ws == null || cam == null) return false;
+            if (last_applied_frame < 0f) return false;
+            return Mathf.Abs(last_applied_frame - t * 60f) <= 1.5f;
+        }
+
+        // drives the camera for one specific song time.
+        // the seek path calls this directly so a capture at a scrubbed frame
+        // never races the LateUpdate order: without it the camera can still
+        // sit at the load-time default when the framebuffer is grabbed.
+        public void apply_at(float t)
+        {
+            if (ws == null || cam == null) return;
+            last_applied_time = t;
+            last_applied_frame = t * 60f;
 
             // the delay window compares the clock frame before this update.
             float clock_frame = t * 60f;
@@ -165,8 +251,10 @@ namespace UV2.Live
                         : cur.position + cur.pos_direct;
                     pos += cur.offset;
                     // the game blends between consecutive pos keys regardless of set type;
-                    // the type only picks how each endpoint resolves.
-                    if (next != null && next.interpolate_type != 0)
+                    // the type only picks how each endpoint resolves. partial mode
+                    // holds each cut static: no cross-key blending, no trace chase.
+                    bool partial = _mode == camera_mode.partial;
+                    if (!partial && next != null && next.interpolate_type != 0)
                     {
                         bool next_const = next.chara_relative_parts >= 11 && next.chara_relative_parts <= 14;
                         Vector3 next_layer = next.set_type == 1 ? layer_band(t, next.chara_relative_base) : Vector3.zero;
@@ -186,7 +274,7 @@ namespace UV2.Live
                     // it also applies before the key's own frame (the approach-in).
                     bool delay = (cur.attribute & 2) != 0
                         && ((prev_frame_this >= cur.frame) || (t < cur.time) || ((cur.attribute & 4) != 0));
-                    if (delay && trace_prev_pos.HasValue)
+                    if (!partial && delay && trace_prev_pos.HasValue)
                         pos = Vector3.Slerp(trace_prev_pos.Value, pos, Mathf.Clamp01(cur.trace_speed * Time.deltaTime * 60f));
 
                     cam.transform.position = pos;
@@ -217,7 +305,7 @@ namespace UV2.Live
                     Vector3 look = cur.look_at_type == 1
                         ? chara_parts.group_world(chara_roots, cur.look_at_chara_pos, cur.look_at_chara_parts, look_layer) + cur.position + (look_const ? cur.look_at_chara_pos_offset : Vector3.zero)
                         : cur.position;
-                    if (next != null && next.interpolate_type != 0)
+                    if (_mode != camera_mode.partial && next != null && next.interpolate_type != 0)
                     {
                         bool next_look_const = next.look_at_chara_parts >= 11 && next.look_at_chara_parts <= 14;
                         Vector3 next_layer = next.look_at_type == 1 ? layer_band(t, next.look_at_chara_pos) : Vector3.zero;
@@ -233,7 +321,9 @@ namespace UV2.Live
 
                     // the look-at chase slerps the forward vector toward the
                     // target direction, scaled back to the original distance.
+                    // partial mode holds the cut's static framing: no chase.
                     if ((cur.attribute & 2) != 0
+                        && _mode != camera_mode.partial
                         && ((prev_frame_this >= cur.frame) || (t < cur.time) || ((cur.attribute & 4) != 0)))
                     {
                         Vector3 to_target = look - cam.transform.position;
@@ -258,7 +348,8 @@ namespace UV2.Live
                     var cur = ws.camera_fov[i];
                     var next = i + 1 < ws.camera_fov.Count ? ws.camera_fov[i + 1] : null;
                     float fov = cur.fov;
-                    if (next != null)
+                    // partial holds the cut's static fov: no cross-key lerp.
+                    if (_mode != camera_mode.partial && next != null)
                     {
                         float k = key_eval.interp(cur, next, t);
                         fov = key_eval.lerp_f(cur.fov, next.fov, k);
@@ -284,7 +375,8 @@ namespace UV2.Live
                     var cur = ws.camera_roll[i];
                     var next = i + 1 < ws.camera_roll.Count ? ws.camera_roll[i + 1] : null;
                     float deg = cur.degree;
-                    if (next != null)
+                    // partial holds the cut's static roll.
+                    if (_mode != camera_mode.partial && next != null)
                     {
                         float k = key_eval.interp(cur, next, t);
                         deg = key_eval.lerp_f(cur.degree, next.degree, k);
@@ -296,7 +388,8 @@ namespace UV2.Live
             // the authored handshake rides on top: the key params interp between
             // keys (zeroed when no key is current, unlike pos which holds), and
             // the game applies the noise as a render-time view-matrix offset.
-            if (ws.handshake.Count > 0)
+            // partial mode runs static: no shake.
+            if (ws.handshake.Count > 0 && _mode == camera_mode.full)
             {
                 int i = key_eval.bracket(ws.handshake, t);
                 float power = 0f, frequency = 0f, rate = 0f;
@@ -334,8 +427,10 @@ namespace UV2.Live
                 }
             }
 
-            // the cinematic clip overrides the camera last.
-            apply_camera_motion(t);
+            // the cinematic clip overrides the camera last. partial mode runs
+            // static: the authored cut pose stands without the motion clip.
+            if (_mode == camera_mode.full)
+                apply_camera_motion(t);
         }
 
         // evaluates the camera-layer band at t blended with the flagged characters' height rate.

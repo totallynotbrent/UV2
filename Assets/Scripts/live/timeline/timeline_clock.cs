@@ -14,13 +14,41 @@ namespace UV2.Live
         public float rate => _rate;
         public bool paused { get; private set; }
 
-        public void set_timescale(float scale) => _rate = scale <= 0f ? 1f : scale;
+        public void set_timescale(float scale)
+        {
+            // zero is a no-op, never a rate; negatives play in reverse (the
+            // control window's fine-speed control goes down to -3x, and a
+            // negative master pitch plays the clip backward natively).
+            if (scale == 0f) return;
+            _rate = scale;
+            // the speed modifier rides the master's pitch too: without this
+            // the music position wins in advance() and no transport speed
+            // applies at all once the song is live.
+            if (_master != null) _master.pitch = _rate;
+        }
 
-        public void pause() => paused = true;
+        public void pause()
+        {
+            paused = true;
+            if (_master != null && _master.isPlaying) _master.Pause();
+        }
 
-        public void resume() => paused = false;
+        public void resume()
+        {
+            paused = false;
+            if (_master != null && !_master.isPlaying && _master.clip != null) _master.UnPause();
+        }
 
-        public void seek(float seconds) => _time = Mathf.Max(0f, seconds);
+        public void seek(float seconds)
+        {
+            _time = Mathf.Max(0f, seconds);
+            // the bound master follows the scrub so the audio stays in sync.
+            if (_master != null && _master.clip != null)
+            {
+                _time = Mathf.Min(_time, _master.clip.length);
+                _master.time = _time;
+            }
+        }
 
         // the audio source the clock locks to; when set, the clock reads the
         // music position instead of accumulating delta.
@@ -31,6 +59,18 @@ namespace UV2.Live
         // tracks whether the audio clock has ever reported sane progress;
         // device-less containers report the clip end from the first read.
         private bool _audio_trusted;
+
+        // true once the master audio source is playing: the song clock is
+        // authoritative only from this point, and consumers that must not
+        // advance on the pre-music free-run time gate on it.
+        public bool music_live => _master != null && _master.isPlaying;
+
+        // true once the clock has snapped to the audio position: the free-run
+        // value is discarded at that moment and t becomes song-relative. the
+        // pre-cut spring hold releases on this, not on music_live — Play()
+        // makes isPlaying true mid-frame while _time still carries the
+        // free-run seconds, and a raw-t gate releases one frame early.
+        public bool audio_synced => _audio_trusted;
 
         // one frame step: the audio position once it has proven it advances
         // plausibly, else real-time accumulation. a paused clock holds the

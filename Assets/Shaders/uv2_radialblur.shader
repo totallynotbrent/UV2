@@ -7,6 +7,15 @@ Shader "live/uv2_radialblur"
     Properties
     {
         _MainTex ("", 2D) = "black" {}
+        _BlurEndArea ("BlurEndArea", Float) = 0
+        _DepthCancelBlendLength ("DepthCancelBlendLength", Float) = 0
+        _RadialBlurSampleBias ("RadialBlurSampleBias", Float) = 0
+        _BlurTex ("BlurTex", 2D) = "" {}
+        _BlurParam ("BlurParam", Vector) = (0,0,0,0)
+        _BlurParamEx ("BlurParamEx", Vector) = (0,0,0,0)
+        _DepthCancelRect ("DepthCancelRect", Vector) = (0,0,0,0)
+        _GlobalScreenUVScrollParam ("GlobalScreenUVScrollParam", Vector) = (0,0,0,0)
+        _RadialBlurAxisScale ("RadialBlurAxisScale", Vector) = (1,1,1,1)
     }
     SubShader
     {

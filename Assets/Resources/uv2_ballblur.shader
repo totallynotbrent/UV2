@@ -6,6 +6,7 @@ Shader "live/uv2_ballblur"
     Properties
     {
         _MainTex ("Base", 2D) = "" {}
+        _BallBlurParams ("BallBlurParams", Vector) = (0,0,0,0)
     }
     SubShader
     {

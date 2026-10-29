@@ -17,6 +17,8 @@ namespace UV2.Live
             public float start_time;
             public float play_speed = 1f;
             public bool pause_like;
+            public string move_type = "";
+            public string color_pattern = "";
         }
 
         private static readonly Dictionary<int, Texture2D> textures = new();
@@ -44,6 +46,11 @@ namespace UV2.Live
             load_choreography(music_id);
             loaded = textures.Count > 0;
             trace_log.write($"cyalume: {textures.Count} pattern textures resolved for song {music_id}, {rows.Count} choreography rows, {overrides.Count} character overrides");
+            foreach (var kv in textures)
+                trace_log.write($"cyalume: pattern texture {kv.Key} = {(kv.Value != null ? kv.Value.name : "null")}");
+            foreach (var r in rows)
+                trace_log.write($"cyalume: choreography at {r.start_time:F2}s move '{r.move_type}' colour '{r.color_pattern}' pattern {r.pattern_id} speed {r.play_speed:F3}");
+            write_pattern_images();
         }
 
         // the pattern textures: live/cyalume/m{song}/tex_live_cyalume_m{song}_{NNN}.
@@ -174,6 +181,8 @@ namespace UV2.Live
                     start_time = start,
                     play_speed = play_speed,
                     pause_like = pause_like,
+                    move_type = move_type,
+                    color_pattern = color_pattern,
                 });
             }
         }
@@ -232,29 +241,28 @@ namespace UV2.Live
                 }
             }
 
-            // the y scroll steps through the pattern's frames at play speed.
-            float offset;
+            // the pattern's frames advance at the song's own tempo; each
+            // light in the crowd keeps its own phase on the sheet, so the
+            // crowd shimmers instead of marching in step.
+            float frame;
             if (current.pause_like)
             {
-                offset = 1f;
+                frame = 0f;
             }
             else
             {
                 float delta = Mathf.Max(0f, time_sec - current.start_time);
-                int frame_no = (int)(delta * current.play_speed * animation_frame_count) % animation_frame_count;
-                offset = 1f - (float)frame_no / animation_frame_count;
+                frame = delta * current.play_speed * cyalume_spread.SHEET_ROWS;
             }
-            if (float.IsNaN(last_scroll) || Mathf.Abs(last_scroll - offset) > 0.0001f)
+            if (float.IsNaN(last_scroll) || Mathf.Abs(last_scroll - frame) > 0.001f)
             {
-                last_scroll = offset;
+                last_scroll = frame;
                 foreach (var kv in pen_blocks)
                 {
                     var r = kv.Key;
                     var mpb = kv.Value;
                     r.GetPropertyBlock(mpb);
-                    // keeps the shared material's texture scale, overriding only the y offset.
-                    var scale = r.sharedMaterial != null ? r.sharedMaterial.mainTextureScale : Vector2.one;
-                    mpb.SetVector(id_main_tex_st, new Vector4(scale.x, scale.y, 0f, offset));
+                    mpb.SetFloat(id_frame, frame);
                     r.SetPropertyBlock(mpb);
                 }
             }
@@ -278,6 +286,43 @@ namespace UV2.Live
 
         public static int texture_count => textures.Count;
 
+        // the resolved pattern textures, for the crowd probe to write down.
+        public static IEnumerable<KeyValuePair<int, Texture2D>> pattern_textures() => textures;
+
+        // writes the pattern sheets beside the player so the sprites can be
+        // looked at directly; the crowd's light field is drawn from them.
+        private static void write_pattern_images()
+        {
+            foreach (var kv in textures)
+            {
+                var tex = kv.Value;
+                if (tex == null) continue;
+                try
+                {
+                    // the sheet comes from an asset bundle and cannot be read
+                    // back from cpu memory, so it is copied through the gpu.
+                    var rt = new RenderTexture(tex.width, tex.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+                    var previous = RenderTexture.active;
+                    var copy = new Texture2D(tex.width, tex.height, TextureFormat.RGBA32, false);
+                    Graphics.Blit(tex, rt);
+                    RenderTexture.active = rt;
+                    copy.ReadPixels(new Rect(0, 0, tex.width, tex.height), 0, 0);
+                    copy.Apply();
+                    RenderTexture.active = previous;
+                    string path = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), $"uv2_cyalume_{kv.Key}.png");
+                    System.IO.File.WriteAllBytes(path, copy.EncodeToPNG());
+                    UnityEngine.Object.Destroy(copy);
+                    rt.Release();
+                    UnityEngine.Object.Destroy(rt);
+                    trace_log.write($"cyalume: pattern {kv.Key} ({tex.width}x{tex.height}) written to {path}");
+                }
+                catch (Exception e)
+                {
+                    trace_log.write($"cyalume: pattern {kv.Key} dump failed: {e.GetType().Name}: {e.Message}");
+                }
+            }
+        }
+
         private static List<UV2.Data.livesettings_row> read_livesettings(int music_id)
         {
             var row = meta_row("livesettings");
@@ -298,5 +343,6 @@ namespace UV2.Live
 
         private static readonly int id_main_tex = Shader.PropertyToID("_MainTex");
         private static readonly int id_main_tex_st = Shader.PropertyToID("_MainTex_ST");
+        private static readonly int id_frame = Shader.PropertyToID("_Frame");
     }
 }

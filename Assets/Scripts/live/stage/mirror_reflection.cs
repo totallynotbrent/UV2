@@ -8,6 +8,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UV2.App;
 
 namespace UV2.Live
 {
@@ -28,7 +29,7 @@ namespace UV2.Live
         private static readonly Vector4 DEFAULT_DIST_MAP_TILE_OFFSET = new Vector4(1f, 1f, 0f, 0f);
 
         [SerializeField] private LayerMask _render_layers = ~0;
-        [SerializeField] private int _mirror_texture_size = 384;
+        [SerializeField] private int _mirror_texture_size = 1024;
         [SerializeField] private float _mirror_clip_plane_offset = 0.07f;
         [SerializeField] private float _mirror_reflection_rate = 0f;
         [SerializeField] private Vector4 _mirror_distortion_tile_offset = DEFAULT_DIST_MAP_TILE_OFFSET;
@@ -46,6 +47,7 @@ namespace UV2.Live
 
         private Transform _transform;
         private Renderer _mirror_renderer;
+        private Material _mirror_material;
         private Camera _base_camera;
         private Transform _base_camera_transform;
         private Camera _mirror_camera;
@@ -66,6 +68,8 @@ namespace UV2.Live
         private static readonly int PID_Color = Shader.PropertyToID("_Color");
         private static readonly int PID_ReflectionRate = Shader.PropertyToID("_ReflectionRate");
         private static readonly int PID_ReflectionTex = Shader.PropertyToID("_ReflectionTex");
+        private static readonly int PID_DistMap = Shader.PropertyToID("_DistMap");
+        private static readonly int PID_MaskTex = Shader.PropertyToID("_MaskTex");
         private static readonly int PID_DistMapST = Shader.PropertyToID("_DistMap_ST");
         private static readonly int PID_DistPower = Shader.PropertyToID("_DistPower");
 
@@ -119,6 +123,7 @@ namespace UV2.Live
 
         private void LateUpdate()
         {
+            probe_state();
             if (!_is_enabled || !_is_enabled_mirror_camera) return;
             if (_mirror_renderer == null || !_mirror_renderer.isVisible) return;
             if (_base_camera == null || _mirror_camera == null) return;
@@ -158,6 +163,19 @@ namespace UV2.Live
             return false;
         }
 
+        // the mirror is only usable once it has its reflection camera and
+        // texture; the stage can be assembled before the concert camera
+        // exists, so callers retry the configuration until it sticks.
+        public bool is_configured => _is_initialized;
+
+        public bool ensure_configured(Camera base_camera)
+        {
+            if (_is_initialized) return true;
+            if (base_camera == null) return false;
+            ConfigureFor(base_camera);
+            return _is_initialized;
+        }
+
         // configures the mirror once both a base camera and a renderer exist.
         public void ConfigureFor(Camera base_camera)
         {
@@ -176,15 +194,77 @@ namespace UV2.Live
             UpdateRenderTexture();
             UpdateMirrorTexture();
             UpdateMirrorParams();
-            SetReflectionRate(1f);
+            // the environment track publishes the authored mirror state; the
+            // floor starts dark until the song enables the mirror.
+            SetReflectionRate(0f);
             _is_initialized = true;
             Debug.Log($"uv2 mirror '{name}' initialized");
+        }
+
+        // the game draws the floor reflection through a render pipeline
+        // feature, so the floor material never shows it on its own. the port
+        // draws the reflection itself with its own shader, keeping the
+        // stage's distortion map, mask and the rate the song publishes.
+        private void InstallMirrorShader()
+        {
+            if (_mirror_renderer == null) return;
+            var shader = Shader.Find("live/uv2_mirror");
+            if (shader == null)
+            {
+                trace_log.write("[mirror] live/uv2_mirror shader not found, the floor keeps the game shader");
+                return;
+            }
+            var source = _mirror_renderer.sharedMaterials;
+            if (source == null || source.Length == 0) return;
+            bool wants_swap = false;
+            foreach (var mat in source)
+            {
+                if (mat == null) continue;
+                if (mat.HasProperty(PID_ReflectionTex)) { wants_swap = true; break; }
+                if (mat.shader != null && mat.shader.name.Contains("Mirror")) { wants_swap = true; break; }
+            }
+            if (!wants_swap) return;
+            var instance = _mirror_renderer.material;
+            if (instance == null) return;
+            instance.shader = shader;
+            // the game's distortion map and mask travel with the floor; carry
+            // them over in case the shader swap dropped them.
+            foreach (var mat in source)
+            {
+                if (mat == null) continue;
+                CopyTexture(mat, instance, PID_DistMap);
+                CopyTexture(mat, instance, PID_MaskTex);
+                CopyVector(mat, instance, PID_DistMapST);
+                CopyVector(mat, instance, PID_DistPower);
+                break;
+            }
+            _mirror_material = instance;
+            _materials = _mirror_renderer.sharedMaterials;
+            trace_log.write($"[mirror] '{name}' draws the reflection with live/uv2_mirror");
+        }
+
+        private static void CopyTexture(Material source, Material destination, int property_id)
+        {
+            if (!destination.HasProperty(property_id)) return;
+            if (destination.GetTexture(property_id) != null) return;
+            if (!source.HasProperty(property_id)) return;
+            var tex = source.GetTexture(property_id);
+            if (tex == null) return;
+            destination.SetTexture(property_id, tex);
+        }
+
+        private static void CopyVector(Material source, Material destination, int property_id)
+        {
+            if (!destination.HasProperty(property_id)) return;
+            if (!source.HasProperty(property_id)) return;
+            destination.SetVector(property_id, source.GetVector(property_id));
         }
 
         private void InitMaterials()
         {
             if (_mirror_renderer == null) return;
             _materials = _mirror_renderer.sharedMaterials;
+            InstallMirrorShader();
             if (_materials == null || _materials.Length == 0) return;
             bool found_dist_power = false;
             bool found_dist_map_st = false;
@@ -318,6 +398,16 @@ namespace UV2.Live
             ApplyMaterialParams();
         }
 
+        // the authored mirror state from the environment track: the mirror
+        // renders only while the song enables it and blends at the authored
+        // rate (0.27 to 0.51 across 1004). the fork published a hardcoded
+        // 1.0, which drove the floor's reflection to full white.
+        public void set_authored_mirror(bool enabled, float rate)
+        {
+            _is_enabled = enabled;
+            SetReflectionRate(enabled ? Mathf.Clamp01(rate) : 0f);
+        }
+
         private void ApplyMaterialParams()
         {
             if (_materials == null) return;
@@ -368,6 +458,7 @@ namespace UV2.Live
 
         private Vector3 GetMirrorNormal()
         {
+            if (TryGetGeometryPlane(out Vector3 normal, out _)) return normal;
             switch (_direction)
             {
                 case Direction.Forward: return _transform.forward;
@@ -375,6 +466,38 @@ namespace UV2.Live
                 case Direction.Up:
                 default: return _transform.up;
             }
+        }
+
+        // the mirror surface comes from the renderer's own geometry: the
+        // thinnest axis of its local bounds is the surface normal and the
+        // bounds centre is the surface itself. a stage whose mirror object is
+        // authored with an offset pivot or a rotated up axis otherwise puts
+        // the reflection plane somewhere the camera can never be in front of.
+        private bool TryGetGeometryPlane(out Vector3 normal, out Vector3 point)
+        {
+            normal = Vector3.zero;
+            point = Vector3.zero;
+            if (_mirror_renderer == null) return false;
+            Vector3 size = _mirror_renderer.localBounds.size;
+            float max_axis = Mathf.Max(size.x, Mathf.Max(size.y, size.z));
+            if (max_axis <= 0f) return false;
+            float min_axis = Mathf.Min(size.x, Mathf.Min(size.y, size.z));
+            if (min_axis > max_axis * 0.25f) return false;
+            if (min_axis == size.x) normal = Vector3.right;
+            else if (min_axis == size.y) normal = Vector3.up;
+            else normal = Vector3.forward;
+            normal = _transform.TransformDirection(normal).normalized;
+            point = _mirror_renderer.bounds.center;
+            if (_base_camera_transform != null && Vector3.Dot(normal, _base_camera_transform.position - point) < 0f)
+                normal = -normal;
+            return true;
+        }
+
+        // the point the reflection plane passes through.
+        private Vector3 GetMirrorPoint()
+        {
+            if (TryGetGeometryPlane(out _, out Vector3 point)) return point;
+            return _transform.position;
         }
 
         private bool IsPointAbovePlane(Vector3 point, Vector3 plane_pos, Vector3 plane_normal)
@@ -385,7 +508,7 @@ namespace UV2.Live
         private bool IsBaseCameraInFrontOfMirror()
         {
             if (_base_camera_transform == null || _transform == null) return false;
-            return IsPointAbovePlane(_base_camera_transform.position, _transform.position, GetMirrorNormal());
+            return IsPointAbovePlane(_base_camera_transform.position, GetMirrorPoint(), GetMirrorNormal());
         }
 
         private void UpdateProjectionMatrix()
@@ -396,7 +519,7 @@ namespace UV2.Live
                 return;
             }
             Vector3 normal = GetMirrorNormal();
-            Vector3 plane_pos = _transform.position;
+            Vector3 plane_pos = GetMirrorPoint();
             float d = -Vector3.Dot(normal, plane_pos) - _mirror_clip_plane_offset;
             Vector4 reflection_plane = new Vector4(normal.x, normal.y, normal.z, d);
             Matrix4x4 reflection_mat = Matrix4x4.zero;
@@ -466,10 +589,90 @@ namespace UV2.Live
             reflection_mat.m33 = 1f;
         }
 
+        // one probe per second so the floor's reflection state is visible in the trace.
+        private float _probe_timer = -1f;
+        private bool _logged_exception;
+
+        private void probe_state()
+        {
+            if (Time.realtimeSinceStartup - _probe_timer < 1f) return;
+            _probe_timer = Time.realtimeSinceStartup;
+            float mat_rate = -1f;
+            string mat_shader = "";
+            if (_materials != null)
+            {
+                foreach (var mat in _materials)
+                {
+                    if (mat == null) continue;
+                    if (mat.HasProperty(PID_ReflectionRate)) mat_rate = mat.GetFloat(PID_ReflectionRate);
+                    mat_shader = mat.shader != null ? mat.shader.name : "";
+                    break;
+                }
+            }
+            bool visible = _mirror_renderer != null && _mirror_renderer.isVisible;
+            bool in_front = IsBaseCameraInFrontOfMirror();
+            Vector3 normal = GetMirrorNormal();
+            Vector3 point = GetMirrorPoint();
+            int w = _mirror_texture != null ? _mirror_texture.width : 0;
+            int h = _mirror_texture != null ? _mirror_texture.height : 0;
+            float lum = read_target_luminance();
+            bool has_dist = false;
+            bool has_mask = false;
+            Vector4 dist_power = Vector4.zero;
+            foreach (var mat in _materials)
+            {
+                if (mat == null) continue;
+                if (mat.HasProperty(PID_DistMap) && mat.GetTexture(PID_DistMap) != null) has_dist = true;
+                if (mat.HasProperty(PID_MaskTex) && mat.GetTexture(PID_MaskTex) != null) has_mask = true;
+                if (mat.HasProperty(PID_DistPower)) dist_power = mat.GetVector(PID_DistPower);
+                break;
+            }
+            trace_log.write($"[mirror] '{name}' rate {_mirror_reflection_rate:0.000} mat_rate {mat_rate:0.000} " +
+                $"enabled {_is_enabled} visible {visible} cam_in_front {in_front} rt {w}x{h} target_lum {lum:0.000} " +
+                $"normal ({normal.x:0.00},{normal.y:0.00},{normal.z:0.00}) point ({point.x:0.0},{point.y:0.0},{point.z:0.0}) " +
+                $"shader '{mat_shader}' dist_map {has_dist} mask {has_mask} dist_power ({dist_power.x:0.000},{dist_power.y:0.000},{dist_power.z:0.000})");
+        }
+
+        // averages a small corner of the reflection target so a blank or black mirror is distinguishable.
+        private float read_target_luminance()
+        {
+            if (_mirror_texture == null || !_mirror_texture.IsCreated()) return -1f;
+            RenderTexture previous = RenderTexture.active;
+            Texture2D probe = null;
+            try
+            {
+                RenderTexture.active = _mirror_texture;
+                probe = new Texture2D(8, 8, TextureFormat.RGBA32, false);
+                probe.ReadPixels(new Rect(0f, 0f, 8f, 8f), 0, 0, false);
+                probe.Apply(false);
+                Color32[] pixels = probe.GetPixels32();
+                if (pixels == null || pixels.Length == 0) return -1f;
+                float sum = 0f;
+                foreach (var p in pixels)
+                    sum += (0.2126f * p.r + 0.7152f * p.g + 0.0722f * p.b) / 255f;
+                return sum / pixels.Length;
+            }
+            catch (Exception ex)
+            {
+                if (!_logged_exception)
+                {
+                    _logged_exception = true;
+                    trace_log.write($"[mirror] '{name}' target probe failed: {ex.GetType().Name}");
+                }
+                return -1f;
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+                if (probe != null) Destroy(probe);
+            }
+        }
+
         public void ForceRenderOnce()
         {
+            probe_state();
             if (_mirror_reflection_rate <= 0.001f) return;
-            if (_mirror_renderer == null || !_mirror_renderer.isVisible) return;
+            if (_mirror_renderer == null) return;
             if (!_is_initialized || _base_camera == null || _mirror_camera == null) return;
             if (_is_rendering_now) return;
             if (!IsBaseCameraInFrontOfMirror()) return;
@@ -497,8 +700,13 @@ namespace UV2.Live
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                if (!_logged_exception)
+                {
+                    _logged_exception = true;
+                    trace_log.write($"[mirror] '{name}' render failed: {ex.GetType().Name}: {ex.Message}");
+                }
             }
             finally
             {

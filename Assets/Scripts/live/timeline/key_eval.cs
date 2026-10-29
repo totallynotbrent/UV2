@@ -46,9 +46,41 @@ namespace UV2.Live
                 if (u <= b.time)
                 {
                     float span = b.time - a.time;
-                    float local = span <= 0f ? 1f : (u - a.time) / span;
+                    float local = span <= 0 ? 1f : (u - a.time) / span;
                     return Mathf.Lerp(a.value, b.value, local);
                 }
+            }
+            return curve[curve.Count - 1].value;
+        }
+
+        // evaluates the curve as the cubic Hermite spline unity's
+        // AnimationCurve.Evaluate performs: the keyframe's own slopes shape
+        // the segment. a curve authored as a zero-tangent ramp therefore
+        // eases in and out instead of running straight.
+        public static float evaluate_curve_smooth(List<curve_key> curve, float u)
+        {
+            if (curve == null || curve.Count == 0) return u;
+            if (curve.Count == 1) return curve[0].value;
+
+            for (int i = 0; i < curve.Count - 1; i++)
+            {
+                var a = curve[i];
+                var b = curve[i + 1];
+                if (u > b.time && i < curve.Count - 2) continue;
+
+                float span = b.time - a.time;
+                if (span <= 0f) return b.value;
+                float t = Mathf.Clamp01((u - a.time) / span);
+
+                float t2 = t * t;
+                float t3 = t2 * t;
+                float h00 = 2f * t3 - 3f * t2 + 1f;
+                float h10 = t3 - 2f * t2 + t;
+                float h01 = -2f * t3 + 3f * t2;
+                float h11 = t3 - t2;
+
+                return h00 * a.value + h10 * span * a.out_slope +
+                       h01 * b.value + h11 * span * b.in_slope;
             }
             return curve[curve.Count - 1].value;
         }

@@ -14,7 +14,7 @@ namespace UV2.App
         private class config_file
         {
             public string main_path;
-            public int target_fps = 120;
+            public int target_fps = 60;
             public bool diagnostics = true;
         }
 
@@ -40,7 +40,7 @@ namespace UV2.App
             }
         }
 
-        private static int _target_fps = 120;
+        private static int _target_fps = 60;
 
         private static string config_path
         {
@@ -68,7 +68,7 @@ namespace UV2.App
             string default_path = default_main_path();
             string main_path = default_path;
             _diagnostics = true;
-            _target_fps = 120;
+            _target_fps = 60;
 
             if (File.Exists(config_path))
             {
@@ -87,7 +87,7 @@ namespace UV2.App
             }
             else
             {
-                var fresh = new config_file { main_path = default_path, target_fps = 120, diagnostics = true };
+                var fresh = new config_file { main_path = default_path, target_fps = 60, diagnostics = true };
                 try
                 {
                     File.WriteAllText(config_path, JsonUtility.ToJson(fresh, true));

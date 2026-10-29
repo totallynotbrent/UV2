@@ -50,132 +50,74 @@ namespace UV2.Live
         private const float lightmap_min_density = 0.0f;
         private static readonly Color lightmap_density_color = new(0.5f, 0.5f, 0.5f, 1f);
 
-        // stores the global-light keys bracketing the current frame for the blend.
-        public static void set_light_track(global_light_key key, float blend)
-        {
-            _light_key = key;
-            _light_next = null;
-            _light_blend = blend;
-        }
-        public static void set_light_track(global_light_key key, global_light_key next, float blend)
-        {
-            _light_key = key;
-            _light_next = next;
-            _light_blend = blend;
-        }
-        private static global_light_key _light_key;
-        private static global_light_key _light_next;
-        private static float _light_blend;
+        // the per-roster-slot light states the director resolved this frame.
+        // the game's global light is a per-cast-member publish: slot i is
+        // reached only when the current key's mask admits bit i, so a
+        // character the mask excludes keeps whatever state it already had.
+        private static IReadOnlyList<chara_light_state> _slot_states;
+        private static Color _scene_rim = Color.white;
+        private static Quaternion _scene_rotation = Quaternion.identity;
 
-        // LerpWithoutClamp semantics (the fork's rim lerp extrapolates
-        // past the key pair; Mathf.Lerp clamps).
-        private static float lerp_f(float a, float b, float blend) => a + (b - a) * blend;
-        private static Color lerp_c(Color a, Color b, float blend) => Color.Lerp(a, b, blend);
+        // the resolved scene-wide light state (the last list that published)
+        // plus the per-slot states the character blocks draw from.
+        public static void set_slot_states(IReadOnlyList<chara_light_state> states, Color scene_rim,
+            Quaternion scene_rotation)
+        {
+            _slot_states = states;
+            _scene_rim = scene_rim;
+            _scene_rotation = scene_rotation;
+        }
 
         // the assembled character mpb: rebuilt when the light track moves.
         private static MaterialPropertyBlock _chara_mpb;
-        private static Vector3 _last_light_dir = new(12345f, 0f, 0f);
         private static bool _pin_log_pending;
+        private static bool _pin_log_done;
 
         // applies the toon-light + rim block onto every character renderer.
-        public static void publish_chara_block(List<Transform> chara_roots)
+        // places holds each root's standing place (the game's roster index):
+        // the mask bit i selects roster slot i, and the cast list is denser
+        // than the number of loaded roots.
+        public static void publish_chara_block(List<Transform> chara_roots, IReadOnlyList<int> places = null)
         {
             if (chara_roots == null || chara_roots.Count == 0) return;
             if (_chara_mpb == null) _chara_mpb = new MaterialPropertyBlock();
 
-            Vector3 dir = Vector3.down;
-            var k = _light_key;
-            var n = _light_next;
-            if (k != null && k.light_dir.sqrMagnitude > 1e-06f)
-            {
-                Vector3 euler = k.light_dir;
-                if (n != null && n.light_dir.sqrMagnitude > 1e-06f)
-                    euler = Vector3.Lerp(k.light_dir, n.light_dir, _light_blend);
-                var rot = Quaternion.Euler(euler);
-                // the fork's cameraFollow (walker 2466-2469): the camera
-                // rotation multiplies into the light rotation.
-                if (k.camera_follow != 0 && Camera.main != null)
-                    rot = rot * Camera.main.transform.rotation;
-                dir = -(rot * Vector3.forward).normalized;
-            }
-
-            // the game re-applies this block EVERY frame (fork Director.cs
-            // OnUpdateGlobalLight: mpb cleared + republished per frame so any
-            // competing writer loses). the direction-delta early-out let
-            // bg_color1's per-frame Chara* tint wipe the toon-light state
-            // after the first frame it settled, so the body fell back to the
-            // serialized defaults (hot) for the rest of the song - the
-            // white-body wash. republish unconditionally.
-            _chara_mpb.SetFloat(id_use_orig_light, 1f);
-            _chara_mpb.SetVector(id_orig_light_dir, dir);
-            _pin_log_pending = true;
-
-            // the game publishes the toon light direction via Material::SetInt/SetVector
-            // (ModelController::UpdateBodyLightDir 0x7ff8e51a8010) with NO HasProperty
-            // check — a stripped variant simply ignores the write. pin use_orig +
-            // dir unconditionally so a later SetPropertyBlock (the bg_color1 tint)
-            // cannot wipe them.
-            foreach (var root in chara_roots)
-            {
-                if (root == null) continue;
-                foreach (var r in root.GetComponentsInChildren<Renderer>())
-                {
-                    if (r == null) continue;
-                    try
-                    {
-                        foreach (var m in r.sharedMaterials)
-                        {
-                            if (m == null) continue;
-                            m.SetFloat(id_use_orig_light, 1f);
-                            m.SetVector(id_orig_light_dir, dir);
-                        }
-                        // one-shot diagnostic: whether the loaded variant carries
-                        // the toon-light props (llvmpipe benches read False —
-                        // variant stripping; his DX11 trace reads True). dumps
-                        // the name table once so the bundle-skew hypothesis is
-                        // checkable from the trace alone.
-                        if (_pin_log_pending)
-                        {
-                            var m0 = r.sharedMaterials != null && r.sharedMaterials.Length > 0 ? r.sharedMaterials[0] : null;
-                            if (m0 != null)
-                            {
-                                var sb = new System.Text.StringBuilder();
-                                var sh = m0.shader;
-                                int prop_count = sh.GetPropertyCount();
-                                int printed = 0;
-                                for (int pi = 0; pi < prop_count && printed < 12; pi++)
-                                {
-                                    var pname = sh.GetPropertyName(pi);
-                                    if (pname == null) continue;
-                                    if (pname.Contains("Light") || pname.Contains("Toon") || pname.Contains("Rim"))
-                                    {
-                                        if (printed++ > 0) sb.Append(' ');
-                                        sb.Append(pname);
-                                    }
-                                }
-                                trace_log.write($"shade pin: '{r.name}' mat '{m0.name}' acceptsUseOrig={m0.HasProperty(id_use_orig_light)} shader '{sh.name}' props({prop_count}) [{sb}]");
-                                _pin_log_pending = false;
-                            }
-                        }
-                    }
-                    catch { /* destroyed mid-shutdown */ }
-                }
-            }
-
-            // rim values are merged per-renderer in the apply loop below
-            // (after the GetPropertyBlock read-back) so both the tint block
-            // and the light state survive on the same renderer.
-
-            // per-character gate: only slots whose standing position is in
-            // the key's flags get the block (fork 451-464); flags==0 (or all
-            // set) applies to every root like the game's default.
-            bool gate_all = k == null || k.flags == 0;
+            // per-character gate: only the roster slots whose bit the current
+            // key's mask admits get the block (fork 451-464). a slot the mask
+            // excludes is skipped, not reset.
             for (int ci = 0; ci < chara_roots.Count; ci++)
             {
                 var root = chara_roots[ci];
                 // shutdown can destroy a root or renderer mid-update; the rest still publish.
                 if (root == null) continue;
-                if (!gate_all && ((k.flags & (1 << ci)) == 0)) continue;
+                int place = places != null && ci < places.Count ? places[ci] : ci;
+                if (_slot_states == null || place < 0 || place >= _slot_states.Count) continue;
+                var state = _slot_states[place];
+                if (state == null || !state.valid) continue;
+
+                Vector3 dir = -(state.rotation * Vector3.forward).normalized;
+
+                // the game re-applies this block EVERY frame (fork Director.cs
+                // OnUpdateGlobalLight: the block is republished per frame so
+                // any competing writer loses). the direction-delta early-out
+                // let bg_color1's per-frame Chara* tint wipe the toon-light
+                // state after the first frame it settled, so the body fell
+                // back to the serialized defaults (hot) for the rest of the
+                // song - the white-body wash. republish unconditionally.
+                _chara_mpb.SetFloat(id_use_orig_light, 1f);
+                _chara_mpb.SetVector(id_orig_light_dir, dir);
+                // arm the one-shot pin log only once per apply-pass owner; arming
+                // it every frame re-logged the whole cast at ~30 lines/sec and
+                // drowned the trace (the republish itself stays unconditional).
+                if (!_pin_log_done) _pin_log_pending = true;
+
+                // the game publishes the toon light direction via Material::SetInt/SetVector
+                // (ModelController::UpdateBodyLightDir 0x7ff8e51a8010) with NO HasProperty
+                // check - a stripped variant simply ignores the write. the
+                // property block carries the same pair per renderer, so the
+                // state stays per character without touching the shared
+                // material (a material write would leak one slot's light onto
+                // every character wearing that material).
                 foreach (var r in root.GetComponentsInChildren<Renderer>())
                 {
                     if (r == null) continue;
@@ -184,39 +126,63 @@ namespace UV2.Live
                     // every frame, so read the current block back and extend
                     // it with the light state instead of clobbering (the
                     // fork's facial handler documents this exact pattern).
-                    // the rim lerps are recomputed into the block AFTER the
-                    // read-back so they survive the merge.
+                    // the rim values are written after the read-back so they
+                    // survive the merge.
                     try
                     {
                         r.GetPropertyBlock(_chara_mpb);
-                        if (k != null)
-                        {
-                            var nx = _light_next ?? k;
-                            float b = _light_next != null ? _light_blend : 0f;
-                            _chara_mpb.SetColor(Shader.PropertyToID("_RimColor"), lerp_c(k.rim_color, nx.rim_color, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep"), lerp_f(k.rim_step, nx.rim_step, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather"), lerp_f(k.rim_feather, nx.rim_feather, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate"), lerp_f(k.rim_spec_rate, nx.rim_spec_rate, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate"), lerp_f(k.rim_shadow_rate, nx.rim_shadow_rate, b));
-                            _chara_mpb.SetColor(Shader.PropertyToID("_RimColor2"), lerp_c(k.rim_color2, nx.rim_color2, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep2"), lerp_f(k.rim_step2, nx.rim_step2, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather2"), lerp_f(k.rim_feather2, nx.rim_feather2, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate2"), lerp_f(k.rim_spec_rate2, nx.rim_spec_rate2, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate2"), lerp_f(k.rim_shadow_rate2, nx.rim_shadow_rate2, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset"),
-                                lerp_f(k.rim_horizon_offset, nx.rim_horizon_offset, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset"),
-                                lerp_f(k.rim_vertical_offset, nx.rim_vertical_offset, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset2"),
-                                lerp_f(k.rim_horizon_offset2, nx.rim_horizon_offset2, b));
-                            _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset2"),
-                                lerp_f(k.rim_vertical_offset2, nx.rim_vertical_offset2, b));
-                        }
+                        _chara_mpb.SetColor(Shader.PropertyToID("_RimColor"), state.rim_color);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep"), state.rim_step);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather"), state.rim_feather);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate"), state.rim_spec_rate);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate"), state.rim_shadow_rate);
+                        _chara_mpb.SetColor(Shader.PropertyToID("_RimColor2"), state.rim_color2);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimStep2"), state.rim_step2);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimFeather2"), state.rim_feather2);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimSpecRate2"), state.rim_spec_rate2);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimShadowRate2"), state.rim_shadow_rate2);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset"), state.rim_horizon_offset);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset"), state.rim_vertical_offset);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimHorizonOffset2"), state.rim_horizon_offset2);
+                        _chara_mpb.SetFloat(Shader.PropertyToID("_RimVerticalOffset2"), state.rim_vertical_offset2);
                         _chara_mpb.SetFloat(id_use_orig_light, 1f);
                         _chara_mpb.SetVector(id_orig_light_dir, dir);
                         r.SetPropertyBlock(_chara_mpb);
                     }
                     catch { /* destroyed mid-shutdown */ }
+                }
+
+                // one-shot diagnostic: whether the loaded variant carries
+                // the toon-light props (llvmpipe benches read False -
+                // variant stripping; his DX11 trace reads True). dumps
+                // the name table once so the bundle-skew hypothesis is
+                // checkable from the trace alone.
+                if (_pin_log_pending)
+                {
+                    foreach (var r in root.GetComponentsInChildren<Renderer>())
+                    {
+                        if (r == null) continue;
+                        var m0 = r.sharedMaterials != null && r.sharedMaterials.Length > 0 ? r.sharedMaterials[0] : null;
+                        if (m0 == null) continue;
+                        var sb = new System.Text.StringBuilder();
+                        var sh = m0.shader;
+                        int prop_count = sh.GetPropertyCount();
+                        int printed = 0;
+                        for (int pi = 0; pi < prop_count && printed < 12; pi++)
+                        {
+                            var pname = sh.GetPropertyName(pi);
+                            if (pname == null) continue;
+                            if (pname.Contains("Light") || pname.Contains("Toon") || pname.Contains("Rim"))
+                            {
+                                if (printed++ > 0) sb.Append(' ');
+                                sb.Append(pname);
+                            }
+                        }
+                        trace_log.write($"shade pin: '{r.name}' mat '{m0.name}' acceptsUseOrig={m0.HasProperty(id_use_orig_light)} shader '{sh.name}' props({prop_count}) [{sb}]");
+                        _pin_log_pending = false;
+                        _pin_log_done = true;
+                        break;
+                    }
                 }
             }
         }
@@ -277,7 +243,11 @@ namespace UV2.Live
             Shader.SetGlobalColor(id_lightmap_add, new Color(add_rgb.x, add_rgb.y, add_rgb.z, 1f));
             Shader.SetGlobalColor(id_lightmap_modulate, new Color(mod_rgb.x, mod_rgb.y, mod_rgb.z, 1f));
 
-            Shader.SetGlobalColor(id_rim_color, Color.white);
+            // the global rim tint is the authored one: the worksheet's
+            // global-light track carries rimColor per key (song 1004 f2400 =
+            // 0.354/0.587/1.0), so a constant white rim is a washed-out
+            // cast. chara renderers override it with their own _RimColor.
+            Shader.SetGlobalColor(id_rim_color, _scene_rim);
             Shader.SetGlobalVector(id_toon_color, new Vector4(1f, 1f, 1f, 1f));
             Shader.SetGlobalFloat(id_outline_width, 1.0f);
             Shader.SetGlobalFloat(id_outline_offset, 1.0f);
@@ -318,9 +288,7 @@ namespace UV2.Live
             // (cb0[7]). white light, direction from the same worksheet track
             // (the game publishes from its light rig; ours is the global-light
             // track's current direction).
-            Vector3 main_dir = Vector3.down;
-            if (_light_key != null && _light_key.light_dir.sqrMagnitude > 1e-06f)
-                main_dir = -(Quaternion.Euler(_light_key.light_dir) * Vector3.forward).normalized;
+            Vector3 main_dir = -(_scene_rotation * Vector3.forward).normalized;
             Shader.SetGlobalVector(id_main_light_pos, new Vector4(main_dir.x, main_dir.y, main_dir.z, 0f));
             Shader.SetGlobalColor(id_main_light_color, Color.white);
 
@@ -349,17 +317,8 @@ namespace UV2.Live
         private static void publish_toon_light()
         {
             Shader.SetGlobalFloat(id_use_orig_light, 1f);
-            var dir = Vector3.down;
-            if (_light_key != null)
-            {
-                var k = _light_key;
-                Vector3 light_dir = k.light_dir;
-                if (light_dir.sqrMagnitude < 1e-06f)
-                    light_dir = Vector3.down;
-                // the euler angles point the light; the shader wants the travel direction.
-                var rot = Quaternion.Euler(light_dir);
-                dir = -(rot * Vector3.forward).normalized;
-            }
+            // the euler angles point the light; the shader wants the travel direction.
+            Vector3 dir = -(_scene_rotation * Vector3.forward).normalized;
             Shader.SetGlobalVector(id_orig_light_dir, dir);
         }
     }

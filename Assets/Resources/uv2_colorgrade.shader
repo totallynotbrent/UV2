@@ -7,6 +7,8 @@ Shader "live/uv2_colorgrade"
     Properties
     {
         _MainTex ("Base", 2D) = "" {}
+        _Saturation ("Saturation", Float) = 1
+        _Lut ("Lut", 2D) = "" {}
     }
     SubShader
     {

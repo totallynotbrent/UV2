@@ -13,13 +13,19 @@ namespace UV2.Live
         private static int _volume_enabled;
         private static float last_probe_t = -10f;
 
+        // the last lift the volume walker published (the bloom feature
+        // folds it together with the shafts walker's).
+        public static float last_lift;
+
         // every stage material by asset name, for the uv scroll entries.
         private static readonly Dictionary<string, List<Material>> stage_materials = new();
+        private static readonly Dictionary<string, List<Renderer>> stage_renderers = new();
         private static readonly Dictionary<string, uv_target> uv_targets = new();
 
         private class uv_target
         {
             public List<Material> materials = new();
+            public List<Renderer> renderers = new();
         }
 
         // records one loaded stage hierarchy's materials, safe to call repeatedly.
@@ -37,6 +43,9 @@ namespace UV2.Live
                     if (!stage_materials.TryGetValue(clean, out var list))
                         stage_materials[clean] = list = new List<Material>();
                     if (!list.Contains(m)) list.Add(m);
+                    if (!stage_renderers.TryGetValue(clean, out var rl))
+                        stage_renderers[clean] = rl = new List<Renderer>();
+                    if (!rl.Contains(r)) rl.Add(r);
                 }
             }
         }
@@ -45,6 +54,7 @@ namespace UV2.Live
         public static void reset()
         {
             stage_materials.Clear();
+            stage_renderers.Clear();
             uv_targets.Clear();
             _volume_entries = 0;
             _volume_enabled = 0;
@@ -87,18 +97,80 @@ namespace UV2.Live
                     continue;
                 }
                 uv_targets[t.name] = new uv_target { materials = mats };
+                if (stage_renderers.TryGetValue(t.name, out var rends))
+                    uv_targets[t.name].renderers.AddRange(rends);
                 resolved++;
-                string shader_name = mats.Count > 0 && mats[0] != null ? mats[0].shader.name : "?";
+                // the original line dereferenced mats[0].shader unguarded: a
+                // material with no shader threw out of the bind loop and the
+                // remaining targets never resolved.
+                string shader_name = mats.Count > 0 && mats[0] != null && mats[0].shader != null
+                    ? mats[0].shader.name : "?";
                 bool has_mul0 = mats.Count > 0 && mats[0] != null && mats[0].HasProperty(id_mul_color0);
                 trace_log.write($"uv scroll light resolved: '{t.name}' x{mats.Count} shader '{shader_name}' hasMulColor0={has_mul0}");
+                if (resolved <= 2) dump_material(mats[0], t.name);
+                dump_renderers(t.name);
             }
             trace_log.write($"uv scroll lights: {resolved} materials resolved, {missing.Count} unresolved");
             foreach (var m in missing) trace_log.write($"uv scroll light unresolved: {m}");
         }
 
+        // one-time dump of a beam material's serialised properties: the game's
+        // beam is a blend-mode and texture affair, so the values decide
+        // whether it can rasterise at all.
+        private static void dump_material(Material m, string owner)
+        {
+            if (m == null) return;
+            string sn = m.shader != null ? m.shader.name : "(none)";
+            trace_log.write($"uvscroll mat '{owner}' '{m.name}' shader '{sn}' " +
+                            $"renderQueue={m.renderQueue} " +
+                            $"src={(int)m.GetInt("_SrcBlend")} dst={(int)m.GetInt("_DstBlend")} " +
+                            $"col=({m.GetColor("_Color").r:0.00},{m.GetColor("_Color").g:0.00},{m.GetColor("_Color").b:0.00}) " +
+                            $"power={m.GetFloat("_ColorPower"):0.00} cutoff={m.GetFloat("_Cutoff"):0.00}");
+            var st = m.GetTextureScale("_MainTex");
+            var off = m.GetTextureOffset("_MainTex");
+            var tex = m.GetTexture("_MainTex");
+            trace_log.write($"uvscroll mat '{owner}' tex='{tex.name}' size={(tex != null ? tex.width.ToString() + "x" + tex.height : "none")}' " +
+                            $"scale=({st.x:0.00},{st.y:0.00}) off=({off.x:0.00},{off.y:0.00}) " +
+                            $"props[{prop_list(m)}]");
+        }
+
+        // the material's declared property names: the game's beam shader
+        // decides what can be published, so the trace has to name them.
+        private static string prop_list(Material m)
+        {
+            if (m == null || m.shader == null) return "";
+            int n = m.shader.GetPropertyCount();
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < n && i < 12; i++) sb.Append(m.shader.GetPropertyName(i)).Append(' ');
+            return sb.ToString();
+        }
+
+        // one-time dump of the beam renderers: a renderer on a layer the
+        // camera does not cull never reaches the frame.
+        private static void dump_renderers(string owner)
+        {
+            if (!stage_renderers.TryGetValue(owner, out var rends) || rends == null) return;
+            var cam = Camera.main;
+            int mask = cam != null ? cam.cullingMask : -1;
+            int n = 0;
+            foreach (var r in rends)
+            {
+                if (r == null) continue;
+                if (n++ >= 4) break;
+                int layer = r.gameObject.layer;
+                bool culled = cam != null && (mask & (1 << layer)) == 0;
+                trace_log.write($"uvscroll rend '{owner}' '{r.gameObject.name}' layer={layer} " +
+                                $"culledByCamera={culled} camMask=0x{mask:x} enabled={r.enabled} " +
+                                $"active={r.gameObject.activeInHierarchy} sortOrder={r.sortingOrder}");
+            }
+        }
+
         // publishes the first enabled entry's lerped power/color as shader-global bloom lift + tint.
         public static void update_volume(float time_sec, List<volume_track_container> tracks)
         {
+            // the walker owns the lift whenever volume tracks exist; clear
+            // it each pass so stale lifts never bleed into later frames.
+            last_lift = 0f;
             if (tracks == null || tracks.Count == 0) return;
             float frame = time_sec * 60f;
 
@@ -112,7 +184,8 @@ namespace UV2.Live
                 color *= t.brightness_power;
 
                 // lift = min(power * 0.02, 1.2); tint = color.
-                Shader.SetGlobalFloat(id_volume_lift, Mathf.Min(power * 0.02f, 1.2f));
+                last_lift = Mathf.Min(power * 0.02f, 1.2f);
+                Shader.SetGlobalFloat(id_volume_lift, last_lift);
                 Shader.SetGlobalColor(id_volume_tint, color);
                 return;
             }
@@ -154,7 +227,26 @@ namespace UV2.Live
                     m.SetColor(id_mul_color0, color0);
                     m.SetColor(id_mul_color1, color1);
                     m.SetFloat(id_color_power, power);
+
+                    // the shader's own scroll properties travel with the
+                    // texture offset: _UVScrollX/_UVScrollY carry the
+                    // authored speed, _UVScrollOffsetX/_UVScrollOffsetY the
+                    // accumulated offset, and _AppTime the animation clock.
+                    m.SetFloat(id_uv_scroll_x, speed.x);
+                    m.SetFloat(id_uv_scroll_y, speed.y);
+                    m.SetFloat(id_uv_scroll_offset_x, scrolled.x);
+                    m.SetFloat(id_uv_scroll_offset_y, scrolled.y);
+                    m.SetFloat(id_app_time, time_sec);
                     m.SetTextureOffset(id_main_tex, scrolled);
+
+                    // the beam materials serialize a zero/zero blend state,
+                    // so every beam blends to black until the game asserts
+                    // its own: the LightAdd family draws additive.
+                    if (m.HasProperty(id_src_blend) && m.HasProperty(id_dst_blend))
+                    {
+                        m.SetFloat(id_src_blend, (float)UnityEngine.Rendering.BlendMode.One);
+                        m.SetFloat(id_dst_blend, (float)UnityEngine.Rendering.BlendMode.One);
+                    }
 
                     // one-shot probe every ~5s of song time: reads back the
                     // published values so traces prove the writes landed even
@@ -165,6 +257,27 @@ namespace UV2.Live
                         last_probe_t = time_sec;
                         var readback = m.GetColor(id_mul_color0);
                         trace_log.write($"uvscroll probe '{t.name}' mulColor0=({readback.r:0.00},{readback.g:0.00},{readback.b:0.00}) power={m.GetFloat(id_color_power):0.00} off={scrolled.x:0.00}");
+                        // where the beam quads actually are: a beam that is
+                        // off-frame or degenerate cannot show up in the frame
+                        // no matter what the colours say.
+                        if (target.renderers.Count > 0)
+                        {
+                            var rr = target.renderers[0];
+                            if (rr != null)
+                            {
+                                var cam = Camera.main;
+                                bool in_view = false;
+                                if (cam != null)
+                                    in_view = GeometryUtility.TestPlanesAABB(
+                                        GeometryUtility.CalculateFrustumPlanes(cam), rr.bounds);
+                                var bc = rr.bounds.center;
+                                var bs = rr.bounds.size;
+                                int verts = 0;
+                                var mf = rr.GetComponent<MeshFilter>();
+                                if (mf != null && mf.sharedMesh != null) verts = mf.sharedMesh.vertexCount;
+                                trace_log.write($"uvscroll geo '{t.name}' '{rr.gameObject.name}' en={rr.enabled} act={rr.gameObject.activeInHierarchy} view={in_view} c=({bc.x:0.0},{bc.y:0.0},{bc.z:0.0}) s=({bs.x:0.0},{bs.y:0.0},{bs.z:0.0}) verts={verts}");
+                            }
+                        }
                     }
                 }
             }
@@ -176,6 +289,13 @@ namespace UV2.Live
         private static readonly int id_mul_color1 = Shader.PropertyToID("_MulColor1");
         private static readonly int id_color_power = Shader.PropertyToID("_ColorPower");
         private static readonly int id_main_tex = Shader.PropertyToID("_MainTex");
+        private static readonly int id_uv_scroll_x = Shader.PropertyToID("_UVScrollX");
+        private static readonly int id_uv_scroll_y = Shader.PropertyToID("_UVScrollY");
+        private static readonly int id_uv_scroll_offset_x = Shader.PropertyToID("_UVScrollOffsetX");
+        private static readonly int id_uv_scroll_offset_y = Shader.PropertyToID("_UVScrollOffsetY");
+        private static readonly int id_app_time = Shader.PropertyToID("_AppTime");
+        private static readonly int id_src_blend = Shader.PropertyToID("_SrcBlend");
+        private static readonly int id_dst_blend = Shader.PropertyToID("_DstBlend");
     }
 
     // one worksheet volumeLight entry: the sun-shaft keys.
@@ -185,6 +305,17 @@ namespace UV2.Live
         public string name;
         public List<volume_key> keys = new();
         public float brightness_power = 1f;
+
+        // the current key at a frame: the last key whose frame <= now.
+        public volume_key current_key(float frame)
+        {
+            if (keys == null || keys.Count == 0) return null;
+            volume_key cur = keys[0];
+            foreach (var k in keys)
+                if (k.frame <= frame) cur = k;
+                else break;
+            return cur;
+        }
 
         // the lerped sun-shaft state; ok=false when the current key is off.
         public (float, Color, bool) sample(float frame)
@@ -208,7 +339,7 @@ namespace UV2.Live
                     }
                 }
             }
-            if (a.enable == 0) return (0f, Color.white, false);
+            if (a.enable == 0 && b.enable == 0) return (0f, Color.white, false);
             float power = Mathf.Lerp(a.power, b.power, blend);
             Color color = Color.Lerp(a.color1, b.color1, blend);
             return (power, color, true);

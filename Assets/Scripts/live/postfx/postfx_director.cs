@@ -91,6 +91,15 @@ namespace UV2.Live
             public int layer_mode;
             public bool inverse;
             public bool valid;
+            // the key's colorType: 0 ColorAll, 1 Color2TopBottom,
+            // 2 Color2LeftRight, 3 Color4. the game picks the layer color
+            // from the matching color pair, so a ColorAll key must use
+            // color0 alone.
+            public int color_type;
+
+            // the key's raw attribute word (0x40000 isReverseUVMovie,
+            // 0x80000 isInverseVignette, 0x100000 isUseTexMask).
+            public int attribute_bits;
 
             // blink-container coupling authored on the current key.
             public string blink_light_name = "";
@@ -112,6 +121,7 @@ namespace UV2.Live
             float t = clock.time;
 
             eval_bloom(t);
+            eval_exposure(t);
             fog_state = eval_fog(t);
             fog_enabled = fog_state != null;
             fade_color = eval_fade(t);
@@ -199,7 +209,13 @@ namespace UV2.Live
                 string b = ws.postfx.bloom.Count == 0 ? "none"
                     : (bloom_state_valid ? "on" : "off");
                 string f = fog_enabled && fog_state != null ? $"on mode {fog_state.fog_mode}" : "off";
-                string fl = film1_state != null && film1_state.valid ? $"film m{film1_state.mode} p{film1_state.power:0.00}" : "film none";
+                // all three layers in the trace: the f1-only line hid
+                // film2/film3 painting (the f3300 audit chased a phantom
+                // because film1's power read 0 while film3 painted).
+                string fl = "film";
+                foreach (var fs in new[] { film1_state, film2_state, film3_state })
+                    fl += fs != null && fs.valid
+                        ? $" m{fs.mode}p{fs.power:0.00}" : " -";
                 string d = dof_enabled ? $"dof {dof_focal_m:0.0}m f{dof_focal01:0.00} far{dof_far_blend:0.00}" : "dof off";
                 string ts = tilt_enabled ? $"tilt m{tilt_mode} a{tilt_blur_area:0.0} blur{tilt_max_blur:0.0} roll{tilt_roll:0.0}" : "tilt off";
                 string gr = cc != null && cc.valid ? $"grade sat{cc.saturation:0.00}" : "grade off";
@@ -232,12 +248,38 @@ namespace UV2.Live
             // the capture set: the three originals plus the dark cutaway
             // stretch (~f2400-3300), a mid-song bright, and the orange-hue
             // window the user flagged near f5700.
-            int[] snap_frames = { 1780, 2400, 2840, 3300, 3580, 5700, 5960 };
+            // 5960 sits one frame before the finale light cue (all blink
+            // families key golden at 5959); 6000/6260 catch the state after.
+            // UV2_SNAP_FRAMES overrides the list with a comma-separated set
+            // of song frames, so a bench run can capture any frame without
+            // editing the source (the frame-exact seek lands on exactly one
+            // of them, and the rest of the list never matches).
+            int[] snap_frames = { 1780, 2400, 2840, 3300, 3580, 5700, 5960, 6000, 6260 };
+            string snap_list = System.Environment.GetEnvironmentVariable("UV2_SNAP_FRAMES");
+            if (!string.IsNullOrEmpty(snap_list))
+            {
+                var parsed = new System.Collections.Generic.List<int>();
+                foreach (var part in snap_list.Split(','))
+                {
+                    if (int.TryParse(part.Trim(), out int f)) parsed.Add(f);
+                }
+                if (parsed.Count > 0) snap_frames = parsed.ToArray();
+            }
             bool hit = false;
             for (int i = 0; i < snap_frames.Length; i++)
                 if (song_frame == snap_frames[i]) { hit = true; break; }
             if (hit && song_frame != snap_pumped)
             {
+                // the camera has to have been driven at this song time before
+                // the framebuffer is grabbed. the camera director runs on its
+                // own LateUpdate, and that order against this one is
+                // undefined, so without this gate a capture can land while
+                // the camera still sits at the load-time default.
+                if (!camera_settled(t)) return;
+                // the loading/summary ui has to be gone from the framebuffer
+                // too: the seek can fire before the window tears its canvas
+                // down, and that capture photographs the loading screen.
+                if (!UV2.UI.load_progress.capture_clear(Time.realtimeSinceStartup)) return;
                 snap_pumped = song_frame;
                 var file = System.IO.Path.Combine(snap_dir, $"snap_f{song_frame}_t{t:0.0}.png");
                 ScreenCapture.CaptureScreenshot(file);
@@ -339,9 +381,44 @@ namespace UV2.Live
         // whether the current bloom key enables the diffusion sub-chain.
         [HideInInspector] public bool bloom_diffusion_enabled;
 
+        // the exposure effect's authored state. the song's ExposureKeys
+        // track carries Gain, Lift and DepthMask per key; with no authored
+        // keys the game runs the effect off, so the tone map stays at
+        // identity instead of a fitted constant.
+        [HideInInspector] public float exposure_gain = 1f;
+        [HideInInspector] public float exposure_lift;
+        [HideInInspector] public bool exposure_valid;
+
+        private void eval_exposure(float t)
+        {
+            if (ws.postfx.exposure.Count == 0)
+            {
+                exposure_valid = false;
+                exposure_gain = 1f;
+                exposure_lift = 0f;
+                return;
+            }
+            int i = key_eval.bracket(ws.postfx.exposure, t);
+            if (i < 0) { exposure_valid = false; exposure_gain = 1f; return; }
+            var cur = ws.postfx.exposure[i];
+            var next = i + 1 < ws.postfx.exposure.Count ? ws.postfx.exposure[i + 1] : null;
+            float gain = cur.gain, lift = cur.lift;
+            if (next != null && next.interpolate_type != 0)
+            {
+                float k = key_eval.interp(cur, next, t);
+                gain = key_eval.lerp_f(cur.gain, next.gain, k);
+                lift = key_eval.lerp_f(cur.lift, next.lift, k);
+            }
+            exposure_gain = gain;
+            exposure_lift = lift;
+            exposure_valid = cur.is_enable != 0;
+        }
+
         // chromatic aberration state (the fork: clamp01(power*0.05)).
         [HideInInspector] public bool chromatic_enabled;
         [HideInInspector] public float chromatic_amount;
+        // the key's effectType selects the blit's material pass (0=standard).
+        [HideInInspector] public int chromatic_pass;
         // the current chromatic key's channel offsets + clip, for the blit.
         public (Vector2 red, Vector2 green, Vector2 blue, float clip) chromatic_key_offsets
             = (Vector2.zero, Vector2.zero, Vector2.zero, 1f);
@@ -497,11 +574,24 @@ namespace UV2.Live
                 roll_angle = cur.roll_angle,
                 scale = cur.scale,
                 layer_mode = cur.layer_mode,
-                // key attribute bit 0x100000 = isUseTexMask (uv2_timeline_
-                // attribute_gate_decoded.md): the game's UpdatePostFilm copies
-                // it into the layer param and the draw helper publishes it as
-                // _PostFilmIsInverseVignette - the shader inverts the mask.
+                // the game's key attribute bit for the inverse vignette.
+                // the fork's live consumer (Live/Director.cs OnUpdatePostFilm,
+                // publishing into GallopGameBloomPass.FilmLayers) maps the
+                // film key's attribute word as:
+                //   0x40000 = isAlphaMasking
+                //   0x80000 = isUVMovieNoScale
+                //   0x100000 = inverseVignette
+                // the draw helper publishes that inverse flag as
+                // _PostFilmIsInverseVignette and the game then blits the
+                // pass+1 INVERSE_VIGNETTE program. every 1004 film2 key
+                // carries 0x100000, so the game runs the centre-fill body
+                // for all of them. an earlier port tested 0x80000 (the
+                // isUVMovieNoScale bit), which flipped every layer to the
+                // edge-only branch - the measured result was an edge haze
+                // instead of the centre flood.
                 inverse = (cur.attribute & 0x100000) != 0,
+                attribute_bits = cur.attribute,
+                color_type = cur.color_type,
                 blink_light_name = cur.blink_light_name,
                 blink_light_brightness_power = cur.blink_light_brightness_power,
             };
@@ -524,13 +614,34 @@ namespace UV2.Live
             // color0.a > 0. AND the ps scales every layer by _DepthPower =
             // key.depthPower, so a valid layer with depthPower==0 paints
             // exactly zero (uv2_film_mode_bodies_decoded.md §6): 1004's
-            // film1 never paints at open (first painting key f2190), 1009's
-            // film2 never paints at all (0/381 keys carry depthPower>0).
+            // film1 never paints at open (first painting key f2190), and
+            // 82/163 of 1004's film2 keys carry depthPower>0 (the reader
+            // parses depthPower correctly).
             if (s.mode == 0) s.valid = false;
             else if (s.mode == 3 || s.mode == 4 || s.mode == 6) s.valid = true;
             else if (s.mode == 7) s.valid = s.color0.a > 0f;
             else s.valid = s.power > 0f;
             return s;
+        }
+
+        // the camera director's look-at target (the dof type-0 focal).
+        private camera_director _cam_director;
+        private camera_director cam_director_ref()
+        {
+            if (_cam_director == null)
+                _cam_director = FindFirstObjectByType<camera_director>();
+            return _cam_director;
+        }
+
+        // true once the camera director has positioned the camera for this
+        // song time. the camera starts at the scene default (origin, 60
+        // degrees), so a capture taken before the director runs shows a shot
+        // the game never authored.
+        private bool camera_settled(float t)
+        {
+            var cam_dir = cam_director_ref();
+            if (cam_dir == null) return true;
+            return cam_dir.applied_at(t);
         }
 
         // dof: the game's PrepareDofParam math — focal01 from the camera's
@@ -560,12 +671,29 @@ namespace UV2.Live
             }
 
             // the authored dofFocalPoint resolves to focal01 via
-            // WorldToViewportPoint (uv2_dof_focal_path_decoded.md).
+            // WorldToViewportPoint (uv2_dof_focal_path_decoded.md). live's
+            // focal type is 0 = Transform: the game resolves the focal on
+            // the camera's look-at target (dof_pipeline notes: "type 0 is
+            // what live uses"), so an authored focal_point of 1.0 is a
+            // fallback distance, not the focus distance. use the camera
+            // director's look target when one drove the framing this frame;
+            // fall back to the authored distance otherwise.
             float near = cam.nearClipPlane;
             float far = cam.farClipPlane;
             float far_near = Mathf.Max(1e-4f, far - near);
-            Vector3 world_pos = cam.transform.position + (fp - near) * cam.transform.forward;
-            float focal01 = Mathf.Max(0f, cam.WorldToViewportPoint(world_pos).z / far_near);
+            Vector3 cam_pos = cam.transform.position;
+            var cam_dir = cam_director_ref();
+            float focal01;
+            if (cam_dir != null)
+            {
+                Vector3 to_look = cam_dir.current_look_point - cam_pos;
+                focal01 = Mathf.Max(0f, Vector3.Dot(to_look, cam.transform.forward) / far_near);
+            }
+            else
+            {
+                Vector3 world_pos = cam_pos + (fp - near) * cam.transform.forward;
+                focal01 = Mathf.Max(0f, cam.WorldToViewportPoint(world_pos).z / far_near);
+            }
             // the chain selector (uv2_postfx_chain_divergence_audit §2.2):
             // dofBlurType is the game's Execute dispatch, per key. 0 = None,
             // 3 = Bloom (pyramid only, no DOF blur), 1/2/4 fused composites,
@@ -746,8 +874,15 @@ namespace UV2.Live
                 power = key_eval.lerp_f(cur.power, next.power, key_eval.interp(cur, next, t));
             chromatic_enabled = cur.is_enable != 0;
             chromatic_amount = Mathf.Clamp01(power * 0.05f);
-            chromatic_key_offsets = (cur.red_offset, cur.green_offset, cur.blue_offset,
+            // worksheet offsets are PERCENT units — the game's packing fn
+            // multiplies by 0.01 before publishing the global vectors
+            // (uv2_six_postfx_families_decoded.md §3, K=0.01 PROVEN). raw
+            // offsets here would smear channels across 40% of the screen.
+            const float chroma_percent = 0.01f;
+            chromatic_key_offsets = (cur.red_offset * chroma_percent,
+                cur.green_offset * chroma_percent, cur.blue_offset * chroma_percent,
                 cur.clip != 0f ? cur.clip : 1f);
+            chromatic_pass = cur.effect_type;
         }
 
         // lens distortion: enabled when |intensity| > 0.001 (the fork's gate).

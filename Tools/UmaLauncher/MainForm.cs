@@ -24,7 +24,7 @@ namespace UmaLauncher
         private readonly List<SlotPick> slots = [];
         private readonly Dictionary<int, Image> jacketCache = [];
         private readonly Dictionary<int, Image?> portraitCache = [];
-        private readonly ImageList slotImages = new() { ImageSize = new Size(50, 50), ColorDepth = ColorDepth.Depth32Bit };
+        private readonly ImageList slotImages = new() { ImageSize = new Size(100, 100), ColorDepth = ColorDepth.Depth32Bit };
         private readonly Dictionary<int, int> portraitIndex = [];
 
         // character portrait from the charicons folder exported by the player.
@@ -82,7 +82,7 @@ namespace UmaLauncher
             bool jackets_ok = Directory.Exists(jacket_dir) && Directory.EnumerateFiles(jacket_dir, "*.png").Any();
             bool icons_ok = Directory.Exists(icon_dir) && Directory.EnumerateFiles(icon_dir, "*.png").Any();
             if (jackets_ok && icons_ok) return;
-            string exe = Path.Combine(base_dir, "UV2.exe");
+            string exe = Path.Combine(base_dir, "UmaLive.exe");
             if (!File.Exists(exe)) return;
             try
             {
@@ -300,7 +300,7 @@ namespace UmaLauncher
 
                 Button slotButton = new()
                 {
-                    Size = new Size(130, 160),
+                    Size = new Size(130, 210),
                     Text = SlotLabel(pick),
                     TextAlign = ContentAlignment.BottomCenter,
                     ImageList = slotImages,
@@ -376,13 +376,27 @@ namespace UmaLauncher
             string dir = AppDomain.CurrentDomain.BaseDirectory;
             File.WriteAllText(Path.Combine(dir, "selection.json"), json.ToString());
 
-            string exe = Path.Combine(dir, "UV2.exe");
+            string exe = Path.Combine(dir, "UmaLive.exe");
             if (!File.Exists(exe))
             {
-                MessageBox.Show("UV2.exe not found next to the launcher.", "Concert player", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("UmaLive.exe not found next to the launcher.", "Concert player", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-            Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dir, UseShellExecute = false });
+            // a stale control file from a previous run must not command this one.
+            try { File.Delete(Path.Combine(dir, "control.json")); } catch { }
+            try { File.Delete(Path.Combine(dir, "status.json")); } catch { }
+            // the player checks this marker to know a launcher owns its
+            // control window and it must not spawn an attach-mode one.
+            try { File.WriteAllText(Path.Combine(dir, "launcher.pid"), Environment.ProcessId.ToString()); } catch { }
+            var player = Process.Start(new ProcessStartInfo { FileName = exe, WorkingDirectory = dir, UseShellExecute = false });
+            if (player != null)
+            {
+                ControlForm control = new(dir, player);
+                // un-owned: an owner-attached tool window drags the launcher
+                // forward whenever it is raised; the control window floats
+                // independently and never pulls the launcher up with it.
+                control.Show();
+            }
         }
 
         private static string EscapeJson(string text) =>

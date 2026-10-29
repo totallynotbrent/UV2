@@ -10,6 +10,46 @@ namespace UV2.App
         public string type_name;
         public string method_name;
 
+        // applies a pending update's locked files (backup/pending.txt +
+        // pending.zip written by the launcher's updater) before anything
+        // else runs: the player itself was one of the locked files, so
+        // without this a leftover update set never lands on the player
+        // and it boots the old build until a manual reinstall.
+        static void apply_pending_update()
+        {
+            try
+            {
+                string dir = AppDomain.CurrentDomain.BaseDirectory;
+                string pending_path = System.IO.Path.Combine(dir, "backup", "pending.txt");
+                string zip_path = System.IO.Path.Combine(dir, "backup", "pending.zip");
+                if (!System.IO.File.Exists(pending_path) || !System.IO.File.Exists(zip_path)) return;
+                var pending = new System.Collections.Generic.HashSet<string>(
+                    System.IO.File.ReadAllLines(pending_path));
+                using var archive = System.IO.Compression.ZipFile.OpenRead(zip_path);
+                foreach (var entry in archive.Entries)
+                {
+                    if (!pending.Contains(entry.FullName)) continue;
+                    if (entry.FullName.EndsWith("/")) continue;
+                    string target = System.IO.Path.Combine(dir, entry.FullName);
+                    System.IO.Directory.CreateDirectory(
+                        System.IO.Path.GetDirectoryName(target));
+                    // manual extract: the FileSystem assembly's ExtractToFile
+                    // extension is not referenced in the player profile.
+                    using var input = entry.Open();
+                    using var output = System.IO.File.Create(target);
+                    input.CopyTo(output);
+                }
+                System.IO.File.Delete(pending_path);
+                System.IO.File.Delete(zip_path);
+                trace_log.write("pending update applied on player boot");
+            }
+            catch (Exception e)
+            {
+                // a failed catch-up must never block boot.
+                trace_log.write($"pending update apply failed: {e.Message}");
+            }
+        }
+
         private IEnumerator Start()
         {
             var pre_args = System.Environment.GetCommandLineArgs();
@@ -27,6 +67,12 @@ namespace UV2.App
 
             trace_log.open();
             trace_log.write($"args: {string.Join(" ", System.Environment.GetCommandLineArgs())}");
+
+            // heals files an update could not overwrite while the old player
+            // was still running (the launcher writes backup/pending.txt +
+            // pending.zip): the player applies them before anything else so
+            // it never runs a half-updated install.
+            apply_pending_update();
 
             if (pose_probe)
             {
@@ -79,10 +125,19 @@ namespace UV2.App
                         yield return null;
                     if (loader != null && loader.song_clock != null)
                     {
-                        loader.song_clock.pause();
-                        loader.song_clock.seek(seek_s);
+                        // seek_and_apply drives the camera, the formation and
+                        // the pose at the seeked time in one deterministic step.
+                        // the old pause+seek+wait-3-frames path let the capture
+                        // fire before the camera had ever been positioned at
+                        // that frame, so the shot came out at the load-time
+                        // default camera with the cast still at the origin.
+                        loader.seek_and_apply(seek_s);
                         trace_log.write($"frame mode: seeked clock to {seek_s:0.00}s");
                         for (int f = 0; f < 3; f++) yield return null;
+                        // re-apply after the settle: the drivers' own
+                        // LateUpdate may have overwritten the pose with a
+                        // frame that is not the seeked one.
+                        loader.apply_at(seek_s);
                     }
                 }
 
@@ -91,7 +146,12 @@ namespace UV2.App
                 // mask sweep script can step through configurations unattended.
                 float bench_stop = -1f;
                 for (int i = 0; i < pre_args.Length - 1; i++)
+                {
                     if (pre_args[i] == "-uv2bench" && float.TryParse(pre_args[i + 1], out var bs)) bench_stop = bs;
+                    if (pre_args[i] == "-uv2tailprobe") UV2.Live.spring_sim.tail_probe_enabled = true;
+                    if (pre_args[i] == "-uv2dense") UV2.Live.spring_sim.bench_dense = true;
+                    if (pre_args[i] == "-uv2nocol") UV2.Live.physics_director.collisions_enabled = false;
+                }
                 if (bench_stop >= 0f)
                 {
                     // re-find the loader every frame: the concert window

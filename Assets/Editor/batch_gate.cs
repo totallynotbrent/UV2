@@ -5,16 +5,13 @@ using UV2.App;
 
 namespace UV2Build
 {
-    // one-shot batch entry: bake scenes, then build the linux player for the phase-1 gate.
+    // one-shot batch entry: bake scenes, then build the windows player.
+    // windows-only: the game's shader blobs are D3D-compiled, so a linux
+    // player renders every game material as the magenta fallback and
+    // reports false for HasProperty - it can never verify visuals.
     public static class batch_gate
     {
         public static void bake_and_build()
-        {
-            scene_baker.bake();
-            player_builder.BuildWindows();
-        }
-
-        public static void bake_and_build_linux()
         {
             urp_setup.ensure();
             scene_baker.bake();
@@ -22,8 +19,8 @@ namespace UV2Build
             var opts = new BuildPlayerOptions
             {
                 scenes = scenes,
-                locationPathName = "Builds/UV2",
-                target = BuildTarget.StandaloneLinux64,
+                locationPathName = "Builds/UmaLive.exe",
+                target = BuildTarget.StandaloneWindows64,
                 options = BuildOptions.None
             };
             BuildReport report = BuildPipeline.BuildPlayer(opts);

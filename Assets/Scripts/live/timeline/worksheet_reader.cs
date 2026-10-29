@@ -109,14 +109,21 @@ namespace UV2.Live
 
             // the fork processes only the entry NAMED GlobalLight (walker
             // 2456-2459); other-named lists are variation sheets it skips.
-            ws.global_light = (sheet.globalLightDataLists?.FirstOrDefault(g => g?.name == "GlobalLight")?.keys?.thisList
-                ?? sheet.globalLightDataLists?.FirstOrDefault()?.keys?.thisList ?? new())
-                .Select(k => new global_light_key
+            // every eligible GlobalLight list plays in order and each one
+            // overwrites the light wholesale, so the last list holding a key
+            // at the current frame is the one that stands (the game's own
+            // updater: LiveTimelineControl.AlterUpdate_GlobalLight).
+            var global_light_lists = (sheet.globalLightDataLists ?? new())
+                .Where(g => g != null && g.name == "GlobalLight")
+                .Where(g => (g.keys?._attribute ?? 0) == 0)
+                .Select(g => (g.keys?.thisList ?? new()).Select(k => new global_light_key
                 {
                     frame = k.frame,
                     attribute = k.attribute,
                     interpolate_type = k.interpolateType,
                     easing_type = k.easingType,
+                    curve = read_curve(k.curve),
+                    native_curve = k.curve,
                     light_dir = k.lightDir,
                     rim_color = k.rimColor,
                     rim_step = k.rimStep,
@@ -135,7 +142,57 @@ namespace UV2.Live
                     rim_horizon_offset2 = k.RimHorizonOffset2,
                     rim_vertical_offset2 = k.RimVerticalOffset2,
                     blink_light_name = k.BlinkLightName,
-                }).ToList();
+                }).ToList())
+                .Where(list => list.Count > 0)
+                .ToList();
+            ws.global_light_lists = global_light_lists;
+            ws.global_light = global_light_lists.FirstOrDefault() ?? new();
+
+            // environment: the concert's mirror block, one group per name.
+            ws.environments = (sheet.environmentDataLists ?? new())
+                .Select(g => new environment_track
+                {
+                    name = g.name,
+                    keys = (g.keys?.thisList ?? new()).Select(k => new environment_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        is_valid_mirror = k.isValidMirror,
+                        is_mirror = k.isMirror,
+                        is_bg_mirror = k.isBgMirror,
+                        character_mirror = k.characterMirror,
+                        mirror_reflection_rate = k.mirrorReflectionRate,
+                        is_toon_mirror = k.IsToonMirror,
+                    }).ToList(),
+                })
+                .Where(t => t.keys.Count > 0)
+                .ToList();
+
+            // objectList: the named stage props the song moves and shows.
+            ws.stage_objects = (sheet.objectList ?? new())
+                .Select(o => new object_track
+                {
+                    name = o.name,
+                    enable_position = o.enablePosition,
+                    enable_rotate = o.enableRotate,
+                    enable_scale = o.enableScale,
+                    keys = (o.keys?.thisList ?? new()).Select(k => new object_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        position = k.position,
+                        rotate = k.rotate,
+                        scale = k.scale,
+                        render_enable = k.renderEnable,
+                        attach_target = k.AttachTarget,
+                        character_position = k.CharacterPosition,
+                        offset_value_type = k.OffsetValueType,
+                    }).ToList(),
+                })
+                .Where(t => t.keys.Count > 0)
+                .ToList();
 
             // bgColor1: the ambient + chara tint track, one entry per named group.
             ws.bg_color1 = (sheet.bgColor1List ?? new())
@@ -225,6 +282,8 @@ namespace UV2.Live
                         frame = k.frame,
                         attribute = k.attribute,
                         interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        curve = read_curve(k.curve),
                         power_array = (k.powerArray ?? new()).ToList(),
                         color0_array = (k.color0Array ?? new()).ToList(),
                         color1_array = (k.color1Array ?? new()).ToList(),
@@ -532,6 +591,35 @@ namespace UV2.Live
                 .Where(t => t.keys.Count > 0)
                 .ToList();
 
+            // facialToonSet: the per-face toon shaping block. twenty
+            // sub-tracks, named for the face region each one drives.
+            ws.facial_toon = read_facial_toon(sheet.facialToonSet);
+
+            // lensFlareList: the flare tracks, one per authored source.
+            ws.lens_flare = (sheet.lensFlareList ?? new())
+                .Select(f => new lens_flare_track
+                {
+                    name = f.name,
+                    keys = (f.keys?.thisList ?? new()).Select(k => new lens_flare_key
+                    {
+                        frame = k.frame,
+                        attribute = k.attribute,
+                        interpolate_type = k.interpolateType,
+                        easing_type = k.easingType,
+                        curve = read_curve(k.curve),
+                        offset = k.offset,
+                        color = k.color,
+                        brightness = k.brightness,
+                        fade_speed = k.fadeSpeed,
+                        enable_parameter = k.enableParameter,
+                        enable_flare = k.enableFlare,
+                        is_auto_brightness = k.IsAutoBrightness,
+                        is_override_position = k.IsOverridePosition,
+                    }).ToList(),
+                })
+                .Where(t => t.keys.Count > 0)
+                .ToList();
+
             // TransmittedLight: the subsurface glow pass, flat key list.
             ws.transmitted = (sheet.TransmittedLightKeys?.thisList ?? new())
                 .Select(k => new transmitted_key
@@ -622,6 +710,25 @@ namespace UV2.Live
                     diffusion_threshold = k.diffusionThreshold,
                     diffusion_saturation = k.diffusionSaturation,
                     diffusion_contrast = k.diffusionContrast,
+                }).ToList();
+
+            // the exposure effect: the game drives it from its own
+            // ExposureKeys track, so the tone map's exposure has to come
+            // from the song rather than from a fitted constant.
+            ws.postfx.exposure = (sheet.ExposureKeys?.thisList ?? new())
+                .Select(k => new exposure_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    curve = read_curve(k.curve),
+                    easing_type = k.easingType,
+                    is_enable = k.IsEnable,
+                    gain = k.Gain,
+                    lift = k.Lift,
+                    depth_mask = k.DepthMask,
+                    mask_gain = k.MaskGain,
+                    mask_lift = k.MaskLift,
                 }).ToList();
 
             Func<Cutt.LiveTimelineKeyPostFilmDataList, List<film_key>> read_film = list =>
@@ -889,6 +996,33 @@ namespace UV2.Live
                 add_formation(ws, "place20", fos.place20Keys);
             }
 
+            // charaWind: per-slot spring wind keys; a song without any
+            // enabled key runs its springs windless (1004 is one).
+            var cw = sheet.charaWind;
+            if (cw != null)
+            {
+                add_chara_wind(ws, "center", cw.centerKeys);
+                add_chara_wind(ws, "left1", cw.left1Keys);
+                add_chara_wind(ws, "right1", cw.right1Keys);
+                add_chara_wind(ws, "left2", cw.left2Keys);
+                add_chara_wind(ws, "right2", cw.right2Keys);
+                add_chara_wind(ws, "place06", cw.place06Keys);
+                add_chara_wind(ws, "place07", cw.place07Keys);
+                add_chara_wind(ws, "place08", cw.place08Keys);
+                add_chara_wind(ws, "place09", cw.place09Keys);
+                add_chara_wind(ws, "place10", cw.place10Keys);
+                add_chara_wind(ws, "place11", cw.place11Keys);
+                add_chara_wind(ws, "place12", cw.place12Keys);
+                add_chara_wind(ws, "place13", cw.place13Keys);
+                add_chara_wind(ws, "place14", cw.place14Keys);
+                add_chara_wind(ws, "place15", cw.place15Keys);
+                add_chara_wind(ws, "place16", cw.place16Keys);
+                add_chara_wind(ws, "place17", cw.place17Keys);
+                add_chara_wind(ws, "place18", cw.place18Keys);
+                add_chara_wind(ws, "place19", cw.place19Keys);
+                add_chara_wind(ws, "place20", cw.place20Keys);
+            }
+
             add_props_tracks(ws, sheet);
 
             add_facial_tracks(ws, sheet);
@@ -899,6 +1033,61 @@ namespace UV2.Live
         }
 
         // maps the facial1Set + other4FacialArray slots into per-slot track sets.
+        // maps the facial toon set into per-region tracks. the sheet holds
+        // twenty named sub-lists, one per face region.
+        private static List<facial_toon_track> read_facial_toon(Cutt.LiveTimelineFacialToonData src)
+        {
+            var tracks = new List<facial_toon_track>();
+            if (src == null) return tracks;
+
+            var lists = new (string name, Cutt.LiveTimelineKeyFacialToonDataList list)[]
+            {
+                ("center", src.centerKeys),
+                ("left1", src.left1Keys),
+                ("right1", src.right1Keys),
+                ("left2", src.left2Keys),
+                ("right2", src.right2Keys),
+                ("motion5", src.motion5Keys),
+                ("motion6", src.motion6Keys),
+                ("motion7", src.motion7Keys),
+                ("motion8", src.motion8Keys),
+                ("motion9", src.motion9Keys),
+                ("motion10", src.motion10Keys),
+                ("motion11", src.motion11Keys),
+                ("motion12", src.motion12Keys),
+                ("motion13", src.motion13Keys),
+                ("motion14", src.motion14Keys),
+                ("motion15", src.motion15Keys),
+                ("motion16", src.motion16Keys),
+                ("motion17", src.motion17Keys),
+                ("motion18", src.motion18Keys),
+                ("motion19", src.motion19Keys),
+            };
+
+            foreach (var (name, list) in lists)
+            {
+                var keys = (list?.thisList ?? new()).Select(k => new facial_toon_key
+                {
+                    frame = k.frame,
+                    attribute = k.attribute,
+                    interpolate_type = k.interpolateType,
+                    easing_type = k.easingType,
+                    curve = read_curve(k.curve),
+                    cheek_threshold = k.CheekPretenseThreshold,
+                    nose_threshold = k.NosePretenseThreshold,
+                    cylinder_blend = k.CylinderBlend,
+                    hair_normal_blend = k.HairNormalBlend,
+                    use_original_directional_light = (byte)k.UseOriginalDirectionalLight,
+                    original_directional_light_dir = k.OriginalDirectionalLightDir,
+                    eye_toon_step = k.EyeToonStep,
+                    eye_toon_feather = k.EyeToonFeather,
+                    eye_saturation = k.EyeSaturation,
+                }).ToList();
+                if (keys.Count > 0) tracks.Add(new facial_toon_track { name = name, keys = keys });
+            }
+            return tracks;
+        }
+
         private static void add_facial_tracks(live_worksheet ws, Cutt.LiveTimelineWorkSheet sheet)
         {
             var sources = new List<Cutt.LiveTimelineFacialData>();
@@ -997,9 +1186,46 @@ namespace UV2.Live
                     ik_l_low = k.IKMicStandLOffsetLow,
                     ik_r_high = k.IKMicStandROffsetHigh,
                     ik_r_low = k.IKMicStandROffsetLow,
+                    warm_up_cy_spring = k.warmUpCySpring,
+                    cy_spring_warm_up_time = k.CySpringWarmUpTime,
+                    cy_spring_rate = k.CySpringRate,
                 });
             }
             ws.formation[name] = list;
+        }
+
+        // maps one formation group's charaWind keys into the model.
+        private static void add_chara_wind(live_worksheet ws, string name,
+            Cutt.LiveTimelineKeyCharaWindDataList group)
+        {
+            if (group?.thisList == null || group.thisList.Count == 0) return;
+            var list = new List<chara_wind_key>();
+            foreach (var k in group.thisList)
+            {
+                var wp = k.WindParam ?? new Cutt.CySpringWindParam();
+                var ps = wp._powerScaleArray != null ? wp._powerScaleArray.ToArray() : new float[0];
+                list.Add(new chara_wind_key
+                {
+                    frame = k.frame,
+                    easing_type = k.easingType,
+                    enable_wind = k.IsEnableWind,
+                    enable_vertical = wp._isEnableVertical,
+                    enable_horizontal = wp._isEnableHorizontal,
+                    vertical_cycle = wp._verticalCycle,
+                    horizontal_cycle = wp._horizontalCycle,
+                    vertical_angle_width = wp._verticalAngleWidth,
+                    horizontal_angle_width = wp._horizontalAngleWidth,
+                    parts_mask = wp._partsMask,
+                    power_scale = new Vector3(
+                        ps.Length > 0 ? ps[0] : 1f,
+                        ps.Length > 1 ? ps[1] : 1f,
+                        ps.Length > 2 ? ps[2] : 1f),
+                    direction = wp._direction,
+                    right = wp._right,
+                    is_local_direction = wp._isLocalDirection,
+                });
+            }
+            ws.chara_wind[name] = list;
         }
 
         // loads the song's propsDataGroup; null when the bundle or propsSettings is absent.
