@@ -15,7 +15,9 @@ namespace UV2.App
         {
             public string main_path;
             public int target_fps = 60;
-            public bool diagnostics = true;
+            // off by default: the trace and the bench dumps litter the
+            // install folder and are only wanted while debugging.
+            public bool diagnostics = false;
         }
 
         // enables the verbose trace and per-frame subsystem timing.
@@ -28,7 +30,7 @@ namespace UV2.App
             }
         }
 
-        private static bool _diagnostics = true;
+        private static bool _diagnostics;
 
         // v-sync is off, so this cap sets the real frame rate.
         public static int target_fps
@@ -59,15 +61,19 @@ namespace UV2.App
 
             // the UV2_MAIN_PATH env var overrides the config file.
             string env_path = System.Environment.GetEnvironmentVariable("UV2_MAIN_PATH");
-            if (!string.IsNullOrEmpty(env_path) && System.IO.Directory.Exists(env_path))
-            {
-                _main_path = env_path;
-                return;
-            }
+            bool env_path_set = !string.IsNullOrEmpty(env_path) && System.IO.Directory.Exists(env_path);
+
+            // UV2_DIAGNOSTICS turns the trace and the bench dumps on without
+            // touching the config file, which is how the benches run. it is
+            // read after the config so it can still override.
+            string env_diag = System.Environment.GetEnvironmentVariable("UV2_DIAGNOSTICS");
+            bool env_diag_set = !string.IsNullOrEmpty(env_diag);
+            bool env_diag_value = env_diag_set &&
+                (env_diag == "1" || env_diag.Equals("true", StringComparison.OrdinalIgnoreCase));
 
             string default_path = default_main_path();
             string main_path = default_path;
-            _diagnostics = true;
+            _diagnostics = false;
             _target_fps = 60;
 
             if (File.Exists(config_path))
@@ -78,7 +84,7 @@ namespace UV2.App
                     if (!string.IsNullOrEmpty(cfg.main_path))
                         main_path = cfg.main_path;
                     if (cfg.target_fps > 0) _target_fps = cfg.target_fps;
-                    if (cfg.diagnostics) _diagnostics = true;
+                    _diagnostics = cfg.diagnostics;
                 }
                 catch (Exception e)
                 {
@@ -87,7 +93,7 @@ namespace UV2.App
             }
             else
             {
-                var fresh = new config_file { main_path = default_path, target_fps = 60, diagnostics = true };
+                var fresh = new config_file { main_path = default_path, target_fps = 60, diagnostics = false };
                 try
                 {
                     File.WriteAllText(config_path, JsonUtility.ToJson(fresh, true));
@@ -99,13 +105,21 @@ namespace UV2.App
                 }
             }
 
-            // the parse above only turns diagnostics on, so scan the file text for an explicit "diagnostics": false.
+            // the json parse handles both states, but a config written by
+            // another tool can have odd spacing, so the text is scanned too.
             try
             {
-                if (File.Exists(config_path) && File.ReadAllText(config_path).Contains("\"diagnostics\": false"))
-                    _diagnostics = false;
+                if (File.Exists(config_path))
+                {
+                    string body = File.ReadAllText(config_path);
+                    if (body.Contains("\"diagnostics\": true")) _diagnostics = true;
+                }
             }
             catch { }
+
+            // the environment wins over the file.
+            if (env_diag_set) _diagnostics = env_diag_value;
+            if (env_path_set) main_path = env_path;
 
             _main_path = main_path;
         }
@@ -150,9 +164,13 @@ namespace UV2.App
             get
             {
                 // streaming assets first (in-build); sidecar 'data' folder next to the exe (release zip).
+                // the data folder follows the product name, so both spellings are tried.
                 string exe_dir = AppDomain.CurrentDomain.BaseDirectory;
-                string streaming = Path.Combine(exe_dir, "UV2_Data", "StreamingAssets", "data");
-                if (Directory.Exists(streaming)) return streaming;
+                foreach (string folder in new[] { "UmaLive_Data", "UV2_Data" })
+                {
+                    string streaming = Path.Combine(exe_dir, folder, "StreamingAssets", "data");
+                    if (Directory.Exists(streaming)) return streaming;
+                }
                 return Path.Combine(exe_dir, "data");
             }
         }

@@ -76,6 +76,9 @@ namespace UV2.Live
         // sprites that light the audience can be looked at directly.
         public static void dump_pattern_images(Transform root)
         {
+            // a bench aid: the dumps litter the install folder, so they only
+            // happen with diagnostics on.
+            if (!UV2.App.diag.enabled) return;
             foreach (var kv in cyalume.pattern_textures())
             {
                 var tex = kv.Value;

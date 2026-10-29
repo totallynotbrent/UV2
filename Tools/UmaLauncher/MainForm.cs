@@ -7,6 +7,18 @@ namespace UmaLauncher
     // the front end: song list on the left, mirrored cast slots on the right, launch at the bottom.
     partial class MainForm : Form
     {
+
+    // the window icon, taken from the ico next to the exe.
+    internal static Icon? load_app_icon()
+    {
+        try
+        {
+            string path = Path.Combine(AppContext.BaseDirectory, "assets", "umalauncher.ico");
+            if (!File.Exists(path)) return null;
+            return new Icon(path);
+        }
+        catch { return null; }
+    }
         private readonly Dictionary<int, LiveData> songs = [];
         private readonly Dictionary<int, string> titles = [];
         private readonly Dictionary<int, string> charaNames = [];
@@ -28,6 +40,9 @@ namespace UmaLauncher
         private readonly Dictionary<int, int> portraitIndex = [];
 
         // character portrait from the charicons folder exported by the player.
+        // a miss is not remembered: the export runs in the background on
+        // first start, so an early lookup can find nothing and a later one
+        // must be allowed to find the file once it lands.
         internal Image? PortraitFor(int charaId)
         {
             if (portraitCache.TryGetValue(charaId, out Image? cached)) return cached;
@@ -38,11 +53,25 @@ namespace UmaLauncher
                 try { img = Image.FromFile(path); }
                 catch { img = null; }
             }
-            portraitCache[charaId] = img!;
+            if (img is null) return null;
+            portraitCache[charaId] = img;
             return img;
         }
 
         // scaled portrait index for slot buttons; -1 when the character has no image.
+        // clears the image list and puts the current portrait in every
+        // cast slot, so portraits that arrived after the first paint show up.
+        private void RebuildSlotImages()
+        {
+            slotImages.Images.Clear();
+            portraitIndex.Clear();
+            foreach (Control c in slotPanel.Controls)
+            {
+                if (c is Button b && b.Tag is SlotPick p)
+                    b.ImageIndex = SlotImageIndex(p.CharaId);
+            }
+        }
+
         private int SlotImageIndex(int charaId)
         {
             if (portraitIndex.TryGetValue(charaId, out int idx)) return idx;
@@ -58,7 +87,7 @@ namespace UmaLauncher
             return idx;
         }
 
-        // jacket thumbnails exported by the player's -dumpjackets mode.
+        // jacket thumbnails exported by the player's -dumpicons mode.
         private Image? JacketFor(int musicId)
         {
             if (jacketCache.TryGetValue(musicId, out Image? cached)) return cached;
@@ -69,31 +98,88 @@ namespace UmaLauncher
                 try { img = Image.FromFile(path); }
                 catch { img = null; }
             }
-            jacketCache[musicId] = img!;
+            if (img is null) return null;
+            jacketCache[musicId] = img;
             return img;
         }
 
         // the player exports jacket art and character portraits on first run so the ui can show them.
+        // the export walks the whole asset set, so it runs off the ui thread
+        // and the list redraws when the pictures land.
         private void EnsureIcons()
         {
             string base_dir = AppDomain.CurrentDomain.BaseDirectory;
             string jacket_dir = Path.Combine(base_dir, "jackets");
             string icon_dir = Path.Combine(base_dir, "charicons");
-            bool jackets_ok = Directory.Exists(jacket_dir) && Directory.EnumerateFiles(jacket_dir, "*.png").Any();
-            bool icons_ok = Directory.Exists(icon_dir) && Directory.EnumerateFiles(icon_dir, "*.png").Any();
+            // a stamp records which build wrote the art. when it does not
+            // match, the art is stale: a run with the wrong graphics device
+            // leaves grey files behind, and the folders staying populated
+            // would stop the export from ever running again.
+            string stamp_path = Path.Combine(base_dir, "art_version.txt");
+            string want = typeof(MainForm).Assembly.GetName().Version?.ToString() ?? "0";
+            string have = File.Exists(stamp_path) ? File.ReadAllText(stamp_path).Trim() : "";
+            bool fresh = have == want;
+            bool jackets_ok = fresh && Directory.Exists(jacket_dir) && Directory.EnumerateFiles(jacket_dir, "*.png").Any();
+            bool icons_ok = fresh && Directory.Exists(icon_dir) && Directory.EnumerateFiles(icon_dir, "*.png").Any();
             if (jackets_ok && icons_ok) return;
             string exe = Path.Combine(base_dir, "UmaLive.exe");
+            if (!File.Exists(exe)) exe = Path.Combine(base_dir, "UV2.exe");
             if (!File.Exists(exe)) return;
+
+            var worker = new Thread(() =>
+            {
+                try
+                {
+                    string icon_log = Path.Combine(base_dir, "umalive-icons.log");
+                    // no -nographics here: the art is copied out of the gpu,
+                    // and the null graphics device turns every texture grey.
+                    using var proc = Process.Start(new ProcessStartInfo
+                    {
+                        FileName = exe,
+                        Arguments = $"-dumpicons -batchmode -silent-crashes -logFile \"{icon_log}\"",
+                        WorkingDirectory = base_dir,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    });
+                    if (proc is null) return;
+                    try
+                    {
+                        // stale art goes away first: a half-finished export
+                        // would otherwise leave a mixture of old and new.
+                        foreach (string dir in new[] { jacket_dir, icon_dir })
+                        {
+                            if (!Directory.Exists(dir)) continue;
+                            foreach (string file in Directory.EnumerateFiles(dir, "*.png"))
+                                try { File.Delete(file); } catch { }
+                        }
+                    }
+                    catch { }
+                    proc.WaitForExit(300000);
+                    log_line($"icon export exited with {proc.ExitCode}, log at {icon_log}");
+                    try { File.WriteAllText(stamp_path, want); } catch { }
+                    // the list paints itself, so a repaint brings the new art in.
+                    // the cast slots draw from an image list, so the icons it
+                    // picked up while the export ran have to be rebuilt too.
+                    BeginInvoke(new Action(() =>
+                    {
+                        songList.Refresh();
+                        RebuildSlotImages();
+                        slotPanel.Refresh();
+                    }));
+                }
+                catch (Exception e) { log_line("icon export failed: " + e.Message); }
+            }) { IsBackground = true };
+            worker.Start();
+        }
+
+        // the launcher's own log beside the exe, so a viewer can hand it over
+        // when the art or the cast list misbehaves.
+        private static void log_line(string message)
+        {
             try
             {
-                using var proc = Process.Start(new ProcessStartInfo
-                {
-                    FileName = exe,
-                    Arguments = "-dumpicons -batchmode",
-                    WorkingDirectory = base_dir,
-                    UseShellExecute = false
-                });
-                proc?.WaitForExit(180000);
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "umalauncher.log");
+                File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss ") + message + Environment.NewLine);
             }
             catch { }
         }
@@ -101,6 +187,7 @@ namespace UmaLauncher
         public MainForm()
         {
             Text = WindowTitle();
+            Icon = load_app_icon();
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(1000, 720);
             KeyPreview = true;

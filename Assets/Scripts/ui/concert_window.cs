@@ -164,6 +164,8 @@ namespace UV2.UI
             yield return loader.open(selection_store.load());
             if (loader.opened)
             {
+                // the settings panel lives on the concert, so it can reach the
+                // stage once the song is up.
                 trace_log.write("concert open: SUCCESS - tearing down the summary ui");
                 // mark the ui gone BEFORE the canvas is destroyed: a capture
                 // that lands in the same frame would photograph the loading

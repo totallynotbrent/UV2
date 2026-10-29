@@ -11,10 +11,17 @@ namespace UV2.App
         private static string _path;
         private static float _t0;
 
-        // starts a fresh trace file for this player run.
+        // starts a fresh trace file for this player run. the trace grows to
+        // hundreds of kilobytes over a concert, so a release install leaves
+        // it alone unless diagnostics are on.
         public static void open()
         {
             string dir = AppDomain.CurrentDomain.BaseDirectory;
+            if (!config.diagnostics)
+            {
+                _path = null;
+                return;
+            }
             _path = Path.Combine(dir, "uv2_trace.log");
             _t0 = Time.realtimeSinceStartup;
             try

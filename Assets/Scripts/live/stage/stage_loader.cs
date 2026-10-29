@@ -790,6 +790,26 @@ namespace UV2.Live
         public AudioSource music_source { get { return _music_source; } }
         private AudioSource _music_source;
 
+        // the backdrop level, separate from the vocals. the instrumental is
+        // the song's karaoke bank, so the slider scales that whole track.
+        private float background_volume = 1f;
+
+        public void set_background_volume(float v)
+        {
+            background_volume = Mathf.Clamp01(v);
+            if (_music_source != null) _music_source.volume = background_volume;
+        }
+
+        public float background_level { get { return background_volume; } }
+
+        // the vocals mixer, so the settings window can lay out a slider per
+        // singing column.
+        public vocal_mixer vocal_mixer_ref { get { return vocals; } }
+
+        // the global light director, so the settings window can aim the key
+        // light and freeze it where it stands.
+        public global_light_director global_light_ref { get { return global_light; } }
+
         public System.Collections.IEnumerator open(selection_state sel) { yield return open_core(sel); }
 
         // load_bundle_keep wrapped for the coroutine path: a throw here must
@@ -1782,6 +1802,7 @@ namespace UV2.Live
             _music_source = go.AddComponent<AudioSource>();
             _music_source.clip = clip;
             _music_source.loop = false;
+            _music_source.volume = background_volume;
             _music_source.Play();
             if (!force_free_clock) clock.bind_master(_music_source);
             else trace_log.write("clock: forced free-run for this run");
@@ -1789,6 +1810,11 @@ namespace UV2.Live
         }
 
         // the cast slot's display name from the text table (category 6).
+        public string chara_display_name(int chara_id)
+        {
+            return chara_name(chara_id);
+        }
+
         private string chara_name(int chara_id)
         {
             try

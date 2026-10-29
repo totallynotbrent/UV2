@@ -39,6 +39,7 @@ namespace UV2.Live
         private float[][] part_pans; // per row: per-position pan overrides (>=900 unset)
         private float[] part_rates;  // per row: global volume-rate override (>=900 unset)
         private float last_volume = 1f;
+        private readonly List<int> stem_chara_ids = new();
         private const float fade_rate = 20f;  // release ramp between gain steps
         private const float attack_rate = 300f; // near-instant up-ramp so a section's first word is never shaved
         private const float unset = 900f;     // the game's unset-override sentinel
@@ -201,6 +202,7 @@ namespace UV2.Live
                 }
                 stems.Add(new stem { sources = sources, group = group,
                     wave = -1, wave_target = 0, volume = 0f });
+                stem_chara_ids.Add(id);
                 slot_positions.Add(positions[Mathf.Clamp(stems.Count - 1, 0, positions.Count - 1)]);
             }
             decode_tasks.Clear();
@@ -451,7 +453,7 @@ namespace UV2.Live
                     float gain = part_type_gains[slot.type];
                     if (vol_over != null && s.group < vol_over.Length && vol_over[s.group] < unset)
                         gain = vol_over[s.group];
-                    target = gain * rate;
+                    target = gain * rate * stem_gain(s.group);
                     pan = slot.pan;
                     if (pan_over != null && s.group < pan_over.Length && pan_over[s.group] < unset)
                         pan = pan_over[s.group];
@@ -586,6 +588,38 @@ namespace UV2.Live
         public void set_volume(float v)
         {
             last_volume = Mathf.Clamp01(v);
+        }
+
+        // the per-stem gains the settings window drives: one multiplier per
+        // standing column, applied on top of the game's own gain for that
+        // section, so a slider scales the mix without erasing it.
+        private readonly Dictionary<int, float> stem_gains = new();
+
+        // the gain for a column, 1 when the slider has never touched it.
+        public float stem_gain(int group)
+        {
+            return stem_gains.TryGetValue(group, out float g) ? g : 1f;
+        }
+
+        public void set_stem_gain(int group, float gain)
+        {
+            stem_gains[group] = Mathf.Clamp(gain, 0f, 2f);
+        }
+
+        // the columns that carry a stem, in stage order, with the character
+        // singing on each, so the settings window can label its sliders.
+        public List<(int group, int chara_id)> stem_groups()
+        {
+            var list = new List<(int group, int chara_id)>();
+            for (int i = 0; i < stems.Count; i++)
+            {
+                int chara = i < stem_chara_ids.Count ? stem_chara_ids[i] : 0;
+                if (chara <= 0) continue;
+                if (list.Any(x => x.group == stems[i].group)) continue;
+                list.Add((stems[i].group, chara));
+            }
+            list.Sort((a, b) => a.group.CompareTo(b.group));
+            return list;
         }
 
         // the voices gate: 0 gain the moment it flips (no ramp), and the

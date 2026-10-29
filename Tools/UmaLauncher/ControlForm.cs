@@ -27,6 +27,8 @@ namespace UmaLauncher
         private readonly Label fps_label = new() { Text = "", AutoSize = true, ForeColor = Color.DimGray };
         private readonly Label loading_label = new() { AutoSize = true, ForeColor = Color.DimGray };
 
+        private readonly ConcertSettingsPanel settings;
+
         private long seq;
         private bool dragging;
         private float status_time, status_length;
@@ -39,16 +41,22 @@ namespace UmaLauncher
             player = player_proc;
             owns_player = owns;
             Text = "concert";
+            Icon = MainForm.load_app_icon();
             StartPosition = FormStartPosition.Manual;
             // a fixed 210px height clips the bottom control row on
             // high-dpi laptop screens (windows scales the title bar and
             // fonts but the table's implicit row heights overflow the
             // client area): explicit percent row styles stretch all three
             // rows into whatever height the window has.
-            MinimumSize = new Size(560, 220);
-            Size = new Size(600, 240);
+            MinimumSize = new Size(760, 460);
+            Size = new Size(880, 680);
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
             MinimizeBox = false;
+
+            // the transport sits on top and the inspector fills the rest.
+            TableLayoutPanel outer = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+            outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 132));
+            outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
             TableLayoutPanel root = new() { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3, Padding = new Padding(12) };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 62f));
@@ -80,7 +88,15 @@ namespace UmaLauncher
             root.Controls.Add(bottom, 0, 2);
             root.SetColumnSpan(bottom, 2);
 
-            Controls.Add(root);
+            // the settings live in the concert window: the player is only
+            // a viewer, so this is where a concert gets adjusted.
+            settings = new ConcertSettingsPanel(this);
+            settings.Dock = DockStyle.Fill;
+            settings.Margin = new Padding(12, 0, 12, 12);
+
+            outer.Controls.Add(root, 0, 0);
+            outer.Controls.Add(settings, 0, 1);
+            Controls.Add(outer);
 
             camera.Items.AddRange(["camera full", "camera partial", "camera free"]);
             camera.SelectedIndex = 0;
@@ -98,6 +114,9 @@ namespace UmaLauncher
 
             poll.Tick += (s, e) => Poll();
             poll.Start();
+            // publish the opening state so the player applies the layer
+            // switches and the mix as soon as it is ready.
+            settings.send_now();
             FormClosed += (s, e) =>
             {
                 poll.Stop();
@@ -116,8 +135,10 @@ namespace UmaLauncher
         // each spring-rate tweak yank the song back (the trace showed every
         // seq carrying seek 12.4 after one scrub). the player treats a
         // negative seek as "no seek this block".
-        void Send(float seek_val = float.NaN, int paused = -1, float speed = 0f,
-            int voices = -1, int camera_mode = -1)
+        public void Send(float seek_val = float.NaN, int paused = -1, float speed = 0f,
+            int voices = -1, int camera_mode = -1, string layers = "", int raw = -1,
+            int tonemap = -1, int light_freeze = -1, float light_yaw = float.NaN,
+            float bgm_gain = float.NaN, string stems = "")
         {
             seq++;
             if (float.IsNaN(seek_val)) seek_val = _no_seek;
@@ -125,14 +146,26 @@ namespace UmaLauncher
             if (speed == 0f) speed = _last_speed;
             if (voices < 0) voices = _last_voices;
             if (camera_mode < 0) camera_mode = _last_camera;
+            if (float.IsNaN(light_yaw)) light_yaw = _last_yaw;
+            if (float.IsNaN(bgm_gain)) bgm_gain = _last_bgm;
             _last_seek = seek_val; _last_paused = paused; _last_speed = speed;
             _last_voices = voices; _last_camera = camera_mode;
+            _last_yaw = light_yaw; _last_bgm = bgm_gain;
+            _last_layers = layers; _last_raw = raw; _last_tonemap = tonemap;
+            _last_freeze = light_freeze; _last_stems = stems;
             string json = "{\"seq\": " + seq +
                 ", \"seek\": " + (seek_val < 0f ? "-1" : seek_val.ToString("0.###")) +
                 ", \"paused\": " + paused +
                 ", \"speed\": " + speed.ToString("0.###") +
                 ", \"voices\": " + voices +
-                ", \"camera_mode\": " + camera_mode + "}";
+                ", \"camera_mode\": " + camera_mode +
+                ", \"layers\": \"" + layers + "\"" +
+                ", \"raw\": " + raw +
+                ", \"tonemap\": " + tonemap +
+                ", \"light_freeze\": " + light_freeze +
+                ", \"light_yaw\": " + light_yaw.ToString("0.###") +
+                ", \"bgm_gain\": " + bgm_gain.ToString("0.###") +
+                ", \"stems\": \"" + stems.Replace("\"", "") + "\"}";
             try { File.WriteAllText(Path.Combine(dir, "control.json"), json); } catch { }
         }
 
@@ -142,6 +175,13 @@ namespace UmaLauncher
         float _last_speed = 1f;
         int _last_voices = 1;
         int _last_camera;
+        string _last_layers = "";
+        int _last_raw = -1;
+        int _last_tonemap = -1;
+        int _last_freeze = -1;
+        float _last_yaw = 0f;
+        float _last_bgm = 1f;
+        string _last_stems = "";
 
         // user-owned camera selection: the poll used to snap the combo from
         // the player's (up to 250ms stale) status, which fired
@@ -221,11 +261,58 @@ namespace UmaLauncher
                 if (root.TryGetProperty("loading", out var loading) &&
                     loading.GetString() is string phase && phase.Length > 0)
                     loading_label.Text = phase;
+                if (root.TryGetProperty("stems", out var stems_el) &&
+                    stems_el.GetString() is string stems_text && stems_text.Length > 0)
+                    settings.set_stems(parse_stems(stems_text));
+
+                // the readouts for the stage and diagnostics pages.
+                int characters = IntProp(root, "chara_count");
+                int lit = IntProp(root, "lit_count");
+                int camera_mode = IntProp(root, "camera_mode");
+                int voices_flag = IntProp(root, "voices");
+                float fps_value = FloatProp(root, "fps");
+                string layers_off = StrProp(root, "layers");
+                int frozen = IntProp(root, "frozen");
+                float yaw_value = FloatProp(root, "yaw");
+                string version = StrProp(root, "version");
+                settings.set_readouts(characters, lit, camera_mode, voices_flag == 1,
+                    fps_value, status_time, Fmt(status_length), layers_off,
+                    frozen == 1, yaw_value, version);
             }
             catch { }
         }
 
         void on_voices_changed(object? s, EventArgs e) => Send(voices: voices.Checked ? 1 : 0);
+
+        // the status file carries some optional fields, so every read has
+        // to tolerate a player that does not publish them.
+        static int IntProp(JsonElement root, string name) =>
+            root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.Number
+                ? el.GetInt32() : 0;
+
+        static float FloatProp(JsonElement root, string name) =>
+            root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.Number
+                ? el.GetSingle() : 0f;
+
+        static string StrProp(JsonElement root, string name) =>
+            root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.String
+                ? el.GetString() ?? "" : "";
+
+        // the player publishes "group:id:name;group:id:name", so the concert
+        // window can label a slider for every singing column.
+        static List<(int Group, int CharaId, string Name)> parse_stems(string text)
+        {
+            var found = new List<(int, int, string)>();
+            foreach (string part in text.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] bits = part.Split(':');
+                if (bits.Length < 3) continue;
+                if (!int.TryParse(bits[0], out int group)) continue;
+                if (!int.TryParse(bits[1], out int chara_id)) continue;
+                found.Add((group, chara_id, bits[2]));
+            }
+            return found;
+        }
 
         static string Fmt(float t)
         {

@@ -293,6 +293,9 @@ namespace UV2.Live
         // looked at directly; the crowd's light field is drawn from them.
         private static void write_pattern_images()
         {
+            // a bench aid: the dumps litter the install folder, so they only
+            // happen with diagnostics on.
+            if (!UV2.App.diag.enabled) return;
             foreach (var kv in textures)
             {
                 var tex = kv.Value;

@@ -122,13 +122,50 @@ jobs:
       - name: Package Windows build
         shell: pwsh
         run: |
+          # the player folder is copied whole and the junk is subtracted from
+          # it. a whitelist was tried first and dropped baselib.dll, which
+          # the il2cpp player loads at startup, so the build stopped with
+          # 'failed to load il2cpp'. subtracting garbage keeps every native
+          # library unity ships, including ones added in future versions.
           $stage = "build/stage_umalive"
+          Remove-Item -Path $stage -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
-          Copy-Item -Path "build/StandaloneWindows64/*" -Destination $stage -Recurse -Force
-          Remove-Item -Path "$stage/UmaLive_BackUpThisFolder_ButDontShipItWithYourGame" -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item -Path "$stage/GameAssembly.pdb" -Force -ErrorAction SilentlyContinue
+
+          $player = "build/StandaloneWindows64"
+          Copy-Item -Path "$player/*" -Destination $stage -Recurse -Force
+
+          # drop the debug scaffolding unity adds to every build.
+          $garbage_dirs = @(
+            "*_BackUpThisFolder_ButDontShipItWithYourGame",
+            "*_BurstDebugInformation_DoNotShip*",
+            "MonoBleedingEdge"
+          )
+          foreach ($pattern in $garbage_dirs) {
+            Get-ChildItem -Path $stage -Directory -Filter $pattern -Recurse -ErrorAction SilentlyContinue |
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          # the old build left a second data folder and exe under the old
+          # product name; the player only reads the one it was built with.
+          $current_exe = Get-ChildItem -Path $stage -Filter "*.exe" -File |
+            Where-Object { $_.BaseName -eq "UmaLive" } | Select-Object -First 1
+          if ($current_exe) {
+            $expected_data = $current_exe.BaseName + "_Data"
+            Get-ChildItem -Path $stage -Directory -Filter "*_Data" |
+              Where-Object { $_.Name -ne $expected_data } |
+              Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            Get-ChildItem -Path $stage -Filter "*.exe" -File |
+              Where-Object { $_.BaseName -ne $current_exe.BaseName -and $_.Name -ne "UnityCrashHandler64.exe" } |
+              Remove-Item -Force -ErrorAction SilentlyContinue
+          }
+
           Copy-Item -Path "launcher_out/*" -Destination $stage -Recurse -Force
-          Copy-Item -Path "Tools/benchmark-postfx.ps1" -Destination $stage -Force
+
+          # the symbol sweep runs last, so the launcher's own debug files go
+          # too: they were copied in after the player-only sweep.
+          Get-ChildItem -Path $stage -Include "*.pdb", "*.mdb", "*.mv2", "*_s.debug" -Recurse -File -ErrorAction SilentlyContinue |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+
           Compress-Archive -Path "$stage/*" -DestinationPath "UmaLive-Windows-x64.zip" -Force
 
       - name: Write release digest

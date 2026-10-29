@@ -86,8 +86,10 @@ namespace UV2.App
                 foreach (var s in songs)
                 {
                     if (s.jacket == null) continue;
+                    byte[] png = encode_png(s.jacket);
+                    if (png == null) return;
                     string path = System.IO.Path.Combine(jacket_dir, s.music_id + ".png");
-                    System.IO.File.WriteAllBytes(path, encode_png(s.jacket));
+                    System.IO.File.WriteAllBytes(path, png);
                     jackets++;
                 }
 
@@ -108,8 +110,10 @@ namespace UV2.App
                     if (row == null) continue;
                     var tex = UV2.Data.game_assets.load_texture(row, config.data_root, $"chr_icon_{id}");
                     if (tex == null) continue;
+                    byte[] png = encode_png(tex);
+                    if (png == null) return;
                     string path = System.IO.Path.Combine(icon_dir, id + ".png");
-                    System.IO.File.WriteAllBytes(path, encode_png(tex));
+                    System.IO.File.WriteAllBytes(path, png);
                     icons++;
                 }
 
@@ -121,9 +125,15 @@ namespace UV2.App
             }
         }
 
-        // writes the shader bundle's pathID -> name map beside the exe.
+        // writes the shader bundle's pathID -> name map beside the exe. it
+        // is a decode aid, so it only runs with diagnostics on.
         public static void dump_shader_map()
         {
+            if (!config.diagnostics)
+            {
+                Debug.Log("[shaders] diagnostics off, skipping the shader map dump");
+                return;
+            }
             try
             {
                 string base_dir = AppDomain.CurrentDomain.BaseDirectory;
@@ -246,6 +256,14 @@ namespace UV2.App
         // encodes a gpu-resident texture to png by blitting through a render texture.
         private static byte[] encode_png(Texture2D tex)
         {
+            // the copy runs through a render texture, so it needs a real
+            // graphics device. the null device used by a headless run turns
+            // every texture grey, which is worse than no export at all.
+            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
+            {
+                Debug.LogError("[icons] no graphics device: the art would come out grey, skipping the export");
+                return null;
+            }
             var rt = RenderTexture.GetTemporary(tex.width, tex.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
             var prev = RenderTexture.active;
             Graphics.Blit(tex, rt);

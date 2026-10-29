@@ -5,14 +5,18 @@
   <img src="images/cmp_f5700_official_vs_umalive.png" width="460" alt="official and UmaLive side by side">
 </p>
 
-A live concert renderer for Umamusume: Pretty Derby. Work in progress, so
-details still shift as the song data gets followed closer.
-
-Roadmap: per-standing-place lighting finished against the official footage,
-then the remaining stage layers brought in line the same way, namely the
-floor reflections, the crowd, the beam geometry and the camera cuts.
-
 *Official game footage on the left, UmaLive on the right, same song frame.*
+
+A live concert renderer for Umamusume: Pretty Derby.
+
+> **Work in progress.** UmaLive is not complete. Matched against the official
+> footage so far: the global light track with its per-standing-place masks,
+> the facial toon shading, the crowd, the floor reflections, and the stage
+> and character data read straight from the game at runtime. Still to be
+> brought in line the same way: the standing-place assignment, the beam
+> geometry, and the camera cuts.
+
+## Summary
 
 UmaLauncher is the front end: you pick a song and its cast there, then the
 launch button starts this viewer with your selection. This repository holds
@@ -67,7 +71,8 @@ Assets/
   Shaders/          fog and radial blur shaders
 images/              official-versus-render comparison frames
 Tools/
-  UmaLauncher/      winforms front end: song list, cast picker, updater
+  UmaLauncher/      winforms front end: song list, cast picker, updater,
+                    concert window with the transport and the concert settings
 ProjectSettings/     unity 2022.3.62, IL2CPP standalone
 ```
 
@@ -166,6 +171,30 @@ sequenceDiagram
 Unity 2022.3.62f2, IL2CPP, Windows x64. CI builds the exe on version tags and
 on demand from the `experimental` branch.
 
+## Testing
+
+The concert window drives a running player over a small control file next to
+the player, so the controls can be exercised without the launcher.
+
+```
+UV2_DIAGNOSTICS=1        enables the trace log, the frame dumps and the
+                         postfx report; off by default so a release install
+                         stays clean
+UV2_MAIN_PATH=<path>     overrides the detected game folder
+```
+
+In the concert window, `look` pins each post processing layer to the song's
+own choice, off, or on. `sound` mixes the background bed and each singing
+column. `stage` shows the loaded cast, the standing places that carry a live
+light, the camera mode and the voices state. `diagnostics` shows the frame
+rate, the current position, the song length, the silenced layers, the key
+light and the player version.
+
+The bench harness under `uv2/igpu-bench/` renders song frames in a rig and
+compares them against the official frames. The officially paired comparisons
+live in `uv2/igpu-bench/pfx-pairs/`; the `p9` set is the current ground truth
+because its frames were re-pinned by eye.
+
 ## Special thanks
 
 - [UmamusumeExplorer](https://github.com/MarshmallowAndroid/UmamusumeExplorer) -
@@ -182,6 +211,8 @@ on demand from the `experimental` branch.
   metadata dumps that made the runtime format work possible
 - [AssetRipper](https://github.com/AssetRipper/AssetRipper) - bundle and
   asset inspection while figuring out the stage and character formats
+- [umamusu.wiki](https://umamusu.wiki/) - the application icons, cropped from
+  the community asset gallery
 
 ## License
 

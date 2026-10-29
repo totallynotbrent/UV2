@@ -8,8 +8,16 @@
     <RootNamespace>UmaLauncher</RootNamespace>
     <Version>0.0.0</Version>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- the file icon on the exe -->
+    <ApplicationIcon>assets\umalauncher.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="sqlite-net-pcl" Version="1.9.172" />
+  </ItemGroup>
+  <!-- the ico rides along so the window can show the icon at runtime -->
+  <ItemGroup>
+    <None Include="assets\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 </Project>

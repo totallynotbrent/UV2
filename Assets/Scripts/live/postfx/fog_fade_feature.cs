@@ -81,8 +81,12 @@ namespace UV2.Live
                     }
                     on_letters += ch;
                 }
+                // the settings window can pin a layer on or off for the whole
+                // song; those choices beat the mask and the song's own keys.
                 System.Func<bool, char, bool> want = (authored, letter) =>
                 {
+                    if (force_off.Contains(letter)) return false;
+                    if (force_on.Contains(letter)) return true;
                     if (off_letters.IndexOf(letter) >= 0) return false;
                     if (on_letters.IndexOf(letter) >= 0) return true;
                     return !solo && authored;
@@ -99,8 +103,9 @@ namespace UV2.Live
                 // the shafts stay opt-in: the game composites four
                 // beam-geometry buffers and the screen-space stand-in
                 // flattens the frames where the sun is in view.
-                bool shafts_on = on_letters.IndexOf('s') >= 0 && shafts_lights.pass_enabled
-                    && shafts_lights.pass_intensity > 0.001f;
+                bool shafts_on = !force_off.Contains('s')
+                    && (force_on.Contains('s') || on_letters.IndexOf('s') >= 0)
+                    && shafts_lights.pass_enabled && shafts_lights.pass_intensity > 0.001f;
                 bool lens_on = want(director.lens_distortion_enabled || director.chromatic_enabled, 'l');
                 bool clarity_on = want(director.ball_blur_enabled, 'c');
 
@@ -108,8 +113,13 @@ namespace UV2.Live
                 // which stages ran and what the film layers were told to
                 // paint. the mask line in the director only reports the
                 // letters in the mask string, not the gates.
-                if (System.Environment.GetEnvironmentVariable("UV2_SNAPS") == "1")
+                // the gate and layer lines go out once a second, not every
+                // frame: at 60fps they were a hundred lines a second and the
+                // trace file reached megabytes in a minute.
+                if (System.Environment.GetEnvironmentVariable("UV2_SNAPS") == "1"
+                    && Time.unscaledTime - last_postfx_report >= 1f)
                 {
+                    last_postfx_report = Time.unscaledTime;
                     trace_log.write($"postfx gates mask'{m}' film{film_on} dof{dof_on} bloom{bloom_on} " +
                                     $"tilt{tilt_on} grade{grade_on} radial{radial_on} lens{lens_on}");
                     foreach (var fs in new[] { director.film1_state, director.film2_state, director.film3_state })
@@ -413,7 +423,7 @@ namespace UV2.Live
                         RenderTexture.ReleaseTemporary(rt);
                         var bytes = ImageConversion.EncodeToPNG(tex);
                         UnityEngine.Object.Destroy(tex);
-                        var snap_dir = "/work/UmaViewer2/Logs";
+                        var snap_dir = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "snaps");
                         System.IO.Directory.CreateDirectory(snap_dir);
                         var path = $"{snap_dir}/uv2_snap_f{song_frame}_t{director.clock.time:0.0}.png";
                         System.IO.File.WriteAllBytes(path, bytes);
@@ -423,6 +433,7 @@ namespace UV2.Live
             }
 
             private int snap_fired = -1;
+            private float last_postfx_report = -10f;
 
             private static readonly int tmp_a_id = Shader.PropertyToID("_uv2_postfx_tmp_a");
             private static readonly int tmp_b_id = Shader.PropertyToID("_uv2_postfx_tmp_b");
@@ -1230,6 +1241,12 @@ namespace UV2.Live
         public static string feature_mask =
             System.Environment.GetEnvironmentVariable("UV2_POSTFX_MASK") ?? "";
 
+        // the settings window pins a layer on or off for the whole song:
+        // force_on wins over everything, force_off silences a layer the
+        // song or the mask would otherwise run.
+        public static readonly System.Collections.Generic.HashSet<char> force_on = new();
+        public static readonly System.Collections.Generic.HashSet<char> force_off = new();
+
         // the tone map closes the chain for every frame: the game renders
         // the concert into an hdr buffer and compresses it once at the end
         // of its post chain, so the additive film layers and the bloom keep
@@ -1237,6 +1254,9 @@ namespace UV2.Live
         // it off for the raw-render benches.
         public static bool tonemap_on =
             (System.Environment.GetEnvironmentVariable("UV2_TONEMAP") ?? "1") != "0";
+
+        // the settings window's tone map switch flips this at runtime.
+        public static bool tonemap_switch_available = true;
 
         // the exposure in front of the tone map. it comes from the song's
         // authored ExposureKeys track (postfx_director.exposure_gain); with

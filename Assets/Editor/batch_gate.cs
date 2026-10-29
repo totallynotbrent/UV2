@@ -15,6 +15,7 @@ namespace UV2Build
         {
             urp_setup.ensure();
             scene_baker.bake();
+            player_builder.apply_icon();
             var scenes = new[] { "Assets/Scenes/Concert.unity" };
             var opts = new BuildPlayerOptions
             {

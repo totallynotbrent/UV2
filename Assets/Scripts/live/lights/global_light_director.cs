@@ -116,8 +116,43 @@ namespace UV2.Live
 
         // resolves every list at this song time and refreshes the slots
         // each list's mask admits.
+        // the settings window's light override: a yaw bias in degrees and a
+        // freeze switch. a frozen light ignores the song's keys and holds
+        // the direction it had when the switch was thrown.
+        private float yaw_bias_degrees;
+        private Quaternion base_rotation = Quaternion.identity;
+        private bool frozen;
+        private Quaternion frozen_rotation = Quaternion.identity;
+
+        // the light's current world direction, for the settings window to show.
+        public Quaternion current_rotation => global_rotation;
+
+        public void set_light_yaw(float degrees)
+        {
+            yaw_bias_degrees = degrees;
+        }
+
+        public float yaw_bias => yaw_bias_degrees;
+
+        // freezes the light where it stands, so the toon ramps can be judged
+        // against one steady key light instead of the song's moving one.
+        public void set_frozen(bool value)
+        {
+            if (value == frozen) return;
+            frozen = value;
+            if (frozen) frozen_rotation = global_rotation;
+        }
+
+        public bool is_frozen => frozen;
+
         public void update(float song_time, Camera cam)
         {
+            if (frozen)
+            {
+                global_rotation = frozen_rotation;
+                ApplyRotationBias();
+                return;
+            }
             if (lists.Count == 0) return;
 
             var resolved = new chara_light_state();
@@ -142,6 +177,18 @@ namespace UV2.Live
                 global_rotation = resolved.rotation;
                 global_rim_set = true;
             }
+            ApplyRotationBias();
+        }
+
+        // turns the light's yaw around the world's vertical axis.
+        // the bias is applied to the base rotation, never to the already
+        // biased value, so holding a stale frame cannot rotate the light
+        // twice.
+        private void ApplyRotationBias()
+        {
+            base_rotation = global_rotation;
+            if (Mathf.Abs(yaw_bias_degrees) < 0.001f) return;
+            global_rotation = Quaternion.Euler(0f, yaw_bias_degrees, 0f) * base_rotation;
         }
 
         // resolves one list's bracketing key pair into the light state.

@@ -60,13 +60,17 @@ namespace UV2.App
         }
 
         // once per report window (1s): fps + per-subsystem ms share.
+        // the window and the gate both run on unscaled time: the caller used
+        // to pass the scaled song clock, so pausing the song froze the fps
+        // report and the two clocks disagreed about the window's length.
         public static void report(float now)
         {
             if (!enabled) return;
-            if (now - _last_report < 1f) return;
-            _last_report = now;
+            float unscaled = Time.unscaledTime;
+            if (unscaled - _last_report < 1f) return;
+            _last_report = unscaled;
 
-            float window = Time.unscaledTime - _window_start;
+            float window = unscaled - _window_start;
             float fps = window > 0f ? _frames / window : 0f;
             float ms = window > 0f ? window * 1000f / Mathf.Max(1, _frames) : 0f;
 
@@ -94,7 +98,7 @@ namespace UV2.App
             _lines.Clear();
             _accum.Clear();
             _frames = 0;
-            _window_start = Time.unscaledTime;
+            _window_start = unscaled;
         }
 
         // appends to the buffered verbose trace (flushed with the report).
