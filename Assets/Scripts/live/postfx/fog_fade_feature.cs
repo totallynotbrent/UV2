@@ -122,6 +122,11 @@ namespace UV2.Live
                     last_postfx_report = Time.unscaledTime;
                     trace_log.write($"postfx gates mask'{m}' film{film_on} dof{dof_on} bloom{bloom_on} " +
                                     $"tilt{tilt_on} grade{grade_on} radial{radial_on} lens{lens_on}");
+                    var bs = director.bloom_state;
+                    trace_log.write($"postfx bloom key thr{bs.threshold:0.000} inten{bs.intensity:0.000} " +
+                                    $"blur{bs.blur_size:0.00} mode{bs.blend_mode} dw{bs.bloom_dof_weight:0.00} " +
+                                    $"difthr{bs.diffusion_threshold:0.000} " +
+                                    $"difbri{bs.diffusion_bright:0.00}");
                     foreach (var fs in new[] { director.film1_state, director.film2_state, director.film3_state })
                     {
                         if (fs == null) { trace_log.write("postfx film layer null"); continue; }
