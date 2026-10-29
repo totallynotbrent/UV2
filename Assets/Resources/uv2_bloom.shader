@@ -85,15 +85,28 @@ Shader "live/uv2_bloom"
                 // the rig reads the actual C-term input.
                 return float4(bloom.rgb, 1);
                 #endif
-                // the game's film-variant combine @51362 with the runtime
-                // unbound constants (cb0[139] = cb0[163] = 0, verified in
-                // postbloom_composite_pass0_math.md): r0 = warped_src -
-                // bloom, then out = r0*r0 + bloom, all * _DimmerColor.
-                // the (src-bloom)^2 fold COMPRESSES the highlight: a hot
-                // source over hot bloom lands at (0.6)^2+0.3 = 0.66, never
-                // clipping, where a plain additive saturates to a white
-                // wash. that fold is the game's overexposure guard.
-                float4 col = (saturate(src) - bloom) * (saturate(src) - bloom) + bloom;
+                // the game's composite combine (PostBloom_Rich pass 0,
+                // disassembly of the DXBC pixel shader): the authored blend
+                // mode picks one of three combines, and NONE of them square
+                // a residual:
+                //   mode 0 -> X + Y - X*Y      (screen)
+                //   mode 1 -> X + Y            (plain add)
+                //   mode 2 -> X * (1 + Y)      (additive screen)
+                // X is the source, Y the bloom. the old port folded the
+                // source into a residual square, (src-bloom)^2+bloom, which
+                // drove midtones DOWN wherever the bloom sat close to the
+                // source and piled the highlights up - the bimodal wash.
+                // the authored BlendBlendMode for 1004 is 1, a plain add.
+                float x = src.rgb;
+                float y = bloom.rgb;
+                float3 blended;
+                if (_BloomBlendMode <= 0.5)
+                    blended = x + y - x * y;      // screen
+                else if (_BloomBlendMode < 1.5)
+                    blended = x + y;              // plain add
+                else
+                    blended = x * (1.0 + y);      // additive screen
+                float4 col = float4(blended, src.a);
 
 #ifdef DIFFUSION_ON
                 // the game's diffusion composite (PostDiffusionBloom_Rich
