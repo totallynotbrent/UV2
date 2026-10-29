@@ -126,7 +126,10 @@ namespace UV2.Live
                     trace_log.write($"postfx bloom key thr{bs.threshold:0.000} inten{bs.intensity:0.000} " +
                                     $"blur{bs.blur_size:0.00} mode{bs.blend_mode} dw{bs.bloom_dof_weight:0.00} " +
                                     $"difthr{bs.diffusion_threshold:0.000} " +
-                                    $"difbri{bs.diffusion_bright:0.00}");
+                                    $"difbri{bs.diffusion_bright:0.00} difsat{bs.diffusion_saturation:0.00} " +
+                                    $"difcon{bs.diffusion_contrast:0.00} difblur{bs.diffusion_blur_size:0.00} " +
+                                    $"difon{director.bloom_diffusion_enabled} attr0x{director.bloom_attr_bits:x} " +
+                                    $"keyword{(director.bloom_diffusion_enabled && bs.diffusion_blur_size > 0f ? 1 : 0)}");
                     foreach (var fs in new[] { director.film1_state, director.film2_state, director.film3_state })
                     {
                         if (fs == null) { trace_log.write("postfx film layer null"); continue; }

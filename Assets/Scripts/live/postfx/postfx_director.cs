@@ -375,11 +375,13 @@ namespace UV2.Live
             // IsEnableBloom, 0x20000 = IsEnableDiffusion; 1004 authors
             // 0x30000 (both), 1151 0x20000 (diffusion only).
             bloom_diffusion_enabled = (cur.attribute & 0x20000) != 0;
+            bloom_attr_bits = cur.attribute;
             bloom_state_valid = bloom_state.intensity > 0f || bloom_diffusion_enabled;
         }
 
         // whether the current bloom key enables the diffusion sub-chain.
         [HideInInspector] public bool bloom_diffusion_enabled;
+        [HideInInspector] public int bloom_attr_bits;
 
         // the exposure effect's authored state. the song's ExposureKeys
         // track carries Gain, Lift and DepthMask per key; with no authored
