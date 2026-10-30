@@ -99,6 +99,8 @@ namespace UV2.Live
             // from the matching color pair, so a ColorAll key must use
             // color0 alone.
             public int color_type;
+            // the authored key frame this state came from, for the trace.
+            public int key_frame;
 
             // the key's raw attribute word (0x40000 isReverseUVMovie,
             // 0x80000 isInverseVignette, 0x100000 isUseTexMask).
@@ -661,6 +663,7 @@ namespace UV2.Live
             {
                 mode = cur.film_mode,
                 power = cur.power,
+                key_frame = cur.frame,
                 depth_power = cur.depth_power,
                 depth_clip = cur.depth_clip,
                 offset_param = cur.offset_param,

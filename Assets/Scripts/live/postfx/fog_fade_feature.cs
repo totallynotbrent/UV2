@@ -104,8 +104,8 @@ namespace UV2.Live
                 // composites its beam geometry here, and the sung shafts are
                 // what carries the concert's colour into the washed-out
                 // highlights (the authored sun colour is the tint). the
-                // mask's 's' still forces the layer off.
-                bool shafts_on = !force_off.Contains('s')
+                // mask's '-s' forces the layer off.
+                bool shafts_on = want(true, 's')
                     && shafts_lights.pass_enabled && shafts_lights.pass_intensity > 0.001f;
                 bool lens_on = want(director.lens_distortion_enabled || director.chromatic_enabled, 'l');
                 bool clarity_on = want(director.ball_blur_enabled, 'c');
@@ -134,7 +134,7 @@ namespace UV2.Live
                     foreach (var fs in new[] { director.film1_state, director.film2_state, director.film3_state })
                     {
                         if (fs == null) { trace_log.write("postfx film layer null"); continue; }
-                        trace_log.write($"postfx film layer m{fs.mode} pow{fs.power:0.00} dep{fs.depth_power:0.00} " +
+                        trace_log.write($"postfx film layer f{fs.key_frame} m{fs.mode} pow{fs.power:0.00} dep{fs.depth_power:0.00} " +
                                         $"inv{(fs.inverse ? 1 : 0)} rad{fs.option_param.x:0.00} soft{fs.option_param.y:0.00} " +
                                         $"c{fs.color0.r:0.00},{fs.color0.g:0.00},{fs.color0.b:0.00} valid{(fs.valid ? 1 : 0)}");
                     }
@@ -285,7 +285,7 @@ namespace UV2.Live
                 // that is film2 and film3 - film1's key reads power 0 there.
                 // every layer adds its authored colour weighted by the
                 // key's depthPower, so the sum belongs in an hdr buffer:
-                // the chain ends in the tone map below.
+                // the chain ends in the output pass below.
                 if (film_on && film_valid(director.film1_state))
                     apply_film(cmd, renderingData, director.film1_state, 0, ref cur, ref cur_is_color, ref nxt, ref nxt_is_a, tmp_a, tmp_b);
                 if (film_on && film_valid(director.film2_state))
@@ -360,10 +360,10 @@ namespace UV2.Live
                     }
                 }
 
-                // the chain ends in the tone map: the game renders the
-                // concert into an hdr buffer and compresses it once, so the
-                // additive film layers and the bloom keep their gradients
-                // instead of clipping to white.
+                // the chain ends in the output pass: the game has no
+                // tonemap class in its pipeline and its final blit copies
+                // the buffer with no shader, so this pass carries the
+                // authored grade and the transfer to display gamma.
                 if (tonemap_on)
                 {
                     if (tonemap_mat == null)
@@ -380,6 +380,13 @@ namespace UV2.Live
                         if (director != null && director.exposure_valid)
                             exposure = director.exposure_gain;
                         tonemap_mat.SetFloat("_Exposure", exposure);
+                        // the concert is presented in gamma space, so the
+                        // transfer to display gamma belongs at the end of
+                        // the chain. UV2_TONEMAP_ENCODE=none drops it for
+                        // the ablation benches only.
+                        var enc = System.Environment.GetEnvironmentVariable("UV2_TONEMAP_ENCODE");
+                        if (enc == "none") tonemap_mat.DisableKeyword("TONEMAP_ENCODE_SRGB");
+                        else tonemap_mat.EnableKeyword("TONEMAP_ENCODE_SRGB");
 
                         // the game's ToneCurvePass grades with the authored
                         // lut when a tone curve key is enabled. no surveyed
@@ -668,6 +675,7 @@ namespace UV2.Live
                         if (dbg == "1") bloom_mat.SetTexture("_BloomTex", bloom_rt_d);
                         if (dbg == "2") bloom_mat.SetTexture("_BloomTex", bloom_rt_e);
                         if (dbg == "3") bloom_mat.SetTexture("_BloomTex", bloom_rt_diffusion);
+                        if (dbg == "diffusion") bloom_mat.SetTexture("_BloomTex", bloom_rt_diffusion);
                     }
                 }
 
@@ -729,6 +737,16 @@ namespace UV2.Live
                     cmd.Blit(bloom_rt_e, bloom_rt_c, bloom_diff_blurv_mat, bloom_blurv_pass);
                     cmd.Blit(bloom_rt_c, bloom_rt_diffusion, bloom_diff_blurh_mat, bloom_blurh_pass);
                     bloom_mat.SetTexture("_DiffusionTex", bloom_rt_diffusion);
+                    // the composite samples the base pyramid as _Bloom and
+                    // the diffusion pyramid as _RgbTex, and the diffusion's
+                    // contribution is weighted by the fp row, which the
+                    // diffusion chain never publishes: it binds zero and
+                    // the wide pyramid drops out of the maths. binding it
+                    // as the bloom input instead laid the frame's mids on
+                    // the diffusion blur's mean.
+                    var dv = System.Environment.GetEnvironmentVariable("UV2_DIFF_VARIANT");
+                    if (dv == "1") bloom_mat.SetTexture("_BloomTex", bloom_rt_diffusion);
+
                     // the composite's fp/lift/lever rows (139.y/151.x/163.w)
                     // are never published by the diffusion C# (its ids are
                     // 179/185/183/172/225/204/182), so they bind zero at
@@ -1272,11 +1290,10 @@ namespace UV2.Live
         public static readonly System.Collections.Generic.HashSet<char> force_on = new();
         public static readonly System.Collections.Generic.HashSet<char> force_off = new();
 
-        // the tone map closes the chain for every frame: the game renders
-        // the concert into an hdr buffer and compresses it once at the end
-        // of its post chain, so the additive film layers and the bloom keep
-        // their gradients instead of clipping to white. UV2_TONEMAP=0 turns
-        // it off for the raw-render benches.
+        // the output pass closes the chain for every frame: it carries the
+        // authored tone curve and the transfer to display gamma, and the
+        // game has no tonemap of its own to do it. UV2_TONEMAP=0 turns it
+        // off for the raw-render benches.
         public static bool tonemap_on =
             (System.Environment.GetEnvironmentVariable("UV2_TONEMAP") ?? "1") != "0";
 

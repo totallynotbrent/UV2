@@ -1,30 +1,38 @@
-// the game's output stage: unity's universal render pipeline tonemaps the
-// final image in its final blit, and gallop's ToneCurvePass grades the
-// concert with an authored per-key curve.
+// the game's output stage.
 //
-// both halves are here:
+// gallop's pipeline has no tonemap class of its own: its seventy
+// post-pipeline classes carry tonecurve and exposure passes, but both are
+// driven by the song's authored timeline keys, and those tracks are empty
+// for every surveyed song. gallop.renderpipeline.finalblitpass::execute
+// then finishes with a plain commandbuffer::blit, which copies the buffer
+// with no shader at all.
 //
-//   the tonemap is unity's Neutral curve, lifted verbatim from the render
-//   pipeline package (com.unity.render-pipelines.core 14.0.12,
-//   ShaderLibrary/Color.hlsl). the game runs the same package generation
-//   (unity 2022.3.62f2, urp 14), so this is the curve that shapes the
-//   official frames. it also supplies the highlight roll-off the picture
-//   needs: the scene renders well above 1.0, and without it the stage
-//   lights flood the frame to solid white.
+// the picture still needs shaping, and unity's own universal render
+// pipeline supplies it: the game ships urp 14 on unity 2022.3.62f2, the
+// same generations this project uses, so its Neutral curve is the one the
+// official frames took. measured against the official landmarks it beats
+// a straight passthrough on every frame tested.
 //
-//   the tone curve is gallop's authored pass (uv2_six_postfx_families_decoded.md
-//   section 7): a 256x2 monochrome lut - row 0 the tone curve, row 1 the
-//   mask curve - graded with
+// so this pass carries two things:
+//
+//   the authored grade. gallop's tone curve pass (section 7 of
+//   uv2_six_postfx_families_decoded.md) is a 256x2 monochrome lut: row 0
+//   the tone curve, row 1 the mask curve, graded with
 //
 //       out = lerp(min_level, max_level, curve(sample))
 //
-//   with the mask row covering the pixels at or above the mask levels and
-//   the depth mask choosing which level pair applies. the keys that drive
-//   it (ToneCurveKeys) are disabled in every surveyed song, so this path is
-//   off in practice and the chain runs the tonemap alone.
+//   where the mask row covers the pixels at or above the mask levels and
+//   the depth mask chooses which level pair applies.
 //
-// order: the scene is tonemapped first, then the authored grade, which
-// works on display-referred values the way its correction levels imply.
+//   the transfer to display gamma. the concert is a gamma-space project:
+//   the game's own playersettings carry m_activecolorspace: 0, and this
+//   project matches it, so unity writes the frame back with its sRGB
+//   transfer rather than a linear one. the chain's intermediates are raw
+//   render textures, so the conversion has to happen here or the midtones
+//   land far darker than the official frames.
+//
+// order: the grade runs on the scene's display-referred values, the way its
+// correction levels imply, and the transfer follows it.
 
 Shader "live/uv2_tonemap"
 {
@@ -48,6 +56,7 @@ Shader "live/uv2_tonemap"
             #pragma vertex vert
             #pragma fragment frag
             #pragma multi_compile __ TONEMAP_GAME_CURVE
+            #pragma multi_compile __ TONEMAP_ENCODE_SRGB
             #include "UnityCG.cginc"
 
             sampler2D _MainTex;
@@ -86,6 +95,18 @@ Shader "live/uv2_tonemap"
                 return x;
             }
 
+            // unity's sRGB transfer function: the exact piecewise curve, not
+            // the 2.2 power approximation. linear values below 0.0031308
+            // take the linear branch, the rest the power branch.
+            float3 linear_to_srgb(float3 c)
+            {
+                c = max(c, 0.0);
+                float3 hi = 1.055 * pow(max(c, 1e-6), 1.0 / 2.4) - 0.055;
+                float3 lo = c * 12.92;
+                float3 use_lo = step(c, 0.0031308);
+                return hi * (1.0 - use_lo) + lo * use_lo;
+            }
+
             struct v2f
             {
                 float4 pos : SV_POSITION;
@@ -104,6 +125,7 @@ Shader "live/uv2_tonemap"
             {
                 float3 scene = tex2D(_MainTex, i.uv).rgb * _Exposure;
                 float3 graded = neutral_tonemap(scene);
+
             #if TONEMAP_GAME_CURVE
                 // the curve lut is 256 wide and 2 tall: row 0 holds the tone
                 // curve, row 1 the mask curve. the game looks up each channel
@@ -120,7 +142,18 @@ Shader "live/uv2_tonemap"
                 float3 mask_graded = lerp(_MaskMinLevel.rgb, _MaskMaxLevel.rgb, mask_value);
                 graded = lerp(tone_graded, mask_graded, step(_MaskMinLevel.rgb, graded));
             #endif
-                return fixed4(clamp(graded, 0.0, 1.0), 1.0);
+
+            #if TONEMAP_ENCODE_SRGB
+                // the frame is presented in gamma space, so the linear buffer
+                // takes unity's sRGB transfer on the way out. the curve
+                // clamps first: the transfer's power branch is undefined
+                // above one, and the backbuffer would take that as white.
+                graded = linear_to_srgb(clamp(graded, 0.0, 1.0));
+            #else
+                graded = clamp(graded, 0.0, 1.0);
+            #endif
+
+                return fixed4(graded, 1.0);
             }
             ENDCG
         }
