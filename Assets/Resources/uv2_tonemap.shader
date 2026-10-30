@@ -26,10 +26,12 @@
 //
 //   the transfer to display gamma. the concert is a gamma-space project:
 //   the game's own playersettings carry m_activecolorspace: 0, and this
-//   project matches it, so unity writes the frame back with its sRGB
-//   transfer rather than a linear one. the chain's intermediates are raw
-//   render textures, so the conversion has to happen here or the midtones
-//   land far darker than the official frames.
+//   project matches it, so unity writes the frame back as it stands.
+//   the game's final blit carries no material, so nothing encodes the
+//   frame on the way out, and the values in the buffer are already
+//   display-referred. encoding them a second time lifts the whole picture
+//   into a veil, so the transfer stays off unless a bench asks for it
+//   (UV2_TONEMAP_ENCODE=srgb).
 //
 // order: the grade runs on the scene's display-referred values, the way its
 // correction levels imply, and the transfer follows it.

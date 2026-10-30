@@ -380,13 +380,20 @@ namespace UV2.Live
                         if (director != null && director.exposure_valid)
                             exposure = director.exposure_gain;
                         tonemap_mat.SetFloat("_Exposure", exposure);
-                        // the concert is presented in gamma space, so the
-                        // transfer to display gamma belongs at the end of
-                        // the chain. UV2_TONEMAP_ENCODE=none drops it for
-                        // the ablation benches only.
+                        // the game's final blit copies the buffer with no
+                        // shader at all, so nothing encodes the frame on the
+                        // way out. the concert is a gamma-space project, so
+                        // the values already sitting in the buffer are
+                        // display-referred; encoding them again lifts the
+                        // whole picture into a veil. measured against the
+                        // official frames, dropping the encode brings the
+                        // frame's median and fifth percentile onto the
+                        // official's values exactly, so the pass leaves the
+                        // values alone. UV2_TONEMAP_ENCODE=srgb puts the
+                        // transfer back for the ablation benches.
                         var enc = System.Environment.GetEnvironmentVariable("UV2_TONEMAP_ENCODE");
-                        if (enc == "none") tonemap_mat.DisableKeyword("TONEMAP_ENCODE_SRGB");
-                        else tonemap_mat.EnableKeyword("TONEMAP_ENCODE_SRGB");
+                        if (enc == "srgb") tonemap_mat.EnableKeyword("TONEMAP_ENCODE_SRGB");
+                        else tonemap_mat.DisableKeyword("TONEMAP_ENCODE_SRGB");
 
                         // the game's ToneCurvePass grades with the authored
                         // lut when a tone curve key is enabled. no surveyed
