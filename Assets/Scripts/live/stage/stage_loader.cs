@@ -43,6 +43,7 @@ namespace UV2.Live
         private camera_director director;
         private formation_driver formation;
         private bg_color1_director bg_color1;
+        private follow_spot_rigs follow_spots;
         private facial_toon toon;
         private global_light_director global_light;
         private environment_director environment;
@@ -1629,7 +1630,14 @@ namespace UV2.Live
             // the bgColor1 tracks drive ambient + chara tint per frame.
             var bgc_go = new GameObject("bg_color1_director");
             bg_color1 = bgc_go.AddComponent<bg_color1_director>();
-            bg_color1.open(ws, clock, chara_roots);
+            bg_color1.open(ws, clock, chara_roots, chara_places);
+
+            // the per-character follow-spot rigs: the game hangs a spot
+            // assembly over each performer and colours it from the
+            // FollowSpot* groups (UpdateCharaFollowSpotColor1).
+            var fs_go = new GameObject("follow_spot_rigs");
+            follow_spots = fs_go.AddComponent<follow_spot_rigs>();
+            follow_spots.open(chara_roots, chara_places);
 
             var glo_go = new GameObject("global_light_director");
             global_light = glo_go.AddComponent<global_light_director>();
@@ -1900,6 +1908,16 @@ namespace UV2.Live
                 // global-light mpb is re-applied per frame so "any competing
                 // writer loses"), so the chara pin must be the last writer.
                 bg_color1?.update(clock?.time ?? 0f);
+                // the follow-spot rigs take the colour and power the game
+                // stored on each place's follow-spot entry, so they refresh
+                // right after the groups that set them.
+                if (follow_spots != null && bg_color1 != null)
+                {
+                    follow_spots.set_place_state(
+                        bg_color1.follow_spot_colors_pub,
+                        bg_color1.follow_spot_powers_pub);
+                    follow_spots.update(clock?.time ?? 0f);
+                }
                 global_shade.publish_chara_block(chara_roots, chara_places);
                 // the facial toon lands LAST: the game dispatches global
                 // light, then bg colour, then facial toon, so the toon's own

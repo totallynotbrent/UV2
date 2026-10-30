@@ -30,16 +30,78 @@ namespace UV2.Live
         private static readonly int id_outline_width = Shader.PropertyToID("_OutlineWidth");
         private static readonly int id_saturation = Shader.PropertyToID("_Saturation");
 
-        // the chara-tint groups the game's gate allows onto character blocks.
-        // CharaBack is NOT in the game's allow set (heap literal evidence) -
-        // it feeds stage-side consumers, so it must not touch chara blocks.
-        private static readonly HashSet<string> chara_group_names = new()
+        // the groups the game routes through its character handlers, and the
+        // standing places each one lights. UpdateCharaColor1 and
+        // UpdateCharaFollowSpotColor1 (0x7ff8e4db4410) both compare the
+        // group's name hash against a table of cached hashes and select a
+        // LiveCharaPositionFlag mask from it; the handler then walks the
+        // TWENTY standing places (ebp 0..0x14) and applies the group only
+        // where the mask bit is set. the masks are the game's own constants
+        // read off the handler: bit 0 centre, bit 1 left, bit 2 right,
+        // 0xffff8 the back places, 0xffffe every place but the centre.
+        private static readonly Dictionary<string, int> chara_group_masks = new()
         {
-            "CharaCenter", "CharaLeft", "CharaRight", "CharaColor",
+            { "CharaColor", 0xfffff },
+            { "CharaCenter", 1 },
+            { "CharaLeft", 2 },
+            { "CharaRight", 4 },
+            { "CharaBack", 0xffff8 },
+            { "CharaOther", 0xffffe },
+        };
+
+        // the FollowSpot groups the game routes through its own
+        // UpdateCharaFollowSpotColor1 handler (0x7ff8e4db4410). each group
+        // selects the standing places it lights with a place mask, and the
+        // selected characters get the follow-spot colour and power.
+        private static readonly Dictionary<string, int> follow_spot_masks = new()
+        {
+            { "FollowSpotColor", 0xfffff },
+            { "FollowSpotCenter", 1 },
+            { "FollowSpotLeft", 2 },
+            { "FollowSpotRight", 4 },
+            { "FollowSpotBack", 0xffff8 },
+            { "FollowSpotOther", 0xffffe },
         };
 
         private MaterialPropertyBlock mpb;
         private float last_logged = -1f;
+
+        // the standing place of each loaded character root (the game's
+        // roster index). the FollowSpot mask selects places, so the place
+        // list is what ties a mask bit to a character.
+        private List<int> chara_places;
+
+        // the follow-spot tint each standing place currently receives.
+        // indexed by standing place, null when no FollowSpot group lights it.
+        private readonly Dictionary<int, Color> follow_spot_colors = new();
+        private readonly Dictionary<int, float> follow_spot_powers = new();
+
+        // the chara tint each standing place currently receives. the game's
+        // UpdateCharaColor1 handler applies a group only to the places its
+        // mask admits, so each standing place can carry its own tint.
+        private readonly Dictionary<int, chara_tint> chara_tints = new();
+
+        // one standing place's chara tint: the colour and power the game's
+        // handler publishes, plus the toon and outline fields that ride along.
+        private struct chara_tint
+        {
+            public Color color;
+            public Color light_probe;
+            public Color toon_dark;
+            public Color toon_bright;
+            public Color outline_color;
+            public float outline_width;
+            public float saturation;
+        }
+
+        // the chara tint for the place covering the whole cast, used when no
+        // masked group matches a place.
+        private chara_tint default_chara_tint;
+
+        // the follow-spot state the rig module consumes. the game stores
+        // this colour and power on each place's follow-spot entry.
+        public Dictionary<int, Color> follow_spot_colors_pub => follow_spot_colors;
+        public Dictionary<int, float> follow_spot_powers_pub => follow_spot_powers;
 
         // one-shot probe per tinted part group.
         private readonly HashSet<string> _part_probe_done = new();
@@ -74,11 +136,13 @@ namespace UV2.Live
             return i > 0 ? s.Substring(0, i) : s;
         }
 
-        public void open(live_worksheet worksheet, timeline_clock clock_ref, List<Transform> roots)
+        public void open(live_worksheet worksheet, timeline_clock clock_ref, List<Transform> roots,
+            List<int> places = null)
         {
             ws = worksheet;
             clock = clock_ref;
             chara_roots = roots;
+            chara_places = places;
             mpb = new MaterialPropertyBlock();
             trace_log.write($"bg_color1: {ws.bg_color1.Count} groups " +
                 $"({string.Join(",", System.Linq.Enumerable.Select(ws.bg_color1, t => $"{t.name}:{t.keys.Count}"))})");
@@ -109,6 +173,12 @@ namespace UV2.Live
             Color last_tint = new(0f, 0f, 0f, 1f);
             string last_name = "";
 
+            // the per-place state is rebuilt every frame: a group that stops
+            // matching must not leave its tint behind on the character.
+            chara_tints.Clear();
+            follow_spot_colors.Clear();
+            follow_spot_powers.Clear();
+
             foreach (var track in ws.bg_color1)
             {
                 var (cur, next, blend) = eval_track(track.keys, frame);
@@ -125,21 +195,57 @@ namespace UV2.Live
                 last_tint = tint;
                 last_name = track.name;
 
-                if (chara_group_names.Contains(track.name))
+                if (follow_spot_masks.TryGetValue(track.name, out int spot_mask))
                 {
+                    // the game's UpdateCharaFollowSpotColor1 walks every
+                    // standing place and lights the ones the mask admits.
+                    // the winner per place is the last matching group in
+                    // worksheet order, so later groups overwrite earlier ones.
+                    for (int place = 0; place < 20; place++)
+                    {
+                        if ((spot_mask & (1 << place)) == 0) continue;
+                        follow_spot_colors[place] = c;
+                        follow_spot_powers[place] = power;
+                    }
+                }
+                else if (chara_group_masks.TryGetValue(track.name, out int chara_mask))
+                {
+                    // the game's UpdateCharaColor1 does the same walk with
+                    // the Chara* group's own mask. song 1004 authors a
+                    // DIFFERENT power per group (centre 0.80 while left and
+                    // right are 0.50), so folding every group into one tint
+                    // for the whole cast washes the lighting out.
+                    Color toon_dark = lerp_color(cur.toon_dark_color, next?.toon_dark_color, blend);
+                    Color toon_bright = lerp_color(cur.toon_bright_color, next?.toon_bright_color, blend);
+                    Color outline_color = lerp_color(cur.outline_color, next?.outline_color, blend);
+                    float saturation = lerp_f(cur.saturation, next?.saturation, blend);
+                    float outline_width = Mathf.Max(0f, lerp_f(cur.outline_width_power, next?.outline_width_power, blend)) * 0.325f;
+                    var place_tint = new chara_tint
+                    {
+                        color = c,
+                        // the game's chara ambient is the key colour times the
+                        // key's colourPower across all four channels; the chara
+                        // shader multiplies the whole final colour by it.
+                        light_probe = new Color(c.r * power, c.g * power, c.b * power, c.a * power),
+                        toon_dark = toon_dark,
+                        toon_bright = toon_bright,
+                        outline_color = outline_color,
+                        outline_width = outline_width,
+                        saturation = saturation,
+                    };
+                    for (int place = 0; place < 20; place++)
+                    {
+                        if ((chara_mask & (1 << place)) == 0) continue;
+                        chara_tints[place] = place_tint;
+                    }
+                    default_chara_tint = place_tint;
                     cur_chara_color = c;
-                    // the game's chara ambient is the key colour times the
-                    // key's colourPower, multiplied across all four channels
-                    // before SetLightProbeColor. the chara shader multiplies
-                    // the whole final colour by it.
-                    cur_light_probe = new Color(c.r * power, c.g * power, c.b * power, c.a * power);
-                    cur_toon_dark = lerp_color(cur.toon_dark_color, next?.toon_dark_color, blend);
-                    cur_toon_bright = lerp_color(cur.toon_bright_color, next?.toon_bright_color, blend);
-                    cur_outline_color = lerp_color(cur.outline_color, next?.outline_color, blend);
-                    cur_saturation = lerp_f(cur.saturation, next?.saturation, blend);
-                    // the game's tint block carries the outline width scaled
-                    // from the key's outlineWidthPower (fork + gap doc §2.3b).
-                    cur_outline_width = Mathf.Max(0f, lerp_f(cur.outline_width_power, next?.outline_width_power, blend)) * 0.325f;
+                    cur_light_probe = place_tint.light_probe;
+                    cur_toon_dark = toon_dark;
+                    cur_toon_bright = toon_bright;
+                    cur_outline_color = outline_color;
+                    cur_saturation = saturation;
+                    cur_outline_width = outline_width;
                     chara_dirty = true;
                 }
                 else if (track.name == "BgBL")
@@ -297,7 +403,11 @@ namespace UV2.Live
             // exact-hash rule on renderer names (unit object + unit name).
             foreach (var track in ws.bg_color1)
             {
-                if (chara_group_names.Contains(track.name) || track.name == "BgBL") continue;
+                // the character-side groups never resolve to stage parts: the
+                // game routes them through its own character handlers.
+                if (chara_group_masks.ContainsKey(track.name)
+                    || follow_spot_masks.ContainsKey(track.name)
+                    || track.name == "BgBL") continue;
                 uint want = fnv1(track.name);
                 var set = new List<Renderer>();
                 foreach (var r in all)
@@ -396,9 +506,15 @@ namespace UV2.Live
         {
             if (chara_roots == null) return;
             if (mpb == null) mpb = new MaterialPropertyBlock();
-            foreach (var root in chara_roots)
+            for (int ci = 0; ci < chara_roots.Count; ci++)
             {
+                var root = chara_roots[ci];
                 if (root == null) continue;
+                int place = chara_places != null && ci < chara_places.Count ? chara_places[ci] : ci;
+                // the game applies a group's tint only to the standing places
+                // its mask admits, so each character picks the tint of its own
+                // place rather than one shared tint for the whole cast.
+                if (!chara_tints.TryGetValue(place, out var tint)) tint = default_chara_tint;
                 foreach (var r in root.GetComponentsInChildren<Renderer>())
                 {
                     if (r == null) continue;
@@ -410,7 +526,7 @@ namespace UV2.Live
                     try
                     {
                         r.GetPropertyBlock(mpb);
-                        apply_tint_fields(mpb);
+                        apply_tint_fields(mpb, tint);
                         r.SetPropertyBlock(mpb);
                     }
                     catch { /* destroyed mid-shutdown */ }
@@ -419,21 +535,21 @@ namespace UV2.Live
         }
 
         // writes the tint fields onto whichever block is handed in.
-        private void apply_tint_fields(MaterialPropertyBlock block)
+        private void apply_tint_fields(MaterialPropertyBlock block, chara_tint tint)
         {
-            block.SetColor(id_chara_color, cur_chara_color);
+            block.SetColor(id_chara_color, tint.color);
             // the game's chara "ambient": UpdateCharaColor1 publishes the
             // bgColor1 key color as _LightProbeColor (propid 41,
             // ModelController::SetLightProbeColor 0x7ff8e51a3320) and
             // the chara PS multiplies the WHOLE final color by it.
             // without this, chars render at full albedo - the washed-out
             // look. (uv2_chara_texture_color_decoded.md §4 fix #1)
-            block.SetColor(id_light_probe, cur_light_probe);
-            block.SetColor(id_toon_dark, cur_toon_dark);
-            block.SetColor(id_toon_bright, cur_toon_bright);
-            block.SetColor(id_outline_color, cur_outline_color);
-            block.SetFloat(id_outline_width, cur_outline_width);
-            block.SetFloat(id_saturation, cur_saturation);
+            block.SetColor(id_light_probe, tint.light_probe);
+            block.SetColor(id_toon_dark, tint.toon_dark);
+            block.SetColor(id_toon_bright, tint.toon_bright);
+            block.SetColor(id_outline_color, tint.outline_color);
+            block.SetFloat(id_outline_width, tint.outline_width);
+            block.SetFloat(id_saturation, tint.saturation);
         }
 
         // last computed chara tint state (merged with the light block).
