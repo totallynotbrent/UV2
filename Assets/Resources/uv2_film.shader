@@ -154,18 +154,19 @@ Shader "live/uv2_film"
                 fixed4 scene = tex2D(_MainTex, i.uv);
                 float m = mask(i.uv);
                 float dt = depth_term();
-                // the mask tail (@76838): the ps computes
+                // the mask tail (@76838/@90722): the ps computes
                 //   r0.y = (1 - dt) * dt - m
-                //   mask = lerp(m, r0.y, IsInverseVignette)
-                // so the plain variant paints m and the inverse variant
-                // paints (1-dt)*dt - m. with dt=1 the inverse term is -m,
-                // which is NEGATIVE inside the radius and positive outside
-                // it: the inverse layer clears the centre and rims the
-                // edges. the old mad form produced dt*(1-m) instead, a
-                // positive near-1.0 fill over the whole centre, so the
-                // layer saturated to a white wash.
+                //   r0.x = cb0[163].y * r0.y + r0.x
+                // so the inverse flag is a WEIGHTED SUM, not a lerp: the
+                // plain variant paints m and the inverse variant paints
+                // m + ((1-dt)*dt - m) = (1-dt)*dt. with dt=1 that is
+                // exactly zero, so an inverse-vignette layer paints
+                // nothing. the previous lerp form returned -m instead,
+                // and with the authored depthPower of 12.61 that became a
+                // strong positive fill over the whole frame, washing the
+                // concert to white.
                 float inv_tail = (1.0 - dt) * dt - m;
-                float v = lerp(m, inv_tail, _PostFilmIsInverseVignette);
+                float v = m + _PostFilmIsInverseVignette * inv_tail;
                 // the layer scale: the ps multiplies the layer color by
                 // cb0[152].x = _DepthPower = key.depthPower, so a layer
                 // with depthPower 0 paints exactly zero.
