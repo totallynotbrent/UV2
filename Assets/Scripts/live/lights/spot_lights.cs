@@ -21,7 +21,6 @@ namespace UV2.Live
         // one-shot material tint (Director 2307-2326: later keys with new
         // colors never re-tint - the cache is per GameObject).
         private static readonly Dictionary<string, Light> fixture_beams = new();
-        private static readonly Dictionary<string, bool> fixture_tinted = new();
 
         // binds the containers from the spotlight tracks against the recorded stage children.
         public static void bind(List<spot_track_container> tracks)
@@ -30,6 +29,12 @@ namespace UV2.Live
             if (tracks == null) return;
             int resolved = 0;
             var missing = new List<string>();
+            // the worksheet authors several spotlight containers that name
+            // the same fixture ('1st : spotlight3d002', '2nd : ...', '3rd :
+            // ...'), and each one is a separate lamp on the rig. handing
+            // them one shared object let the last track overwrite the
+            // earlier ones, so every track takes its own instance.
+            var used = new HashSet<int>();
             foreach (var t in tracks)
             {
                 if (string.IsNullOrEmpty(t.name)) continue;
@@ -41,6 +46,8 @@ namespace UV2.Live
                     missing.Add(t.name + " -> " + t.asset_name);
                     continue;
                 }
+                if (!used.Add(go.GetInstanceID()))
+                    go = duplicate_instance(go, t.name);
                 var c = new spot_container { root = go.transform, mpb = new MaterialPropertyBlock() };
                 foreach (var l in go.GetComponentsInChildren<Light>(true)) c.lights.Add(l);
                 foreach (var r in go.GetComponentsInChildren<Renderer>(true)) c.renderers.Add(r);
@@ -49,6 +56,120 @@ namespace UV2.Live
             }
             trace_log.write($"spot lights: {resolved} containers resolved, {missing.Count} unresolved");
             foreach (var m in missing) trace_log.write($"spot light unresolved: {m}");
+            // the stage prefab is instantiated once at the root and its
+            // stage objects are copied again under stage_geometry, so every
+            // fixture exists twice. the copy we drive is the one that
+            // carries the authored colour; the twin keeps its prefab
+            // appearance and stays lit, painting an extra white beam.
+            // parking the twins removes that second beam.
+            if (uv2_ab_flags.get_bool("spot_dedupe", false)) cull_duplicates();
+            // the bench can park any renderer population by name fragment,
+            // so a suspect group can be ablated without a rebuild.
+            hide_by_name_flag();
+            // dumps what each fixture's renderers actually carry, so a wrong
+            // shader or a missing property shows up in the trace rather than
+            // as a dull beam nobody can explain.
+            foreach (var kv in containers)
+            {
+                var c = kv.Value;
+                if (c?.root == null) continue;
+                var rb = new System.Text.StringBuilder();
+                foreach (var r in c.renderers)
+                {
+                    if (r == null) continue;
+                    rb.Append("[render ").Append(r.name).Append(" mats ");
+                    foreach (var mm in r.sharedMaterials)
+                    {
+                        if (mm == null) { rb.Append("NULL "); continue; }
+                        rb.Append(mm.name).Append('<').Append(mm.shader != null ? mm.shader.name : "NOSHADER");
+                        if (mm.HasProperty("_ColorPower"))
+                            rb.Append(" pow=").Append(mm.GetFloat("_ColorPower"));
+                        if (mm.HasProperty("_MulColor0"))
+                            rb.Append(" mul=").Append(mm.GetColor("_MulColor0"));
+                        if (mm.HasProperty("_Color"))
+                            rb.Append(" col=").Append(mm.GetColor("_Color"));
+                        if (mm.HasProperty("_Cutoff"))
+                            rb.Append(" cut=").Append(mm.GetFloat("_Cutoff"));
+                        rb.Append("] ");
+                    }
+                }
+                trace_log.write($"spot fixture {kv.Key} renderers {c.renderers.Count} lights {c.lights.Count} {rb}");
+            }
+
+        }
+
+        // parks every renderer whose hierarchy name contains the fragment
+        // named by the hide_fragment flag.
+        private static void hide_by_name_flag()
+        {
+            string frag = uv2_ab_flags.get_string("hide_fragment", "");
+            if (string.IsNullOrEmpty(frag)) return;
+            var all = Resources.FindObjectsOfTypeAll<Renderer>();
+            int hid = 0;
+            foreach (var r in all)
+            {
+                if (r == null) continue;
+                string path = r.name;
+                var t = r.transform;
+                for (int i = 0; i < 4 && t != null; i++)
+                {
+                    path += "|" + t.name;
+                    t = t.parent;
+                }
+                if (path.IndexOf(frag, System.StringComparison.OrdinalIgnoreCase) < 0) continue;
+                r.enabled = false;
+                hid++;
+            }
+            trace_log.write($"hide_fragment '{frag}': disabled {hid} renderers");
+        }
+
+        // parks the duplicate copies of every bound fixture, keeping the one
+        // the track drives.
+        private static void cull_duplicates()
+        {
+            var driven = new HashSet<int>();
+            foreach (var c in containers.Values)
+                if (c?.root != null) driven.Add(c.root.gameObject.GetInstanceID());
+            var all = Resources.FindObjectsOfTypeAll<GameObject>();
+            int parked = 0;
+            foreach (var go in all)
+            {
+                if (go == null || driven.Contains(go.GetInstanceID())) continue;
+                if (string.IsNullOrEmpty(go.name)) continue;
+                bool is_fixture = false;
+                foreach (var c in containers.Values)
+                {
+                    if (c?.root == null) continue;
+                    var base_name = c.root.name;
+                    int colon = base_name.IndexOf(" : ");
+                    if (colon > 0) base_name = base_name.Substring(0, colon);
+                    if (go.name.StartsWith(base_name, System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        is_fixture = true;
+                        break;
+                    }
+                }
+                if (!is_fixture) continue;
+                if (!go.activeSelf) continue;
+                go.SetActive(false);
+                parked++;
+            }
+            trace_log.write($"spot dedupe: parked {parked} duplicate fixture copies");
+        }
+
+        // clones a fixture so a second track can drive its own lamp.
+        private static readonly List<GameObject> spawned_instances = new();
+
+        private static GameObject duplicate_instance(GameObject source, string owner)
+        {
+            if (source == null) return null;
+            var clone = UnityEngine.Object.Instantiate(source, source.transform.parent);
+            clone.name = $"{source.name}_{owner}";
+            // the game parks a fixture until its key turns it on.
+            clone.SetActive(false);
+            spawned_instances.Add(clone);
+            trace_log.write($"spot light: cloned fixture '{clone.name}' for {owner}");
+            return clone;
         }
 
         // strips an editor ordinal head ('1st : name' -> 'name') like the
@@ -71,7 +192,9 @@ namespace UV2.Live
             foreach (var beam in fixture_beams.Values)
                 if (beam != null) UnityEngine.Object.Destroy(beam.gameObject);
             fixture_beams.Clear();
-            fixture_tinted.Clear();
+            foreach (var inst in spawned_instances)
+                if (inst != null) UnityEngine.Object.Destroy(inst);
+            spawned_instances.Clear();
             containers.Clear();
         }
 
@@ -107,16 +230,55 @@ namespace UV2.Live
                 c.root.position = new Vector3(char_pos.x, position.y, char_pos.z);
                 c.root.localScale = scale;
 
-                // one-shot material tint per fixture: _Color = color,
-                // _EmissionColor = color * max(1, colorPower) (Director
-                // 2307-2326); the cache is never invalidated mid-song.
-                if (!fixture_tinted.TryGetValue(t.name, out bool tinted) || !tinted)
+                // the authored colour and power ride the fixture's own
+                // material inputs. the fixture material is
+                // gallop/3d/live/stage/lightadd1, whose inputs are _MulColor0
+                // and _ColorPower; the spot key's colour and power were
+                // being written to _Color and _EmissionColor instead, which
+                // that shader never reads, so every beam drew white.
+                //
+                // the fixture material authors _colorpower=1 and
+                // _mulcolor0=white, so the game drives the beam purely
+                // through the colour vector at full strength. the authored
+                // track colour replaces that white, scaled by the authored
+                // power so a dimmer key throws a weaker beam.
+                //
+                // this is reapplied every frame because the track colour
+                // blends over time; applying it once left the beam holding
+                // its opening colour.
                 {
-                    fixture_tinted[t.name] = true;
                     if (c.mpb == null) c.mpb = new MaterialPropertyBlock();
-                    c.mpb.SetColor(id_color, color);
-                    c.mpb.SetColor(id_emission_color, color * Mathf.Max(1f, power));
+                    // the authored power ranges roughly 0.3 to 0.44, so the
+                    // level is normalised against that range and the gain
+                    // brings it to the game's apparent strength.
+                    float gain = uv2_ab_flags.get_float("spot_color_gain", 0.45f);
+                    float level = (power / 0.4f) * gain;
+                    c.mpb.SetColor(id_mul_color0, color * level);
+                    c.mpb.SetColor(id_mul_color1, color * level);
+                    c.mpb.SetFloat(id_color_power, 1f);
+                    c.mpb.SetFloat(id_color_power_multiply, 1f);
                     foreach (var r in c.renderers) r.SetPropertyBlock(c.mpb);
+                }
+                // the cone mesh arrives at its authored size, but the
+                // fixture's own driver script is absent from this build, so
+                // nothing widens the beam. the bench can grow the cone.
+                float width = uv2_ab_flags.get_float("spot_width", 1f);
+                if (!Mathf.Approximately(width, 1f))
+                    c.root.localScale = new Vector3(scale.x * width, scale.y, scale.z);
+                // the beam faces the camera because the fixture's own
+                // gallop.live.billboardcontroller turns it to do so, and
+                // that script is absent from this build. leaving the cone
+                // at its authored yaw draws it edge-on as a needle.
+                if (uv2_ab_flags.get_bool("spot_billboard", true))
+                {
+                    var cam = Camera.main;
+                    if (cam != null)
+                    {
+                        var to_cam = cam.transform.position - c.root.position;
+                        to_cam.y = 0f;
+                        if (to_cam.sqrMagnitude > 0.0001f)
+                            c.root.rotation = Quaternion.LookRotation(to_cam.normalized, Vector3.up);
+                    }
                 }
 
                 // the dedicated beam: one Spot light per fixture (34deg,
@@ -139,7 +301,8 @@ namespace UV2.Live
                 // made 1.4 the lowest possible intensity even when the key
                 // authored power 0 (off). with the floor at 0 the true
                 // minimum is 1.2, which is what the decoded comment says.
-                beam.intensity = Mathf.Max(1.2f, 4f * Mathf.Max(power, 0f));
+                beam.intensity = Mathf.Max(1.2f, 4f * Mathf.Max(power, 0f))
+                                * uv2_ab_flags.get_float("beam_gain", 1f);
                 beam.enabled = active;
                 var aim = new Vector3(char_pos.x, 1.2f, char_pos.z);
                 beam.transform.rotation = Quaternion.LookRotation(aim - beam.transform.position);
@@ -148,6 +311,10 @@ namespace UV2.Live
 
         private static readonly int id_color = Shader.PropertyToID("_Color");
         private static readonly int id_emission_color = Shader.PropertyToID("_EmissionColor");
+        private static readonly int id_mul_color0 = Shader.PropertyToID("_MulColor0");
+        private static readonly int id_mul_color1 = Shader.PropertyToID("_MulColor1");
+        private static readonly int id_color_power = Shader.PropertyToID("_ColorPower");
+        private static readonly int id_color_power_multiply = Shader.PropertyToID("_ColorPowerMultiply");
     }
 
     // one worksheet spotlight3d container: name + key track.
